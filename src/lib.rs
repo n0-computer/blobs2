@@ -1,5 +1,9 @@
 use anyhow::Result;
-use bao_tree::{blake3::Hash, io::{mixed::EncodedItem, BaoContentItem}, BlockSize, ChunkRanges};
+use bao_tree::{
+    blake3::Hash,
+    io::{mixed::EncodedItem, BaoContentItem},
+    BlockSize, ChunkRanges,
+};
 use bitfield::BitfieldEvent;
 use bytes::Bytes;
 
@@ -9,6 +13,14 @@ pub enum ImportProgress {
     CopyDone,
     OutboardProgress { offset: u64 },
     Done { hash: Hash },
+    Error { cause: anyhow::Error },
+}
+
+#[derive(Debug)]
+pub enum ExportProgress {
+    Size { size: u64 },
+    CopyProgress { offset: u64 },
+    Done,
     Error { cause: anyhow::Error },
 }
 
@@ -28,7 +40,6 @@ mod mem;
 /// to manage operations, since most store implementations will want to
 /// perform IO.
 pub trait Store {
-
     fn import_bao(
         &self,
         hash: Hash,
@@ -44,11 +55,7 @@ pub trait Store {
         out: tokio::sync::mpsc::Sender<EncodedItem>,
     ) -> bool;
 
-    fn observe(
-        &self,
-        hash: Hash,
-        out: tokio::sync::mpsc::Sender<BitfieldEvent>,
-    ) -> bool;
+    fn observe(&self, hash: Hash, out: tokio::sync::mpsc::Sender<BitfieldEvent>) -> bool;
 
     fn import_bytes(
         &self,
