@@ -1,37 +1,34 @@
 use std::{
     collections::HashMap,
-    future::Future,
     io::{self, Write},
+    num::NonZeroU64,
     path::PathBuf,
-    pin::Pin,
     sync::{Arc, RwLock},
-    task::{Context, Poll},
 };
 
 use bao_tree::{
     blake3::{self, Hash},
     io::{
-        fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::{traverse_ranges_validated, EncodedItem},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
-        BaoContentItem, EncodeError,
+        BaoContentItem,
     },
     BaoTree, ChunkNum, ChunkRanges, TreeNode,
 };
 use bytes::Bytes;
-use iroh_io::{AsyncStreamReader, TokioStreamReader};
-use n0_future::{stream, Stream, StreamExt};
+use n0_future::{future::yield_now, StreamExt};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc::{error::TrySendError, OwnedPermit},
-    task::JoinSet,
+    io::AsyncReadExt,
+    sync::mpsc::{self, error::TrySendError, OwnedPermit},
+    task::{JoinError, JoinSet},
 };
 
 use crate::{
-    bitfield::{BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
+    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
+    proto::*,
     util::sparse_mem_file::SparseMemFile,
-    ExportProgress, ImportProgress, IROH_BLOCK_SIZE,
+    Store, IROH_BLOCK_SIZE,
 };
 
 /// Keep track of the most precise size we know of.
@@ -71,82 +68,13 @@ impl SizeInfo {
     }
 }
 
-#[derive(Debug)]
-struct ImportBao {
-    hash: Hash,
-    size: u64,
-    data: tokio::sync::mpsc::Receiver<BaoContentItem>,
-    out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
-}
-
-#[derive(Debug)]
-struct Observe {
-    hash: Hash,
-    out: tokio::sync::mpsc::Sender<BitfieldEvent>,
-}
-
-#[derive(Debug)]
-struct ImportBytes {
-    data: Bytes,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
-}
-
-#[derive(Debug)]
-struct ExportBao {
-    hash: Hash,
-    ranges: ChunkRanges,
-    out: tokio::sync::mpsc::Sender<EncodedItem>,
-}
-
-#[derive(Debug)]
-struct ExportPath {
-    hash: Hash,
-    target: PathBuf,
-    out: tokio::sync::mpsc::Sender<ExportProgress>,
-}
-
-type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
-
-struct ImportByteStream {
-    data: BoxedByteStream,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
-}
-
-impl std::fmt::Debug for ImportByteStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportByteStream").finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug)]
-struct ImportPath {
-    path: PathBuf,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
-}
-
-#[derive(Debug, derive_more::From)]
-enum Command {
-    ImportBao(ImportBao),
-    ExportBao(ExportBao),
-    Observe(Observe),
-    ImportBytes(ImportBytes),
-    ImportByteStream(ImportByteStream),
-    ImportPath(ImportPath),
-    ExportPath(ExportPath),
-}
-
-#[derive(Debug, Clone)]
-pub struct Store {
-    sender: tokio::sync::mpsc::Sender<Command>,
-}
-
 impl Store {
-    pub fn new() -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+    pub fn memory() -> Self {
+        let (sender, receiver) = mpsc::channel(32);
         tokio::spawn(
             Actor {
                 commands: receiver,
-                bao_tasks: JoinSet::new(),
+                unit_tasks: JoinSet::new(),
                 import_tasks: JoinSet::new(),
                 state: State {
                     data: HashMap::new(),
@@ -154,388 +82,135 @@ impl Store {
             }
             .run(),
         );
-        Self { sender }
-    }
-
-    pub fn import_bytes(&self, data: bytes::Bytes) -> ImportResult {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        self.sender
-            .try_send(ImportBytes { data, out: sender }.into())
-            .ok();
-        ImportResult { receiver }
-    }
-
-    pub fn import_byte_stream(
-        &self,
-        data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
-    ) -> ImportResult {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        self.sender
-            .try_send(ImportByteStream { data, out: sender }.into())
-            .ok();
-        ImportResult { receiver }
-    }
-
-    pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        self.sender
-            .try_send(
-                ExportBao {
-                    hash,
-                    ranges,
-                    out: sender,
-                }
-                .into(),
-            )
-            .ok();
-        ExportBaoResult { receiver }
-    }
-
-    pub fn observe(&self, hash: Hash) -> ObserveResult {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        self.sender
-            .try_send(Observe { hash, out: sender }.into())
-            .ok();
-        ObserveResult { receiver }
-    }
-
-    async fn import_bao_reader(
-        &self,
-        hash: Hash,
-        ranges: ChunkRanges,
-        mut stream: impl AsyncStreamReader,
-    ) -> anyhow::Result<()> {
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        let (out, out_receiver) = tokio::sync::oneshot::channel();
-        let size = u64::from_le_bytes(stream.read::<8>().await?);
-        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
-        let mut decoder = ResponseDecoder::new(hash, ranges, tree, stream);
-        self.sender.try_send(
-            ImportBao {
-                hash,
-                size,
-                data: receiver,
-                out,
-            }
-            .into(),
-        )?;
-        loop {
-            match decoder.next().await {
-                ResponseDecoderNext::More((rest, item)) => {
-                    sender.send(item?).await?;
-                    decoder = rest;
-                }
-                ResponseDecoderNext::Done(_) => break,
-            };
-        }
-        drop(sender);
-        out_receiver.await??;
-        Ok(())
-    }
-
-    pub async fn import_bao_quinn(
-        &self,
-        hash: Hash,
-        ranges: ChunkRanges,
-        stream: &mut quinn::RecvStream,
-    ) -> anyhow::Result<()> {
-        let reader = TokioStreamReader::new(stream);
-        self.import_bao_reader(hash, ranges, reader).await
-    }
-
-    pub async fn import_bao_bytes(
-        &self,
-        hash: Hash,
-        ranges: ChunkRanges,
-        data: Bytes,
-    ) -> anyhow::Result<()> {
-        self.import_bao_reader(hash, ranges, data).await
-    }
-}
-
-pub struct ImportResult {
-    receiver: tokio::sync::mpsc::Receiver<ImportProgress>,
-}
-
-impl Future for ImportResult {
-    type Output = anyhow::Result<Hash>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Some(ImportProgress::Done { hash })) => break Poll::Ready(Ok(hash)),
-                Poll::Ready(Some(ImportProgress::Error { cause })) => {
-                    break Poll::Ready(Err(cause))
-                }
-                Poll::Ready(Some(_)) => continue,
-                Poll::Ready(None) => {
-                    break Poll::Ready(Err(anyhow::anyhow!("import task ended unexpectedly")))
-                }
-                Poll::Pending => break Poll::Pending,
-            }
-        }
-    }
-}
-
-impl Stream for ImportResult {
-    type Item = anyhow::Result<ImportProgress>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(ImportProgress::Error { cause })) => Poll::Ready(Some(Err(cause))),
-            Poll::Ready(Some(item)) => Poll::Ready(Some(Ok(item))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-pub struct ObserveResult {
-    receiver: tokio::sync::mpsc::Receiver<BitfieldEvent>,
-}
-
-impl Stream for ObserveResult {
-    type Item = BitfieldEvent;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-pub struct ExportBaoResult {
-    receiver: tokio::sync::mpsc::Receiver<EncodedItem>,
-}
-
-impl ExportBaoResult {
-    pub async fn to_vec(self) -> io::Result<Vec<u8>> {
-        let mut data = Vec::new();
-        let mut stream = self.to_byte_stream();
-        while let Some(item) = stream.next().await {
-            data.extend_from_slice(&item?);
-        }
-        Ok(data)
-    }
-
-    pub async fn write_quinn(mut self, mut target: quinn::SendStream) -> io::Result<()> {
-        while let Some(item) = self.receiver.recv().await {
-            match item {
-                EncodedItem::Size(size) => {
-                    target.write_u64_le(size).await?;
-                }
-                EncodedItem::Parent(parent) => {
-                    let mut data = vec![0u8; 64];
-                    data[..32].copy_from_slice(parent.pair.0.as_bytes());
-                    data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                    target.write_all(&data).await?;
-                }
-                EncodedItem::Leaf(leaf) => {
-                    target.write_chunk(leaf.data).await?;
-                }
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
-            }
-        }
-        Ok(())
-    }
-
-    pub fn to_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
-        self.filter_map(|item| match item {
-            EncodedItem::Size(size) => {
-                let size = size.to_le_bytes().to_vec().into();
-                Some(Ok(size))
-            }
-            EncodedItem::Parent(parent) => {
-                let mut data = vec![0u8; 64];
-                data[..32].copy_from_slice(parent.pair.0.as_bytes());
-                data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                Some(Ok(data.into()))
-            }
-            EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
-            EncodedItem::Done => None,
-            EncodedItem::Error(cause) => Some(Err(io::Error::from(cause))),
-        })
-    }
-}
-
-impl Future for ExportBaoResult {
-    type Output = Result<(), EncodeError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Some(EncodedItem::Done)) => break Poll::Ready(Ok(())),
-                Poll::Ready(Some(EncodedItem::Error(cause))) => break Poll::Ready(Err(cause)),
-                Poll::Ready(Some(_)) => continue,
-                Poll::Ready(None) => {
-                    break Poll::Ready(Err(EncodeError::Io(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "export task ended unexpectedly",
-                    ))))
-                }
-                Poll::Pending => break Poll::Pending,
-            }
-        }
-    }
-}
-
-impl Stream for ExportBaoResult {
-    type Item = EncodedItem;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl super::Store for Store {
-    fn import_bao(
-        &self,
-        hash: Hash,
-        size: u64,
-        data: tokio::sync::mpsc::Receiver<BaoContentItem>,
-        out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
-    ) -> bool {
-        self.sender
-            .try_send(
-                ImportBao {
-                    hash,
-                    size,
-                    data,
-                    out,
-                }
-                .into(),
-            )
-            .is_ok()
-    }
-
-    fn export_bao(
-        &self,
-        hash: Hash,
-        ranges: ChunkRanges,
-        out: tokio::sync::mpsc::Sender<EncodedItem>,
-    ) -> bool {
-        self.sender
-            .try_send(ExportBao { hash, ranges, out }.into())
-            .is_ok()
-    }
-
-    fn observe(&self, hash: Hash, out: tokio::sync::mpsc::Sender<BitfieldEvent>) -> bool {
-        self.sender.try_send(Observe { hash, out }.into()).is_ok()
-    }
-
-    fn import_bytes(
-        &self,
-        data: bytes::Bytes,
-        out: tokio::sync::mpsc::Sender<crate::ImportProgress>,
-    ) -> bool {
-        self.sender
-            .try_send(ImportBytes { data, out }.into())
-            .is_ok()
+        Self::from_sender(sender)
     }
 }
 
 struct Actor {
-    commands: tokio::sync::mpsc::Receiver<Command>,
-    bao_tasks: JoinSet<()>,
+    commands: mpsc::Receiver<Command>,
+    unit_tasks: JoinSet<()>,
     import_tasks: JoinSet<anyhow::Result<ImportEntry>>,
     state: State,
 }
 
 impl Actor {
+    fn handle_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::ImportBao(ImportBao {
+                hash,
+                size,
+                data,
+                out,
+            }) => {
+                let entry = self.state.data.entry(hash).or_default();
+                self.unit_tasks
+                    .spawn(import_bao_task(entry.clone(), size, data, out));
+            }
+            Command::Observe(Observe { hash, out }) => {
+                let entry = self.state.data.entry(hash).or_default();
+                let mut entry = entry.write().unwrap();
+                if out
+                    .try_send(
+                        BitfieldState {
+                            ranges: entry.bitfield().clone(),
+                            size: entry.size().into(),
+                        }
+                        .into(),
+                    )
+                    .is_ok()
+                {
+                    entry.observers().push(out);
+                }
+            }
+            Command::ImportBytes(ImportBytes { data, out }) => {
+                self.import_tasks.spawn(import_bytes_task(data, out));
+            }
+            Command::ImportByteStream(ImportByteStream { data, out }) => {
+                self.import_tasks.spawn(import_byte_stream_task(data, out));
+            }
+            Command::ImportPath(ImportPath { path, out }) => {
+                self.import_tasks.spawn(import_path_task(path, out));
+            }
+            Command::ExportBao(ExportBao { hash, ranges, out }) => {
+                let entry = self.state.data.entry(hash).or_default();
+                self.unit_tasks
+                    .spawn(export_bao_task(hash, entry.clone(), ranges, out));
+            }
+            Command::ExportPath(ExportPath { hash, target, out }) => {
+                let entry = self.state.data.get(&hash).cloned();
+                self.unit_tasks.spawn(export_path_task(entry, target, out));
+            }
+        }
+    }
+
+    fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
+        let import_data = match res {
+            Ok(Ok(entry)) => entry,
+            Ok(Err(e)) => {
+                tracing::error!("import failed: {e}");
+                return;
+            }
+            Err(e) => {
+                if e.is_cancelled() {
+                    tracing::warn!("import task failed: {e}");
+                } else {
+                    tracing::error!("import task panicked: {e}");
+                }
+                return;
+            }
+        };
+        let hash = import_data.outboard.root();
+        let entry = self.state.data.entry(hash).or_default();
+        let mut entry = entry.write().unwrap();
+        let size = import_data.data.len() as u64;
+        let old_bitfield = entry.bitfield().clone();
+        import_data.out.send(ImportProgress::Done { hash });
+        *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
+        if entry.observers().is_empty() {
+            return;
+        }
+        let added = ChunkRanges::from(..ChunkNum::full_chunks(size));
+        let added = &added - old_bitfield;
+        // todo: also trigger event when verification status changes?
+        // is that even needed? A verification status change can only happen
+        // when there is also a bitmap change.
+        if added.is_empty() {
+            return;
+        }
+        let update = BitfieldUpdate {
+            added,
+            removed: ChunkRanges::empty(),
+            size: BaoBlobSizeOpt::Verified(size),
+        };
+        entry.observers().retain(|sender| {
+            sender
+                .try_send(BitfieldEvent::Update(update.clone()))
+                .is_ok()
+        });
+    }
+
+    fn log_unit_task(&self, res: Result<(), JoinError>) {
+        if let Err(e) = res {
+            tracing::error!("task failed: {e}");
+        }
+    }
+
     pub async fn run(mut self) {
         loop {
             tokio::select! {
                 cmd = self.commands.recv() => {
                     let Some(cmd) = cmd else {
+                        // last sender has been dropped.
+                        // exit immediately.
                         break;
                     };
-                    match cmd {
-                        Command::ImportBao(ImportBao { hash, size, data, out}) => {
-                            let entry = self.state.data.entry(hash).or_default();
-                            self.bao_tasks.spawn(import_bao_task(entry.clone(), size, data, out));
-                        }
-                        Command::Observe(Observe { hash, out }) => {
-                            let entry = self.state.data.entry(hash).or_default();
-                            let mut entry = entry.write().unwrap();
-                            if out.try_send(BitfieldState {
-                                ranges: entry.bitfield.clone(),
-                                size: BaoBlobSizeOpt::Unverified(entry.size.current_size()),
-                            }.into()).is_ok() {
-                                entry.observers.push(out);
-                            }
-                        }
-                        Command::ImportBytes(ImportBytes { data, out }) => {
-                            self.import_tasks.spawn(import_bytes_task(data, out));
-                        }
-                        Command::ImportByteStream(ImportByteStream { data, out }) => {
-                            self.import_tasks.spawn(import_byte_stream_task(data, out));
-                        }
-                        Command::ImportPath(ImportPath { path, out }) => {
-                            self.import_tasks.spawn(import_path_task(path, out));
-                        }
-                        Command::ExportBao(ExportBao { hash, ranges, out }) => {
-                            let entry = self.state.data.entry(hash).or_default();
-                            self.bao_tasks.spawn(export_bao_task(hash, entry.clone(), ranges, out));
-                        }
-                        Command::ExportPath(ExportPath { hash, target, out }) => {
-                            let entry = self.state.data.get(&hash).cloned();
-                            self.bao_tasks.spawn(export_path_task(entry, target, out));
-                        }
-                    }
+                    self.handle_command(cmd);
                 }
                 Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
-                    let import_data = match res {
-                        Ok(Ok(entry)) => {
-                            entry
-                        },
-                        Ok(Err(e)) => {
-                            tracing::error!("import failed: {e}");
-                            continue;
-                        },
-                        Err(e) => {
-                            tracing::error!("import task failed: {e}");
-                            continue;
-                        }
-                    };
-                    let hash = import_data.outboard.root();
-                    let entry = self.state.data.entry(hash).or_default();
-                    let mut entry = entry.write().unwrap();
-                    let size = import_data.data.len() as u64;
-                    entry.size = SizeInfo::complete(size);
-                    entry.data = SparseMemFile::from(import_data.data.to_vec());
-                    entry.outboard = SparseMemFile::from(import_data.outboard.data);
-                    import_data.out.send(ImportProgress::Done { hash });
-                    if entry.observers.is_empty() {
-                        continue;
-                    }
-                    let added = ChunkRanges::from(.. ChunkNum::full_chunks(size));
-                    let added = &added - &entry.bitfield;
-                    // todo: also trigger event when verification status changes?
-                    // is that even needed? A verification status change can only happen
-                    // when there is also a bitmap change.
-                    if added.is_empty() {
-                        continue;
-                    }
-                    let update = BitfieldUpdate {
-                        added,
-                        removed: ChunkRanges::empty(),
-                        size: BaoBlobSizeOpt::Verified(size),
-                    };
-                    entry.observers.retain(|sender| {
-                        sender.try_send(BitfieldEvent::Update(update.clone())).is_ok()
-                    });
+                    self.finish_import(res);
                 }
-                Some(res) = self.bao_tasks.join_next(), if !self.bao_tasks.is_empty() => {
-                    if let Err(e) = res {
-                        tracing::error!("task failed: {e}");
-                    }
+                Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
+                    self.log_unit_task(res);
                 }
             }
         }
@@ -543,15 +218,21 @@ impl Actor {
 }
 
 async fn import_bao_task(
-    entry: Arc<RwLock<HashData>>,
+    entry: Arc<RwLock<Entry>>,
     size: u64,
-    mut stream: tokio::sync::mpsc::Receiver<BaoContentItem>,
+    mut stream: mpsc::Receiver<BaoContentItem>,
     out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
 ) {
-    entry.write().unwrap().size.write(0, size);
+    if let Some(entry) = entry.write().unwrap().incomplete_mut() {
+        entry.size.write(0, size);
+    }
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     while let Some(item) = stream.recv().await {
-        let mut entry = entry.write().unwrap();
+        let mut guard = entry.write().unwrap();
+        let Some(entry) = guard.incomplete_mut() else {
+            // entry was completed somewhere else, no need to write
+            break;
+        };
         match item {
             BaoContentItem::Parent(parent) => {
                 if let Some(offset) = tree.pre_order_offset(parent.node) {
@@ -579,16 +260,28 @@ async fn import_bao_task(
                 if added.is_empty() {
                     continue;
                 }
+                entry.bitfield |= added.clone();
                 let update = BitfieldUpdate {
                     added,
                     removed: ChunkRanges::empty(),
-                    size: BaoBlobSizeOpt::Unverified(size),
+                    size: BaoBlobSize::from_size_and_ranges(
+                        NonZeroU64::try_from(size).unwrap(),
+                        &entry.bitfield,
+                    )
+                    .into(),
                 };
                 entry.observers.retain(|sender| {
                     sender
                         .try_send(BitfieldEvent::Update(update.clone()))
                         .is_ok()
                 });
+                if entry.bitfield == ChunkRanges::from(..ChunkNum::chunks(size)) {
+                    let data = std::mem::take(&mut entry.data);
+                    let outboard = std::mem::take(&mut entry.outboard);
+                    let data: Bytes = <Vec<u8>>::try_from(data).unwrap().into();
+                    let outboard: Bytes = <Vec<u8>>::try_from(outboard).unwrap().into();
+                    *guard = CompleteEntry::new(data, outboard).into();
+                }
             }
         }
     }
@@ -597,11 +290,11 @@ async fn import_bao_task(
 
 async fn export_bao_task(
     hash: Hash,
-    entry: Arc<RwLock<HashData>>,
+    entry: Arc<RwLock<Entry>>,
     ranges: ChunkRanges,
-    sender: tokio::sync::mpsc::Sender<EncodedItem>,
+    sender: mpsc::Sender<EncodedItem>,
 ) {
-    let size = entry.read().unwrap().size.current_size();
+    let size = entry.read().unwrap().size().value();
     let data = ExportData {
         data: entry.clone(),
     };
@@ -616,7 +309,7 @@ async fn export_bao_task(
 
 async fn import_bytes_task(
     data: Bytes,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
+    out: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     out.send(ImportProgress::Size {
         size: data.len() as u64,
@@ -634,7 +327,7 @@ async fn import_bytes_task(
 
 async fn import_byte_stream_task(
     mut data: BoxedByteStream,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
+    out: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     while let Some(item) = data.next().await {
@@ -653,7 +346,7 @@ async fn import_byte_stream_task(
 
 async fn import_path_task(
     path: PathBuf,
-    out: tokio::sync::mpsc::Sender<ImportProgress>,
+    out: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     let mut file = tokio::fs::File::open(path).await?;
@@ -673,9 +366,9 @@ async fn import_path_task(
 }
 
 async fn export_path_task(
-    entry: Option<Arc<RwLock<HashData>>>,
+    entry: Option<Arc<RwLock<Entry>>>,
     target: PathBuf,
-    out: tokio::sync::mpsc::Sender<ExportProgress>,
+    out: mpsc::Sender<ExportProgress>,
 ) {
     let Some(entry) = entry else {
         out.send(ExportProgress::Error {
@@ -692,18 +385,19 @@ async fn export_path_task(
 }
 
 async fn export_path_impl(
-    entry: Arc<RwLock<HashData>>,
+    entry: Arc<RwLock<Entry>>,
     target: PathBuf,
-    out: &tokio::sync::mpsc::Sender<ExportProgress>,
+    out: &mpsc::Sender<ExportProgress>,
 ) -> anyhow::Result<()> {
+    // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
-    let size = entry.read().unwrap().size.current_size();
+    let size = entry.read().unwrap().size().value();
     out.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
-        entry.read().unwrap().data.read_exact_at(offset, buf)?;
+        entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
         match out.try_send(ExportProgress::CopyProgress {
             offset: offset as u64,
@@ -712,6 +406,7 @@ async fn export_path_impl(
             Err(e @ TrySendError::Closed(_)) => return Err(e.into()),
             Err(TrySendError::Full(_)) => continue,
         }
+        yield_now().await;
     }
     Ok(())
 }
@@ -725,17 +420,17 @@ struct ImportEntry {
 struct ExportOutboard {
     hash: Hash,
     tree: BaoTree,
-    data: Arc<RwLock<HashData>>,
+    data: Arc<RwLock<Entry>>,
 }
 
 struct ExportData {
-    data: Arc<RwLock<HashData>>,
+    data: Arc<RwLock<Entry>>,
 }
 
 impl ReadAt for ExportData {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let entry = self.data.read().unwrap();
-        entry.data.read_at(offset, buf)
+        entry.data().read_at(offset, buf)
     }
 }
 
@@ -757,7 +452,7 @@ impl Outboard for ExportOutboard {
             .data
             .read()
             .unwrap()
-            .outboard
+            .outboard()
             .read_at(offset * 64, &mut buf)?;
         if size != 64 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short read"));
@@ -769,19 +464,143 @@ impl Outboard for ExportOutboard {
 }
 
 struct State {
-    data: HashMap<Hash, Arc<RwLock<HashData>>>,
+    data: HashMap<Hash, Arc<RwLock<Entry>>>,
 }
 
+#[derive(Debug, derive_more::From)]
+enum Entry {
+    Incomplete(IncompleteEntry),
+    Complete(CompleteEntry),
+}
+
+impl Default for Entry {
+    fn default() -> Self {
+        Self::Incomplete(Default::default())
+    }
+}
+
+impl Entry {
+    fn data(&self) -> &[u8] {
+        match self {
+            Self::Incomplete(entry) => entry.data.as_ref(),
+            Self::Complete(entry) => &entry.data,
+        }
+    }
+
+    fn outboard(&self) -> &[u8] {
+        match self {
+            Self::Incomplete(entry) => entry.outboard.as_ref(),
+            Self::Complete(entry) => &entry.outboard,
+        }
+    }
+
+    fn size(&self) -> BaoBlobSize {
+        match self {
+            Self::Incomplete(entry) => entry.size(),
+            Self::Complete(entry) => entry.size(),
+        }
+    }
+
+    fn bitfield(&self) -> &ChunkRanges {
+        match self {
+            Self::Incomplete(entry) => entry.bitfield(),
+            Self::Complete(entry) => entry.bitfield(),
+        }
+    }
+
+    fn incomplete_mut(&mut self) -> Option<&mut IncompleteEntry> {
+        match self {
+            Self::Incomplete(entry) => Some(entry),
+            Self::Complete(_) => None,
+        }
+    }
+
+    fn observers(&mut self) -> &mut Vec<mpsc::Sender<BitfieldEvent>> {
+        match self {
+            Self::Incomplete(entry) => &mut entry.observers,
+            Self::Complete(entry) => &mut entry.observers,
+        }
+    }
+}
+
+/// An incomplete entry, with all the logic to keep track of the state of the entry
+/// and for observing changes.
 #[derive(Debug)]
-struct HashData {
+struct IncompleteEntry {
     data: SparseMemFile,
     outboard: SparseMemFile,
     size: SizeInfo,
     bitfield: ChunkRanges,
-    observers: Vec<tokio::sync::mpsc::Sender<BitfieldEvent>>,
+    observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
-impl Default for HashData {
+impl IncompleteEntry {
+    fn size(&self) -> BaoBlobSize {
+        let size = self.size.current_size();
+        if let Some(size) = NonZeroU64::new(size) {
+            return BaoBlobSize::from_size_and_ranges(size, &self.bitfield);
+        } else {
+            return BaoBlobSize::Verified(size);
+        }
+    }
+
+    fn bitfield(&self) -> &ChunkRanges {
+        &self.bitfield
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompleteEntry {
+    data: Bytes,
+    outboard: Bytes,
+    bitfield: ChunkRanges,
+    // these observers observe nothing, this is just to keep them alive
+    observers: Vec<mpsc::Sender<BitfieldEvent>>,
+}
+
+impl CompleteEntry {
+    pub fn create(data: Bytes) -> (blake3::Hash, Self) {
+        let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
+        let hash = outboard.root();
+        let outboard = outboard.data.into();
+        let entry = Self::new(data, outboard);
+        (hash, entry)
+    }
+
+    pub fn new(data: Bytes, outboard: Bytes) -> Self {
+        let size = data.len() as u64;
+        let bitfield = ChunkRanges::from(..ChunkNum::chunks(size));
+        Self {
+            data,
+            outboard,
+            bitfield,
+            observers: Vec::new(),
+        }
+    }
+
+    pub fn size(&self) -> BaoBlobSize {
+        let size = self.data.len() as u64;
+        BaoBlobSize::Verified(size)
+    }
+
+    pub fn bitfield(&self) -> &ChunkRanges {
+        &self.bitfield
+    }
+
+    pub fn data(&self) -> impl AsRef<[u8]> + '_ {
+        self.data.as_ref()
+    }
+
+    pub fn outboard(&self) -> impl AsRef<[u8]> + '_ {
+        self.outboard.as_ref()
+    }
+
+    pub fn observers(&mut self) -> &mut Vec<mpsc::Sender<BitfieldEvent>> {
+        &mut self.observers
+    }
+}
+
+impl Default for IncompleteEntry {
     fn default() -> Self {
         Self {
             data: Default::default(),
@@ -813,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
-        let store = Store::new();
+        let store = Store::memory();
         let hash = store.import_bytes(vec![0u8; 1024 * 64].into()).await?;
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all());
@@ -823,7 +642,7 @@ mod tests {
         let stream = store.export_bao(hash, ChunkRanges::all());
         let exported = stream.to_vec().await?;
 
-        let store2 = Store::new();
+        let store2 = Store::memory();
         let mut or = store2.observe(hash);
         tokio::spawn(async move {
             while let Some(event) = or.next().await {

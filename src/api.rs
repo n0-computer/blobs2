@@ -1,0 +1,315 @@
+//! The user facing API of the store.
+//!
+//!
+use std::{
+    future::Future,
+    io,
+    path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use bao_tree::{
+    blake3::Hash,
+    io::{
+        fsm::{ResponseDecoder, ResponseDecoderNext},
+        mixed::EncodedItem,
+        EncodeError,
+    },
+    BaoTree, ChunkRanges,
+};
+use bytes::Bytes;
+use iroh_io::{AsyncStreamReader, TokioStreamReader};
+use n0_future::{Stream, StreamExt};
+use tokio::io::AsyncWriteExt;
+
+use crate::{proto::*, Store, IROH_BLOCK_SIZE};
+
+impl Store {
+    pub fn import_bytes(&self, data: bytes::Bytes) -> ImportResult {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        self.sender
+            .try_send(ImportBytes { data, out: sender }.into())
+            .ok();
+        ImportResult { receiver }
+    }
+
+    pub fn import_byte_stream(
+        &self,
+        data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
+    ) -> ImportResult {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        self.sender
+            .try_send(ImportByteStream { data, out: sender }.into())
+            .ok();
+        ImportResult { receiver }
+    }
+
+    pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        self.sender
+            .try_send(
+                ExportBao {
+                    hash,
+                    ranges,
+                    out: sender,
+                }
+                .into(),
+            )
+            .ok();
+        ExportBaoResult { receiver }
+    }
+
+    pub fn observe(&self, hash: Hash) -> ObserveResult {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        self.sender
+            .try_send(Observe { hash, out: sender }.into())
+            .ok();
+        ObserveResult { receiver }
+    }
+
+    pub async fn export_file(&self, hash: Hash, target: PathBuf) -> ExportFileResult {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        self.sender
+            .try_send(
+                ExportPath {
+                    hash,
+                    target,
+                    out: sender,
+                }
+                .into(),
+            )
+            .ok();
+        ExportFileResult { receiver }
+    }
+
+    async fn import_bao_reader(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        mut stream: impl AsyncStreamReader,
+    ) -> anyhow::Result<()> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let (out, out_receiver) = tokio::sync::oneshot::channel();
+        let size = u64::from_le_bytes(stream.read::<8>().await?);
+        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+        let mut decoder = ResponseDecoder::new(hash, ranges, tree, stream);
+        self.sender.try_send(
+            ImportBao {
+                hash,
+                size,
+                data: receiver,
+                out,
+            }
+            .into(),
+        )?;
+        loop {
+            match decoder.next().await {
+                ResponseDecoderNext::More((rest, item)) => {
+                    sender.send(item?).await?;
+                    decoder = rest;
+                }
+                ResponseDecoderNext::Done(_) => break,
+            };
+        }
+        drop(sender);
+        out_receiver.await??;
+        Ok(())
+    }
+
+    pub async fn import_bao_quinn(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        stream: &mut quinn::RecvStream,
+    ) -> anyhow::Result<()> {
+        let reader = TokioStreamReader::new(stream);
+        self.import_bao_reader(hash, ranges, reader).await
+    }
+
+    pub async fn import_bao_bytes(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        data: Bytes,
+    ) -> anyhow::Result<()> {
+        self.import_bao_reader(hash, ranges, data).await
+    }
+}
+
+pub struct ImportResult {
+    receiver: tokio::sync::mpsc::Receiver<ImportProgress>,
+}
+
+impl Future for ImportResult {
+    type Output = anyhow::Result<Hash>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Some(ImportProgress::Done { hash })) => break Poll::Ready(Ok(hash)),
+                Poll::Ready(Some(ImportProgress::Error { cause })) => {
+                    break Poll::Ready(Err(cause))
+                }
+                Poll::Ready(Some(_)) => continue,
+                Poll::Ready(None) => {
+                    break Poll::Ready(Err(anyhow::anyhow!("import task ended unexpectedly")))
+                }
+                Poll::Pending => break Poll::Pending,
+            }
+        }
+    }
+}
+
+impl Stream for ImportResult {
+    type Item = anyhow::Result<ImportProgress>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(ImportProgress::Error { cause })) => Poll::Ready(Some(Err(cause))),
+            Poll::Ready(Some(item)) => Poll::Ready(Some(Ok(item))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pub struct ObserveResult {
+    receiver: tokio::sync::mpsc::Receiver<BitfieldEvent>,
+}
+
+impl Stream for ObserveResult {
+    type Item = BitfieldEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pub struct ExportFileResult {
+    receiver: tokio::sync::mpsc::Receiver<ExportProgress>,
+}
+
+impl Stream for ExportFileResult {
+    type Item = ExportProgress;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Future for ExportFileResult {
+    type Output = anyhow::Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Some(ExportProgress::Done)) => break Poll::Ready(Ok(())),
+                Poll::Ready(Some(ExportProgress::Error { cause })) => {
+                    break Poll::Ready(Err(cause))
+                }
+                Poll::Ready(Some(_)) => continue,
+                Poll::Ready(None) => {
+                    break Poll::Ready(Err(anyhow::anyhow!("export task ended unexpectedly")))
+                }
+                Poll::Pending => break Poll::Pending,
+            }
+        }
+    }
+}
+
+pub struct ExportBaoResult {
+    receiver: tokio::sync::mpsc::Receiver<EncodedItem>,
+}
+
+impl ExportBaoResult {
+    pub async fn to_vec(self) -> io::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        let mut stream = self.to_byte_stream();
+        while let Some(item) = stream.next().await {
+            data.extend_from_slice(&item?);
+        }
+        Ok(data)
+    }
+
+    pub async fn write_quinn(mut self, mut target: quinn::SendStream) -> io::Result<()> {
+        while let Some(item) = self.receiver.recv().await {
+            match item {
+                EncodedItem::Size(size) => {
+                    target.write_u64_le(size).await?;
+                }
+                EncodedItem::Parent(parent) => {
+                    let mut data = vec![0u8; 64];
+                    data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                    data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                    target.write_all(&data).await?;
+                }
+                EncodedItem::Leaf(leaf) => {
+                    target.write_chunk(leaf.data).await?;
+                }
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
+        self.filter_map(|item| match item {
+            EncodedItem::Size(size) => {
+                let size = size.to_le_bytes().to_vec().into();
+                Some(Ok(size))
+            }
+            EncodedItem::Parent(parent) => {
+                let mut data = vec![0u8; 64];
+                data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                Some(Ok(data.into()))
+            }
+            EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
+            EncodedItem::Done => None,
+            EncodedItem::Error(cause) => Some(Err(io::Error::from(cause))),
+        })
+    }
+}
+
+impl Future for ExportBaoResult {
+    type Output = Result<(), EncodeError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Some(EncodedItem::Done)) => break Poll::Ready(Ok(())),
+                Poll::Ready(Some(EncodedItem::Error(cause))) => break Poll::Ready(Err(cause)),
+                Poll::Ready(Some(_)) => continue,
+                Poll::Ready(None) => {
+                    break Poll::Ready(Err(EncodeError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "export task ended unexpectedly",
+                    ))))
+                }
+                Poll::Pending => break Poll::Pending,
+            }
+        }
+    }
+}
+
+impl Stream for ExportBaoResult {
+    type Item = EncodedItem;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}

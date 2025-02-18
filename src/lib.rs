@@ -1,70 +1,23 @@
-use anyhow::Result;
-use bao_tree::{
-    blake3::Hash,
-    io::{mixed::EncodedItem, BaoContentItem},
-    BlockSize, ChunkRanges,
-};
-use bitfield::BitfieldEvent;
-use bytes::Bytes;
-
-pub enum ImportProgress {
-    CopyProgress { offset: u64 },
-    Size { size: u64 },
-    CopyDone,
-    OutboardProgress { offset: u64 },
-    Done { hash: Hash },
-    Error { cause: anyhow::Error },
-}
-
-#[derive(Debug)]
-pub enum ExportProgress {
-    Size { size: u64 },
-    CopyProgress { offset: u64 },
-    Done,
-    Error { cause: anyhow::Error },
-}
-
+use bao_tree::BlockSize;
 pub(crate) mod util {
     pub mod sparse_mem_file;
 }
+mod api;
 mod bitfield;
 mod mem;
+mod proto;
+mod readonly_mem;
 
-/// Trait for a blob store.
-///
-/// All fns take tokio sync primitives. We don't try to abstract
-/// over them because they have lots of goodies like reserve that there
-/// are no good existing abstractions for.
-///
-/// It is expected that a store will use some kind of internal tasks
-/// to manage operations, since most store implementations will want to
-/// perform IO.
-pub trait Store {
-    fn import_bao(
-        &self,
-        hash: Hash,
-        size: u64,
-        data: tokio::sync::mpsc::Receiver<BaoContentItem>,
-        out: tokio::sync::oneshot::Sender<Result<()>>,
-    ) -> bool;
-
-    fn export_bao(
-        &self,
-        hash: Hash,
-        ranges: ChunkRanges,
-        out: tokio::sync::mpsc::Sender<EncodedItem>,
-    ) -> bool;
-
-    fn observe(&self, hash: Hash, out: tokio::sync::mpsc::Sender<BitfieldEvent>) -> bool;
-
-    fn import_bytes(
-        &self,
-        bytes: Bytes,
-        progress: tokio::sync::mpsc::Sender<ImportProgress>,
-    ) -> bool;
+#[derive(Debug, Clone)]
+pub struct Store {
+    sender: tokio::sync::mpsc::Sender<proto::Command>,
 }
 
-pub type BoxStore = Box<dyn Store + Send + Sync + 'static>;
+impl Store {
+    pub fn from_sender(sender: tokio::sync::mpsc::Sender<proto::Command>) -> Self {
+        Self { sender }
+    }
+}
 
 /// Block size used by iroh, 2^4*1024 = 16KiB
 pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4);

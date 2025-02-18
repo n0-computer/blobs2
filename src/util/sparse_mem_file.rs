@@ -30,11 +30,11 @@ impl From<Vec<u8>> for SparseMemFile {
     }
 }
 
-impl TryInto<Vec<u8>> for SparseMemFile {
+impl TryFrom<SparseMemFile> for Vec<u8> {
     type Error = io::Error;
 
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        let (data, ranges) = self.into_parts();
+    fn try_from(value: SparseMemFile) -> Result<Self, Self::Error> {
+        let (data, ranges) = value.into_parts();
         if ranges == RangeSet2::from(0..data.len()) {
             Ok(data)
         } else {
