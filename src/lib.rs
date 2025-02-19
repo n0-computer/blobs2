@@ -1,12 +1,16 @@
 use bao_tree::BlockSize;
-pub(crate) mod util {
-    pub mod sparse_mem_file;
-}
 mod api;
+mod bao_file;
 mod bitfield;
+mod fs;
+mod hash;
 mod mem;
 mod proto;
 mod readonly_mem;
+mod test;
+mod util;
+
+pub use hash::{BlobFormat, Hash, HashAndFormat};
 
 #[derive(Debug, Clone)]
 pub struct Store {

@@ -208,3 +208,15 @@ async fn export_path_impl(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bao_tree::blake3;
+
+    #[tokio::test]
+    async fn smoke() {
+        let data = b"hello world";
+        let hash = blake3::hash(data);
+    }
+}

@@ -1,0 +1,131 @@
+use std::{borrow::Borrow, fmt, time::SystemTime};
+
+use bytes::Bytes;
+use derive_more::{From, Into};
+
+mod mem_or_file;
+mod sparse_mem_file;
+pub use mem_or_file::MemOrFile;
+pub use sparse_mem_file::SparseMemFile;
+
+/// A tag
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+pub struct Tag(pub Bytes);
+
+impl Borrow<[u8]> for Tag {
+    fn borrow(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl From<String> for Tag {
+    fn from(value: String) -> Self {
+        Self(Bytes::from(value))
+    }
+}
+
+impl From<&str> for Tag {
+    fn from(value: &str) -> Self {
+        Self(Bytes::from(value.to_owned()))
+    }
+}
+
+impl fmt::Display for Tag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0.as_ref();
+        match std::str::from_utf8(bytes) {
+            Ok(s) => write!(f, "\"{}\"", s),
+            Err(_) => write!(f, "{}", hex::encode(bytes)),
+        }
+    }
+}
+
+impl Tag {
+    /// Create a new tag that does not exist yet.
+    pub fn auto(time: SystemTime, exists: impl Fn(&[u8]) -> bool) -> Self {
+        let now = chrono::DateTime::<chrono::Utc>::from(time);
+        let mut i = 0;
+        loop {
+            let mut text = format!("auto-{}", now.format("%Y-%m-%dT%H:%M:%S%.3fZ"));
+            if i != 0 {
+                text.push_str(&format!("-{}", i));
+            }
+            if !exists(text.as_bytes()) {
+                return Self::from(text);
+            }
+            i += 1;
+        }
+    }
+}
+
+struct DD<T: fmt::Display>(T);
+
+impl<T: fmt::Display> fmt::Debug for DD<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for Tag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Tag").field(&DD(self)).finish()
+    }
+}
+
+pub(crate) fn limited_range(offset: u64, len: usize, buf_len: usize) -> std::ops::Range<usize> {
+    if offset < buf_len as u64 {
+        let start = offset as usize;
+        let end = start.saturating_add(len).min(buf_len);
+        start..end
+    } else {
+        0..0
+    }
+}
+
+/// zero copy get a limited slice from a `Bytes` as a `Bytes`.
+#[allow(dead_code)]
+pub(crate) fn get_limited_slice(bytes: &Bytes, offset: u64, len: usize) -> Bytes {
+    bytes.slice(limited_range(offset, len, bytes.len()))
+}
+
+mod redb_support {
+    use bytes::Bytes;
+    use redb::{Key as RedbKey, Value as RedbValue};
+
+    use super::Tag;
+
+    impl RedbValue for Tag {
+        type SelfType<'a> = Self;
+
+        type AsBytes<'a> = bytes::Bytes;
+
+        fn fixed_width() -> Option<usize> {
+            None
+        }
+
+        fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+        where
+            Self: 'a,
+        {
+            Self(Bytes::copy_from_slice(data))
+        }
+
+        fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+        where
+            Self: 'a,
+            Self: 'b,
+        {
+            value.0.clone()
+        }
+
+        fn type_name() -> redb::TypeName {
+            redb::TypeName::new("Tag")
+        }
+    }
+
+    impl RedbKey for Tag {
+        fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+            data1.cmp(data2)
+        }
+    }
+}

@@ -23,11 +23,12 @@ use tokio::{
     sync::mpsc::{self, error::TrySendError, OwnedPermit},
     task::{JoinError, JoinSet},
 };
+use tracing::error;
 
 use crate::{
     bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
     proto::*,
-    util::sparse_mem_file::SparseMemFile,
+    util::SparseMemFile,
     Store, IROH_BLOCK_SIZE,
 };
 
@@ -191,7 +192,7 @@ impl Actor {
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
         if let Err(e) = res {
-            tracing::error!("task failed: {e}");
+            error!("task failed: {e}");
         }
     }
 
@@ -526,16 +527,16 @@ impl Entry {
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.
 #[derive(Debug)]
-struct IncompleteEntry {
-    data: SparseMemFile,
-    outboard: SparseMemFile,
-    size: SizeInfo,
+pub(crate) struct IncompleteEntry {
+    pub(crate) data: SparseMemFile,
+    pub(crate) outboard: SparseMemFile,
+    pub(crate) size: SizeInfo,
     bitfield: ChunkRanges,
     observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
 impl IncompleteEntry {
-    fn size(&self) -> BaoBlobSize {
+    pub fn size(&self) -> BaoBlobSize {
         let size = self.size.current_size();
         if let Some(size) = NonZeroU64::new(size) {
             return BaoBlobSize::from_size_and_ranges(size, &self.bitfield);
