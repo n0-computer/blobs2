@@ -7,8 +7,10 @@ use std::{io, path::PathBuf, pin::Pin};
 use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
+use tokio::sync::{mpsc, oneshot};
 
 pub use crate::bitfield::BitfieldEvent;
+use crate::{util::Tag, HashAndFormat};
 pub use bao_tree::io::mixed::EncodedItem;
 
 /// Import bao encoded data for the given hash with the iroh block size.
@@ -76,7 +78,26 @@ impl std::fmt::Debug for ImportByteStream {
 #[derive(Debug)]
 pub struct ImportPath {
     pub path: PathBuf,
-    pub out: tokio::sync::mpsc::Sender<ImportProgress>,
+    pub out: mpsc::Sender<ImportProgress>,
+}
+
+#[derive(derive_more::Debug)]
+pub struct Tags {
+    #[debug(skip)]
+    pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
+}
+
+#[derive(derive_more::Debug)]
+pub struct SetTag {
+    pub tag: Tag,
+    pub value: Option<HashAndFormat>,
+    pub tx: oneshot::Sender<io::Result<()>>,
+}
+
+#[derive(Debug)]
+pub struct CreateTag {
+    pub hash: HashAndFormat,
+    pub tx: oneshot::Sender<io::Result<Tag>>,
 }
 
 #[derive(Debug, derive_more::From)]
@@ -88,6 +109,9 @@ pub enum Command {
     ImportByteStream(ImportByteStream),
     ImportPath(ImportPath),
     ExportPath(ExportPath),
+    Tags(Tags),
+    SetTag(SetTag),
+    CreateTag(CreateTag),
 }
 
 pub enum ImportProgress {
@@ -106,3 +130,6 @@ pub enum ExportProgress {
     Done,
     Error { cause: anyhow::Error },
 }
+
+/// A fallible but owned iterator over the entries in a store.
+pub type DbIter<T> = Box<dyn Iterator<Item = io::Result<T>> + Send + Sync + 'static>;

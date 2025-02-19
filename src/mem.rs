@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io::{self, Write},
     num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, RwLock},
+    time::SystemTime,
 };
 
 use bao_tree::{
@@ -28,8 +29,8 @@ use tracing::error;
 use crate::{
     bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
     proto::*,
-    util::SparseMemFile,
-    Store, IROH_BLOCK_SIZE,
+    util::{SparseMemFile, Tag},
+    HashAndFormat, Store, IROH_BLOCK_SIZE,
 };
 
 /// Keep track of the most precise size we know of.
@@ -79,6 +80,7 @@ impl Store {
                 import_tasks: JoinSet::new(),
                 state: State {
                     data: HashMap::new(),
+                    tags: BTreeMap::new(),
                 },
             }
             .run(),
@@ -140,6 +142,32 @@ impl Actor {
             Command::ExportPath(ExportPath { hash, target, out }) => {
                 let entry = self.state.data.get(&hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, target, out));
+            }
+            Command::Tags(Tags { tx: out }) => {
+                let items = self
+                    .state
+                    .tags
+                    .iter()
+                    .map(|(tag, hash)| (tag.clone(), hash.clone()))
+                    .collect::<Vec<_>>();
+                out.send(Ok(items)).ok();
+            }
+            Command::SetTag(SetTag {
+                tag,
+                value,
+                tx: out,
+            }) => {
+                if let Some(value) = value {
+                    self.state.tags.insert(tag, value);
+                } else {
+                    self.state.tags.remove(&tag);
+                }
+                out.send(Ok(())).ok();
+            }
+            Command::CreateTag(CreateTag { hash, tx }) => {
+                let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
+                self.state.tags.insert(tag.clone(), hash);
+                tx.send(Ok(tag)).ok();
             }
         }
     }
@@ -466,6 +494,7 @@ impl Outboard for ExportOutboard {
 
 struct State {
     data: HashMap<Hash, Arc<RwLock<Entry>>>,
+    tags: BTreeMap<Tag, HashAndFormat>,
 }
 
 #[derive(Debug, derive_more::From)]

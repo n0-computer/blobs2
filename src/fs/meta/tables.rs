@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 
 use redb::{ReadableTable, TableDefinition, TableError};
 
-use super::{EntryState, PathOptions};
-use crate::{util::Tag, Hash, HashAndFormat};
+use super::EntryState;
+use crate::{fs::options::PathOptions, util::Tag, Hash, HashAndFormat};
 
 pub(super) const BLOBS_TABLE: TableDefinition<Hash, EntryState> = TableDefinition::new("blobs-0");
 

@@ -15,7 +15,6 @@ use tracing::trace;
 mod entry_state;
 mod meta;
 mod options;
-mod tables;
 mod util;
 use options::{Options, PathOptions};
 
@@ -57,7 +56,43 @@ struct Actor {
 }
 
 impl Actor {
-    fn handle_command(&mut self, cmd: Command) {}
+    async fn handle_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::CreateTag(CreateTag { hash, tx }) => {
+                self.db.send(meta::CreateTag { hash, tx }.into()).await.ok();
+            }
+            Command::SetTag(SetTag {
+                tag,
+                value,
+                tx: out,
+            }) => {
+                self.db
+                    .send(
+                        meta::SetTag {
+                            tag,
+                            value,
+                            tx: out,
+                        }
+                        .into(),
+                    )
+                    .await
+                    .ok();
+            }
+            Command::Tags(Tags { tx }) => {
+                self.db
+                    .send(
+                        meta::Tags {
+                            filter: Box::new(|_, k, v| Some((k.value(), v.value()))),
+                            tx,
+                        }
+                        .into(),
+                    )
+                    .await
+                    .ok();
+            }
+            _ => {}
+        }
+    }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
         if let Err(e) = res {
@@ -72,7 +107,7 @@ impl Actor {
                     let Some(cmd) = cmd else {
                         break;
                     };
-                    self.handle_command(cmd);
+                    self.handle_command(cmd).await;
                 }
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);
@@ -121,7 +156,7 @@ impl Actor {
 
 impl Store {
     /// Load or create a new store.
-    pub async fn load(root: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn load_redb(root: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = root.as_ref();
         let db_path = path.join("blobs.db");
         let options = Options {
@@ -129,11 +164,11 @@ impl Store {
             inline: Default::default(),
             batch: Default::default(),
         };
-        Self::new(db_path, options).await
+        Self::load_redb_with_opts(db_path, options).await
     }
 
     /// Load or create a new store with custom options.
-    pub async fn new(path: PathBuf, options: Options) -> anyhow::Result<Self> {
+    pub async fn load_redb_with_opts(path: PathBuf, options: Options) -> anyhow::Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
@@ -155,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
-        let store = Store::load("test").await?;
+        let store = Store::load_redb("test").await?;
         Ok(())
     }
 }

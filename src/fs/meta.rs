@@ -7,10 +7,11 @@ use redb::{Database, DatabaseError, ReadableTable};
 use tokio::sync::mpsc;
 mod proto;
 pub use proto::*;
+mod tables;
+use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
-    tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables},
     util::PeekableReceiver,
 };
 use crate::{util::Tag, Hash, IROH_BLOCK_SIZE};
@@ -134,12 +135,13 @@ impl Actor {
                     }
                 }
                 Err(e) => {
-                    res.push(Err(e));
+                    res.push(Err(anyhow::Error::from(e)));
                 }
             }
             index += 1;
         }
-        tx.send(Ok(res)).ok();
+        let res = res.into_iter().collect::<Result<Vec<_>, _>>();
+        tx.send(res).ok();
         Ok(())
     }
 

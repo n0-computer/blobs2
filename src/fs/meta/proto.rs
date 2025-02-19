@@ -1,6 +1,7 @@
 //! Protocol for the metadata database.
 use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
 use bytes::Bytes;
+use n0_future::io;
 use redb::{AccessGuard, StorageError};
 use tokio::sync::oneshot;
 
@@ -59,8 +60,13 @@ pub struct Tags {
     #[debug(skip)]
     pub filter: FilterPredicate<Tag, HashAndFormat>,
     #[allow(clippy::type_complexity)]
-    pub tx:
-        oneshot::Sender<ActorResult<Vec<std::result::Result<(Tag, HashAndFormat), StorageError>>>>,
+    pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
+}
+
+impl From<Tags> for Command {
+    fn from(cmd: Tags) -> Self {
+        Self::ReadOnly(cmd.into())
+    }
 }
 
 /// Modification method: set a tag to a value, or remove it.
@@ -68,14 +74,26 @@ pub struct Tags {
 pub struct SetTag {
     pub tag: Tag,
     pub value: Option<HashAndFormat>,
-    pub tx: oneshot::Sender<ActorResult<()>>,
+    pub tx: oneshot::Sender<io::Result<()>>,
+}
+
+impl From<SetTag> for Command {
+    fn from(cmd: SetTag) -> Self {
+        Self::ReadWrite(cmd.into())
+    }
 }
 
 /// Modification method: create a new unique tag and set it to a value.
 #[derive(Debug)]
 pub struct CreateTag {
     pub hash: HashAndFormat,
-    pub tx: oneshot::Sender<ActorResult<Tag>>,
+    pub tx: oneshot::Sender<io::Result<Tag>>,
+}
+
+impl From<CreateTag> for Command {
+    fn from(cmd: CreateTag) -> Self {
+        Self::ReadWrite(cmd.into())
+    }
 }
 
 #[derive(Debug)]
@@ -83,7 +101,7 @@ pub struct SyncDb {
     pub tx: oneshot::Sender<ActorResult<()>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
@@ -91,7 +109,7 @@ pub enum ReadOnlyCommand {
     Blobs(Blobs),
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum ReadWriteCommand {
     Merge(Update),
     Delete(Delete),
@@ -99,7 +117,7 @@ pub enum ReadWriteCommand {
     CreateTag(CreateTag),
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum TopLevelCommand {
     SyncDb(SyncDb),
 }

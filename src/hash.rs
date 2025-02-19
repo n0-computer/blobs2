@@ -462,7 +462,7 @@ mod tests {
         assert_eq_hex!(serialized, expected);
     }
 
-    #[cfg(feature = "redb")]
+    // #[cfg(feature = "redb")]
     #[test]
     fn hash_redb() {
         use redb::Value as RedbValue;
