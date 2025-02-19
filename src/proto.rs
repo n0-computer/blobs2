@@ -132,4 +132,4 @@ pub enum ExportProgress {
 }
 
 /// A fallible but owned iterator over the entries in a store.
-pub type DbIter<T> = Box<dyn Iterator<Item = io::Result<T>> + Send + Sync + 'static>;
+pub type DbIter<T> = Box<dyn Iterator<Item = anyhow::Result<T>> + Send + Sync + 'static>;

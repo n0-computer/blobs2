@@ -1,7 +1,16 @@
 use crate::bao_file::BaoFileConfig;
 use crate::bao_file::BaoFileStorage;
+use crate::util::MemOrFile;
+use crate::util::SenderProgressExt;
 use crate::Hash;
+use bytes::Bytes;
+use n0_future::future::yield_now;
+use n0_future::StreamExt;
 use std::fs;
+use std::fs::File;
+use std::io;
+use std::io::Read;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,10 +56,10 @@ pub struct BaoFileHandleInner {
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 struct Actor {
-    path_options: PathOptions,
+    options: Arc<Options>,
     commands: mpsc::Receiver<Command>,
     unit_tasks: JoinSet<()>,
-    import_tasks: JoinSet<()>,
+    import_tasks: JoinSet<anyhow::Result<ImportEntry>>,
     db: mpsc::Sender<meta::Command>,
     rt: tokio::runtime::Runtime,
 }
@@ -90,6 +99,18 @@ impl Actor {
                     .await
                     .ok();
             }
+            Command::ImportBytes(ImportBytes { data, out }) => {
+                self.import_tasks
+                    .spawn(import_bytes_task(data, self.options.clone(), out));
+            }
+            Command::ImportByteStream(ImportByteStream { data, out }) => {
+                self.import_tasks
+                    .spawn(import_byte_stream_task(data, self.options.clone(), out));
+            }
+            Command::ImportPath(ImportPath { path, out }) => {
+                self.import_tasks
+                    .spawn(import_path_task(path, self.options.clone(), out));
+            }
             _ => {}
         }
     }
@@ -123,7 +144,7 @@ impl Actor {
         db_path: PathBuf,
         rt: tokio::runtime::Runtime,
         receiver: mpsc::Receiver<Command>,
-        options: Options,
+        options: Arc<Options>,
     ) -> anyhow::Result<Self> {
         trace!(
             "creating data directory: {}",
@@ -144,7 +165,7 @@ impl Actor {
         let db_actor = meta::Actor::new(db_path, db_recv)?;
         rt.spawn(db_actor.run());
         Ok(Self {
-            path_options: options.path,
+            options,
             commands: receiver,
             unit_tasks: JoinSet::new(),
             import_tasks: JoinSet::new(),
@@ -176,10 +197,139 @@ impl Store {
         let handle = rt.handle().clone();
         let (sender, receiver) = mpsc::channel(100);
         let actor = handle
-            .spawn(Actor::new(path, rt, receiver, options))
+            .spawn(Actor::new(path, rt, receiver, Arc::new(options)))
             .await??;
         handle.spawn(actor.run());
         Ok(Self::from_sender(sender))
+    }
+}
+
+#[derive(derive_more::Debug)]
+pub(crate) enum ImportSource {
+    TempFile((PathBuf, File)),
+    External(PathBuf),
+    Memory(#[debug(skip)] Bytes),
+}
+
+impl ImportSource {
+    fn content(&self) -> MemOrFile<&[u8], &Path> {
+        match self {
+            Self::TempFile((path, file)) => MemOrFile::File(path.as_path()),
+            Self::External(path) => MemOrFile::File(path.as_path()),
+            Self::Memory(data) => MemOrFile::Mem(data.as_ref()),
+        }
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        match self {
+            Self::TempFile((path, file)) => std::fs::metadata(path).map(|m| m.len()),
+            Self::External(path) => std::fs::metadata(path).map(|m| m.len()),
+            Self::Memory(data) => Ok(data.len() as u64),
+        }
+    }
+}
+
+struct ImportEntry {
+    source: ImportSource,
+}
+
+async fn import_bytes_task(
+    data: Bytes,
+    options: Arc<Options>,
+    out: mpsc::Sender<ImportProgress>,
+) -> anyhow::Result<ImportEntry> {
+    import_byte_stream_task(Box::pin(n0_future::stream::once(Ok(data))), options, out).await
+}
+
+async fn import_byte_stream_task(
+    mut stream: BoxedByteStream,
+    options: Arc<Options>,
+    out: mpsc::Sender<ImportProgress>,
+) -> anyhow::Result<ImportEntry> {
+    let mut size = 0;
+    let mut data = Vec::new();
+    let mut disk = None;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let new_size = size + chunk.len() as u64;
+        if new_size > options.inline.max_data_inlined {
+            let temp_path = options.path.temp_file_name();
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(&data)?;
+            file.write_all(&chunk)?;
+            data.clear();
+            disk = Some((file, temp_path));
+            break;
+        } else {
+            data.extend_from_slice(&chunk);
+            size = new_size;
+        }
+        // todo: don't send progress for every chunk if the chunks are small?
+        out.send(ImportProgress::CopyProgress { offset: size })
+            .await?;
+    }
+    if let Some((mut file, temp_path)) = disk {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk)?;
+            size += chunk.len() as u64;
+            out.send(ImportProgress::CopyProgress { offset: size })
+                .await?;
+        }
+        out.send(ImportProgress::CopyDone).await?;
+        Ok(ImportEntry {
+            source: ImportSource::TempFile((temp_path, file)),
+        })
+    } else {
+        out.send(ImportProgress::CopyDone).await?;
+        Ok(ImportEntry {
+            source: ImportSource::Memory(data.into()),
+        })
+    }
+}
+
+async fn import_path_task(
+    path: PathBuf,
+    options: Arc<Options>,
+    out: mpsc::Sender<ImportProgress>,
+) -> anyhow::Result<ImportEntry> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());
+    }
+    if !path.is_file() && !path.is_symlink() {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidInput, "path is not a file or symlink").into(),
+        );
+    }
+
+    let size = path.metadata()?.len();
+    out.send_progress(ImportProgress::Size { size })?;
+    if size <= options.inline.max_data_inlined {
+        let data = std::fs::read(path)?;
+        out.send_progress(ImportProgress::CopyDone)?;
+        Ok(ImportEntry {
+            source: ImportSource::Memory(data.into()),
+        })
+    } else {
+        let temp_path = options.path.temp_file_name();
+        // copy from path to temp_path in increments of 64k and send progress
+        let mut file = File::create(&temp_path)?;
+        let mut source = File::open(&path)?;
+        let mut buffer = [0u8; 64 * 1024];
+        let mut offset = 0;
+        while let Ok(n) = source.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buffer[..n])?;
+            offset += n as u64;
+            out.send_progress(ImportProgress::CopyProgress { offset })?;
+            yield_now().await;
+        }
+        out.send_progress(ImportProgress::CopyDone)?;
+        Ok(ImportEntry {
+            source: ImportSource::TempFile((temp_path, file)),
+        })
     }
 }
 

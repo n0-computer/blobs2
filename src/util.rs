@@ -7,6 +7,7 @@ mod mem_or_file;
 mod sparse_mem_file;
 pub use mem_or_file::MemOrFile;
 pub use sparse_mem_file::SparseMemFile;
+use tokio::sync::mpsc;
 
 /// A tag
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
@@ -126,6 +127,20 @@ mod redb_support {
     impl RedbKey for Tag {
         fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
             data1.cmp(data2)
+        }
+    }
+}
+
+pub trait SenderProgressExt<T> {
+    fn send_progress(&self, value: T) -> std::result::Result<(), mpsc::error::TrySendError<T>>;
+}
+
+impl<T> SenderProgressExt<T> for tokio::sync::mpsc::Sender<T> {
+    fn send_progress(&self, value: T) -> std::result::Result<(), mpsc::error::TrySendError<T>> {
+        match self.try_send(value) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(e @ mpsc::error::TrySendError::Closed(_)) => Err(e),
         }
     }
 }
