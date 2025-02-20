@@ -23,7 +23,7 @@ use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 
-use crate::{proto::*, Store, IROH_BLOCK_SIZE};
+use crate::{proto::*, util::Tag, HashAndFormat, Store, IROH_BLOCK_SIZE};
 
 impl Store {
     pub fn import_bytes(&self, data: bytes::Bytes) -> ImportResult {
@@ -134,6 +134,24 @@ impl Store {
         data: Bytes,
     ) -> anyhow::Result<()> {
         self.import_bao_reader(hash, ranges, data).await
+    }
+
+    pub async fn set_tag(&self, tag: Tag, value: HashAndFormat) -> anyhow::Result<()> {
+        self.set_tag_impl(tag, Some(value)).await
+    }
+
+    async fn set_tag_impl(&self, tag: Tag, value: Option<HashAndFormat>) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender.send(SetTag { tag, value, tx }.into()).await?;
+        rx.await??;
+        Ok(())
+    }
+
+    pub async fn sync_db(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender.send(SyncDb { tx }.into()).await?;
+        rx.await??;
+        Ok(())
     }
 }
 

@@ -107,3 +107,14 @@ pub struct Options {
     /// Transaction batching options.
     pub batch: BatchOptions,
 }
+
+impl Options {
+    /// Create new optinos with the given root path and everything else default.
+    pub fn new(root: &Path) -> Self {
+        Self {
+            path: PathOptions::new(root),
+            inline: InlineOptions::default(),
+            batch: BatchOptions::default(),
+        }
+    }
+}

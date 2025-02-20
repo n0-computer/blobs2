@@ -94,13 +94,18 @@ pub struct Tags {
 pub struct SetTag {
     pub tag: Tag,
     pub value: Option<HashAndFormat>,
-    pub tx: oneshot::Sender<io::Result<()>>,
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
 #[derive(Debug)]
 pub struct CreateTag {
     pub hash: HashAndFormat,
-    pub tx: oneshot::Sender<io::Result<Tag>>,
+    pub tx: oneshot::Sender<anyhow::Result<Tag>>,
+}
+
+#[derive(Debug)]
+pub struct SyncDb {
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
 #[derive(Debug, derive_more::From)]
@@ -115,6 +120,7 @@ pub enum Command {
     Tags(Tags),
     SetTag(SetTag),
     CreateTag(CreateTag),
+    SyncDb(SyncDb),
 }
 
 #[derive(Debug)]

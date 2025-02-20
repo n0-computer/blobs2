@@ -9,6 +9,7 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
+use tracing::trace;
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -51,6 +52,7 @@ impl From<ActorError> for io::Error {
 
 pub type ActorResult<T> = Result<T, ActorError>;
 
+#[derive(Debug)]
 pub struct Actor {
     db: redb::Database,
     cmds: PeekableReceiver<Command>,
@@ -58,6 +60,10 @@ pub struct Actor {
 
 impl Actor {
     pub fn new(db_path: PathBuf, cmds: mpsc::Receiver<Command>) -> anyhow::Result<Self> {
+        trace!(
+            "creating or opening meta database at {:?}",
+            db_path.display()
+        );
         let db = match redb::Database::create(db_path) {
             Ok(db) => db,
             Err(DatabaseError::UpgradeRequired(1)) => {
@@ -65,6 +71,10 @@ impl Actor {
             }
             Err(err) => return Err(err.into()),
         };
+        let tx = db.begin_write()?;
+        let mut ds = DeleteSet::default();
+        Tables::new(&tx, &mut ds)?;
+        tx.commit()?;
         let cmds = PeekableReceiver::new(cmds);
         Ok(Self { db, cmds })
     }
@@ -94,7 +104,8 @@ impl Actor {
         Ok(())
     }
 
-    fn dump(tables: &impl ReadableTables, _cmd: Dump) -> ActorResult<()> {
+    fn dump(tables: &impl ReadableTables, cmd: Dump) -> ActorResult<()> {
+        trace!("dumping database");
         for e in tables.blobs().iter()? {
             let (k, v) = e?;
             let k = k.value();
@@ -119,6 +130,7 @@ impl Actor {
             let v = v.value();
             println!("inline_outboard: {} -> {:?}", k.to_hex(), v.len());
         }
+        cmd.tx.send(Ok(())).ok();
         Ok(())
     }
 
@@ -259,11 +271,11 @@ impl Actor {
 
     fn set_tag(tables: &mut Tables, cmd: SetTag) -> ActorResult<()> {
         let SetTag { tag, value, tx } = cmd;
-        match value {
-            Some(value) => tables.tags.insert(tag, value)?,
-            None => tables.tags.remove(tag)?,
+        let res = match value {
+            Some(value) => tables.tags.insert(tag, value).map(|_| ()),
+            None => tables.tags.remove(tag).map(|_| ()),
         };
-        tx.send(Ok(())).ok();
+        tx.send(res.map_err(anyhow::Error::from)).ok();
         Ok(())
     }
 
@@ -305,6 +317,7 @@ impl Actor {
     pub async fn run(mut self) -> ActorResult<()> {
         let mut db = self.db;
         while let Some(cmd) = self.cmds.recv().await {
+            trace!("{cmd:?}");
             match cmd {
                 Command::TopLevel(cmd) => {
                     Self::handle_toplevel(&mut db, cmd)?;
@@ -319,6 +332,8 @@ impl Actor {
                     let tx = db.begin_write()?;
                     let mut tables = Tables::new(&tx, &mut delete_set)?;
                     Self::handle_readwrite(&mut tables, cmd)?;
+                    drop(tables);
+                    tx.commit()?;
                 }
             }
         }

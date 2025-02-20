@@ -23,13 +23,13 @@ use std::{
 };
 use tracing::trace;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use n0_future::StreamExt;
 use tokio::{sync::mpsc, task::yield_now};
 
 use super::{meta::raw_outboard_size, options::Options};
 use crate::{
-    proto::{BoxedByteStream, ImportByteStream, ImportBytes, ImportPath, ImportProgress},
+    proto::{ImportByteStream, ImportBytes, ImportPath, ImportProgress},
     util::{MemOrFile, ProgressReader, SenderProgressExt},
     IROH_BLOCK_SIZE,
 };
@@ -41,7 +41,7 @@ use crate::{
 ///
 /// This serves as an intermediate result between copying and outboard computation.
 #[derive(derive_more::Debug)]
-enum ImportSource {
+pub enum ImportSource {
     TempFile(PathBuf, File, u64),
     External(PathBuf, File, u64),
     Memory(#[debug(skip)] Bytes),
@@ -76,9 +76,10 @@ impl ImportSource {
 /// it can be moved to the final location (basically it needs to be on the same device).
 #[derive(Debug)]
 pub struct ImportEntry {
-    hash: Hash,
-    source: ImportSource,
-    outboard: MemOrFile<Bytes, PathBuf>,
+    pub hash: Hash,
+    pub source: ImportSource,
+    pub outboard: MemOrFile<Bytes, PathBuf>,
+    pub out: mpsc::OwnedPermit<ImportProgress>,
 }
 
 /// Start a task to import from a [`Bytes`] in memory.
@@ -196,11 +197,11 @@ async fn compute_outboard(
         init_outboard(data, &mut outboard, send_progress)?;
         (outboard.root, MemOrFile::Mem(Bytes::from(outboard_file)))
     };
-    out.send(ImportProgress::Done { hash }).await?;
     Ok(ImportEntry {
         hash: hash.into(),
         source,
         outboard,
+        out: out.reserve_owned().await?,
     })
 }
 
@@ -283,7 +284,7 @@ mod tests {
 
     use crate::{
         fs::options::{InlineOptions, PathOptions},
-        proto::ImportMode,
+        proto::{BoxedByteStream, ImportMode},
         BlobFormat,
     };
 
@@ -300,71 +301,68 @@ mod tests {
         Ok(res)
     }
 
+    fn assert_expected_progress(progress: &[ImportProgress]) {
+        assert!(progress
+            .iter()
+            .find(|x| matches!(x, ImportProgress::Size { .. }))
+            .is_some());
+        assert!(progress
+            .iter()
+            .find(|x| matches!(x, ImportProgress::CopyDone { .. }))
+            .is_some());
+    }
+
     async fn test_import_bytes_task(data: Bytes, options: Arc<Options>) -> TestResult<()> {
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
         let (tx, rx) = mpsc::channel(1024 * 1024);
         let cmd = ImportBytes { data, out: tx };
         let res = import_bytes_task(cmd, options).await;
-        let progress = drain(rx).await?;
         let Some(res) = res else {
             panic!("import failed");
         };
-        let actual_outboard = match &res.outboard {
+        let ImportEntry { outboard, out, .. } = res;
+        drop(out);
+        let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
             MemOrFile::File(path) => std::fs::read(path)?.into(),
         };
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Size { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::CopyDone { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Done { .. }))
-            .is_some());
         assert_eq!(expected_outboard.data.as_slice(), actual_outboard.as_ref());
+        let progress = drain(rx).await?;
+        assert_expected_progress(&progress);
         Ok(())
     }
 
     fn chunk_bytes(data: Bytes, chunk_size: usize) -> impl Iterator<Item = Bytes> {
         assert!(chunk_size > 0, "Chunk size must be positive");
-        (0..data.len()).step_by(chunk_size).map(move |i| {
-            data.slice(i..std::cmp::min(i + chunk_size, data.len()))
-        })
+        (0..data.len())
+            .step_by(chunk_size)
+            .map(move |i| data.slice(i..std::cmp::min(i + chunk_size, data.len())))
     }
 
     async fn test_import_byte_stream_task(data: Bytes, options: Arc<Options>) -> TestResult<()> {
-        let stream: BoxedByteStream = Box::pin(stream::iter(chunk_bytes(data.clone(), 999).map(Ok)));
+        let stream: BoxedByteStream =
+            Box::pin(stream::iter(chunk_bytes(data.clone(), 999).map(Ok)));
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
         let (tx, rx) = mpsc::channel(1024 * 1024);
-        let cmd = ImportByteStream { data: stream, out: tx };
+        let cmd = ImportByteStream {
+            data: stream,
+            out: tx,
+        };
         let res = import_byte_stream_task(cmd, options).await;
-        let progress = drain(rx).await?;
         let Some(res) = res else {
             panic!("import failed");
         };
-        let actual_outboard = match &res.outboard {
+        let ImportEntry { outboard, out, .. } = res;
+        drop(out);
+        let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
             MemOrFile::File(path) => std::fs::read(path)?.into(),
         };
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Size { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::CopyDone { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Done { .. }))
-            .is_some());
         assert_eq!(expected_outboard.data.as_slice(), actual_outboard.as_ref());
+        let progress = drain(rx).await?;
+        assert_expected_progress(&progress);
         Ok(())
     }
 
@@ -381,28 +379,18 @@ mod tests {
             out: tx,
         };
         let res = import_path_task(cmd, options).await;
-        let progress = drain(rx).await?;
         let Some(res) = res else {
-            println!("{:?}", progress);
             panic!("import failed");
         };
-        let actual_outboard = match &res.outboard {
+        let ImportEntry { outboard, out, .. } = res;
+        drop(out);
+        let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
             MemOrFile::File(path) => std::fs::read(path)?.into(),
         };
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Size { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::CopyDone { .. }))
-            .is_some());
-        assert!(progress
-            .iter()
-            .find(|x| matches!(x, ImportProgress::Done { .. }))
-            .is_some());
         assert_eq!(expected_outboard.data.as_slice(), actual_outboard.as_ref());
+        let progress = drain(rx).await?;
+        assert_expected_progress(&progress);
         Ok(())
     }
 

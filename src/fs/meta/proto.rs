@@ -2,10 +2,13 @@
 use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
 use bytes::Bytes;
 use n0_future::io;
+use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
 use tokio::sync::oneshot;
 
 use super::ActorResult;
+
+pub use crate::proto::SyncDb;
 
 /// Get the entry state for a hash.
 ///
@@ -22,7 +25,9 @@ pub struct Get {
 /// This will read from the blobs table and enrich the result with the content
 /// of the inline data and inline outboard tables if necessary.
 #[derive(Debug)]
-pub struct Dump;
+pub struct Dump {
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
+}
 
 #[derive(Debug)]
 pub struct Update {
@@ -30,7 +35,7 @@ pub struct Update {
     pub hash: Hash,
     pub state: EntryState<Bytes>,
     /// do I need this? Optional?
-    pub tx: oneshot::Sender<ActorResult<()>>,
+    pub tx: Option<oneshot::Sender<ActorResult<()>>>,
 }
 
 #[derive(Debug)]
@@ -63,45 +68,24 @@ pub struct Tags {
     pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
 }
 
-impl From<Tags> for Command {
-    fn from(cmd: Tags) -> Self {
-        Self::ReadOnly(cmd.into())
-    }
-}
-
 /// Modification method: set a tag to a value, or remove it.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct SetTag {
     pub tag: Tag,
     pub value: Option<HashAndFormat>,
-    pub tx: oneshot::Sender<io::Result<()>>,
-}
-
-impl From<SetTag> for Command {
-    fn from(cmd: SetTag) -> Self {
-        Self::ReadWrite(cmd.into())
-    }
+    #[debug(skip)]
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
 /// Modification method: create a new unique tag and set it to a value.
 #[derive(Debug)]
 pub struct CreateTag {
     pub hash: HashAndFormat,
-    pub tx: oneshot::Sender<io::Result<Tag>>,
-}
-
-impl From<CreateTag> for Command {
-    fn from(cmd: CreateTag) -> Self {
-        Self::ReadWrite(cmd.into())
-    }
+    pub tx: oneshot::Sender<anyhow::Result<Tag>>,
 }
 
 #[derive(Debug)]
-pub struct SyncDb {
-    pub tx: oneshot::Sender<ActorResult<()>>,
-}
-
-#[derive(Debug, derive_more::From)]
+#[enum_conversions(Command)]
 pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
@@ -109,7 +93,8 @@ pub enum ReadOnlyCommand {
     Blobs(Blobs),
 }
 
-#[derive(Debug, derive_more::From)]
+#[derive(Debug)]
+#[enum_conversions(Command)]
 pub enum ReadWriteCommand {
     Merge(Update),
     Delete(Delete),
@@ -117,12 +102,14 @@ pub enum ReadWriteCommand {
     CreateTag(CreateTag),
 }
 
-#[derive(Debug, derive_more::From)]
+#[derive(Debug)]
+#[enum_conversions(Command)]
 pub enum TopLevelCommand {
     SyncDb(SyncDb),
 }
 
 #[derive(Debug)]
+#[enum_conversions()]
 pub enum Command {
     ReadOnly(ReadOnlyCommand),
     ReadWrite(ReadWriteCommand),

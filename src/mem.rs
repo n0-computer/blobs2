@@ -169,6 +169,9 @@ impl Actor {
                 self.state.tags.insert(tag.clone(), hash);
                 tx.send(Ok(tag)).ok();
             }
+            Command::SyncDb(SyncDb { tx }) => {
+                tx.send(Ok(())).ok();
+            }
         }
     }
 

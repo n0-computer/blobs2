@@ -1,12 +1,18 @@
 use crate::bao_file::BaoFileConfig;
 use crate::bao_file::BaoFileStorage;
+use crate::util::MemOrFile;
 use crate::Hash;
+use entry_state::DataLocation;
+use entry_state::OutboardLocation;
+use import::ImportSource;
+use nested_enum_utils::enum_conversions;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::JoinError;
 use tokio::task::JoinSet;
 use tracing::error;
@@ -49,11 +55,20 @@ pub struct BaoFileHandleInner {
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
+#[derive(Debug)]
+#[enum_conversions()]
+pub enum FsCommand {
+    Dump(meta::Dump),
+}
+
+#[derive(Debug)]
 struct Actor {
     // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
     options: Arc<Options>,
     // Receiver for incoming user commands.
     commands: mpsc::Receiver<Command>,
+    // Receiver for incoming file store specific commands.
+    fs_commands: mpsc::Receiver<FsCommand>,
     // Tasks that are not expected to return a result. These are mainly bao import and export tasks.
     unit_tasks: JoinSet<()>,
     // Import tasks that are expected to return an import entry that is to be integrated with the store data.
@@ -61,7 +76,9 @@ struct Actor {
     // Database actor that handles meta data.
     db: mpsc::Sender<meta::Command>,
     // our private tokio runtime. It has to live somewhere.
-    rt: tokio::runtime::Runtime,
+    rt: Option<tokio::runtime::Runtime>,
+    // monotonic counter
+    epoch: u64,
 }
 
 impl Actor {
@@ -70,20 +87,9 @@ impl Actor {
             Command::CreateTag(CreateTag { hash, tx }) => {
                 self.db.send(meta::CreateTag { hash, tx }.into()).await.ok();
             }
-            Command::SetTag(SetTag {
-                tag,
-                value,
-                tx: out,
-            }) => {
+            Command::SetTag(SetTag { tag, value, tx }) => {
                 self.db
-                    .send(
-                        meta::SetTag {
-                            tag,
-                            value,
-                            tx: out,
-                        }
-                        .into(),
-                    )
+                    .send(meta::SetTag { tag, value, tx }.into())
                     .await
                     .ok();
             }
@@ -111,7 +117,18 @@ impl Actor {
                 self.import_tasks
                     .spawn(import_path_task(cmd, self.options.clone()));
             }
+            Command::SyncDb(cmd) => {
+                self.db.send(cmd.into()).await.ok();
+            }
             _ => {}
+        }
+    }
+
+    async fn handle_fs_command(&mut self, cmd: FsCommand) {
+        match cmd {
+            FsCommand::Dump(cmd) => {
+                self.db.send(cmd.into()).await.ok();
+            }
         }
     }
 
@@ -121,7 +138,7 @@ impl Actor {
         }
     }
 
-    fn finish_import(&mut self, res: Result<Option<ImportEntry>, JoinError>) {
+    async fn finish_import(&mut self, res: Result<Option<ImportEntry>, JoinError>) {
         let import_data = match res {
             Ok(Some(entry)) => entry,
             Ok(None) => {
@@ -137,6 +154,61 @@ impl Actor {
                 return;
             }
         };
+        let hash: crate::Hash = import_data.hash.into();
+        // convert the import source to a data location and drop the open files
+        let data_location = match import_data.source {
+            ImportSource::Memory(data) => DataLocation::Inline(data),
+            ImportSource::External(path, _file, size) => DataLocation::External(vec![path], size),
+            ImportSource::TempFile(path, _file, size) => {
+                // this will always work on any unix, but on windows there might be an issue if the target file is open!
+                // possibly open with FILE_SHARE_DELETE on windows?
+                let target = self.options.path.owned_data_path(&hash);
+                trace!(
+                    "moving temp file to owned data location: {} -> {}",
+                    path.display(),
+                    target.display()
+                );
+                if let Err(cause) = std::fs::rename(path, target) {
+                    error!("failed to move temp file to owned data location: {cause}");
+                }
+                DataLocation::Owned(size)
+            }
+        };
+        let outboard_location = match import_data.outboard {
+            MemOrFile::Mem(bytes) if bytes.is_empty() => OutboardLocation::NotNeeded,
+            MemOrFile::Mem(bytes) => OutboardLocation::Inline(bytes),
+            MemOrFile::File(path) => {
+                // the same caveat as above applies here
+                let target = self.options.path.owned_outboard_path(&hash);
+                trace!(
+                    "moving temp file to owned outboard location: {} -> {}",
+                    path.display(),
+                    target.display()
+                );
+                if let Err(cause) = std::fs::rename(path, target) {
+                    error!("failed to move temp file to owned outboard location: {cause}");
+                }
+                OutboardLocation::Owned
+            }
+        };
+        let state = EntryState::Complete {
+            data_location,
+            outboard_location,
+        };
+        self.db
+            .send(
+                meta::Update {
+                    hash,
+                    state,
+                    epoch: self.epoch,
+                    tx: None,
+                }
+                .into(),
+            )
+            .await
+            .ok();
+        let hash = hash.into();
+        import_data.out.send(ImportProgress::Done { hash });
     }
 
     async fn run(mut self) {
@@ -146,16 +218,18 @@ impl Actor {
                     let Some(cmd) = cmd else {
                         break;
                     };
+                    trace!("{cmd:?}");
                     self.handle_command(cmd).await;
                 }
+                Some(cmd) = self.fs_commands.recv(), if !self.fs_commands.is_closed() => {
+                    trace!("{cmd:?}");
+                    self.handle_fs_command(cmd).await;
+                }
                 Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
-                    self.finish_import(res);
+                    self.finish_import(res).await;
                 }
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);
-                }
-                else => {
-                    break;
                 }
             }
         }
@@ -164,7 +238,8 @@ impl Actor {
     async fn new(
         db_path: PathBuf,
         rt: tokio::runtime::Runtime,
-        receiver: mpsc::Receiver<Command>,
+        commands: mpsc::Receiver<Command>,
+        fs_commands: mpsc::Receiver<FsCommand>,
         options: Arc<Options>,
     ) -> anyhow::Result<Self> {
         trace!(
@@ -187,12 +262,22 @@ impl Actor {
         rt.spawn(db_actor.run());
         Ok(Self {
             options,
-            commands: receiver,
+            commands,
+            fs_commands,
             unit_tasks: JoinSet::new(),
             import_tasks: JoinSet::new(),
             db: db_send,
-            rt,
+            epoch: 0,
+            rt: Some(rt),
         })
+    }
+}
+
+impl Drop for Actor {
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
     }
 }
 
@@ -201,37 +286,97 @@ impl Store {
     pub async fn load_redb(root: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = root.as_ref();
         let db_path = path.join("blobs.db");
-        let options = Options {
-            path: PathOptions::new(path),
-            inline: Default::default(),
-            batch: Default::default(),
-        };
+        let options = Options::new(path);
         Self::load_redb_with_opts(db_path, options).await
     }
 
     /// Load or create a new store with custom options.
     pub async fn load_redb_with_opts(path: PathBuf, options: Options) -> anyhow::Result<Self> {
+        let (this, _debug) = Self::load_redb_with_opts_inner(path, options).await?;
+        Ok(this)
+    }
+
+    /// Load or create a new store with custom options, returning an additional sender for file store specific commands.
+    pub async fn load_redb_with_opts_inner(
+        path: PathBuf,
+        options: Options,
+    ) -> anyhow::Result<(Self, DbStore)> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
             .build()?;
         let handle = rt.handle().clone();
-        let (sender, receiver) = mpsc::channel(100);
+        let (commands_tx, commands_rx) = mpsc::channel(100);
+        let (fs_commands_tx, fs_commands_rx) = mpsc::channel(100);
         let actor = handle
-            .spawn(Actor::new(path, rt, receiver, Arc::new(options)))
+            .spawn(Actor::new(
+                path.join("blobs.db"),
+                rt,
+                commands_rx,
+                fs_commands_rx,
+                Arc::new(options),
+            ))
             .await??;
         handle.spawn(actor.run());
-        Ok(Self::from_sender(sender))
+        Ok((
+            Self::from_sender(commands_tx),
+            DbStore::from_sender(fs_commands_tx),
+        ))
     }
 }
+
+pub struct DbStore {
+    db: mpsc::Sender<FsCommand>,
+}
+
+impl DbStore {
+    fn from_sender(db: mpsc::Sender<FsCommand>) -> Self {
+        Self { db }
+    }
+
+    pub async fn dump(&self) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.db.send(meta::Dump { tx }.into()).await?;
+        rx.await??;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::{fs::meta::Dump, util::Tag, HashAndFormat};
+
     use super::*;
     use testresult::TestResult;
+    use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
-        let store = Store::load_redb("test").await?;
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let haf = HashAndFormat::raw(Hash::from([0u8; 32]));
+        store.set_tag(Tag::from("test"), haf).await?;
+        store.set_tag(Tag::from("boo"), haf).await?;
+        store.set_tag(Tag::from("bar"), haf).await?;
+        let sizes = [
+            0,
+            1,
+            1024,
+            1024 * 16 - 1,
+            1024 * 16,
+            1024 * 16 + 1,
+            1024 * 1024,
+            1024 * 1024 * 8,
+        ];
+        for size in sizes {
+            let data = vec![0u8; size];
+            store.import_bytes(data.into()).await?;
+        }
+        store.sync_db().await?;
+        debug.dump().await?;
         Ok(())
     }
 }
