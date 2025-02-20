@@ -1,4 +1,7 @@
-use std::{fs::File, io};
+use std::{
+    fs::File,
+    io::{self, Read},
+};
 
 use bao_tree::io::sync::{ReadAt, Size};
 use bytes::Bytes;
@@ -25,6 +28,15 @@ where
         match self {
             MemOrFile::Mem(mem) => mem.as_ref().len() as u64,
             MemOrFile::File((_, size)) => *size,
+        }
+    }
+}
+
+impl<A: Read, B: Read> Read for MemOrFile<A, B> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            MemOrFile::Mem(mem) => mem.read(buf),
+            MemOrFile::File(file) => file.read(buf),
         }
     }
 }

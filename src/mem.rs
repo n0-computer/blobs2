@@ -29,7 +29,7 @@ use tracing::error;
 use crate::{
     bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
     proto::*,
-    util::{SparseMemFile, Tag},
+    util::{SenderProgressExt, SparseMemFile, Tag},
     HashAndFormat, Store, IROH_BLOCK_SIZE,
 };
 
@@ -131,8 +131,8 @@ impl Actor {
             Command::ImportByteStream(ImportByteStream { data, out }) => {
                 self.import_tasks.spawn(import_byte_stream_task(data, out));
             }
-            Command::ImportPath(ImportPath { path, out }) => {
-                self.import_tasks.spawn(import_path_task(path, out));
+            Command::ImportPath(cmd) => {
+                self.import_tasks.spawn(import_path_task(cmd));
             }
             Command::ExportBao(ExportBao { hash, ranges, out }) => {
                 let entry = self.state.data.entry(hash).or_default();
@@ -362,21 +362,15 @@ async fn import_byte_stream_task(
     while let Some(item) = data.next().await {
         let item = item?;
         res.extend_from_slice(&item);
-        match out.try_send(ImportProgress::CopyProgress {
+        out.send_progress(ImportProgress::CopyProgress {
             offset: res.len() as u64,
-        }) {
-            Ok(()) => (),
-            Err(e @ TrySendError::Closed(_)) => return Err(e)?,
-            Err(TrySendError::Full(_)) => continue,
-        }
+        })?;
     }
     import_bytes_task(res.into(), out).await
 }
 
-async fn import_path_task(
-    path: PathBuf,
-    out: mpsc::Sender<ImportProgress>,
-) -> anyhow::Result<ImportEntry> {
+async fn import_path_task(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
+    let ImportPath { path, out, .. } = cmd;
     let mut res = Vec::new();
     let mut file = tokio::fs::File::open(path).await?;
     let mut buf = [0u8; 1024 * 64];
@@ -428,13 +422,9 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        match out.try_send(ExportProgress::CopyProgress {
+        out.send_progress(ExportProgress::CopyProgress {
             offset: offset as u64,
-        }) {
-            Ok(()) => (),
-            Err(e @ TrySendError::Closed(_)) => return Err(e.into()),
-            Err(TrySendError::Full(_)) => continue,
-        }
+        })?;
         yield_now().await;
     }
     Ok(())

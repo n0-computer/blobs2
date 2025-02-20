@@ -1,14 +1,24 @@
 use crate::bao_file::BaoFileConfig;
 use crate::bao_file::BaoFileStorage;
 use crate::util::MemOrFile;
+use crate::util::ProgressReader;
 use crate::util::SenderProgressExt;
 use crate::Hash;
+use crate::IROH_BLOCK_SIZE;
+use bao_tree::io::outboard::PreOrderMemOutboard;
+use bao_tree::io::outboard::PreOrderOutboard;
+use bao_tree::io::sync::WriteAt;
+use bao_tree::BaoTree;
 use bytes::Bytes;
+use entry_state::OutboardLocation;
+use meta::raw_outboard_size;
 use n0_future::future::yield_now;
+use n0_future::io::Cursor;
 use n0_future::StreamExt;
 use std::fs;
 use std::fs::File;
 use std::io;
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
@@ -107,9 +117,9 @@ impl Actor {
                 self.import_tasks
                     .spawn(import_byte_stream_task(data, self.options.clone(), out));
             }
-            Command::ImportPath(ImportPath { path, out }) => {
+            Command::ImportPath(cmd) => {
                 self.import_tasks
-                    .spawn(import_path_task(path, self.options.clone(), out));
+                    .spawn(import_path_task(cmd, self.options.clone()));
             }
             _ => {}
         }
@@ -121,6 +131,24 @@ impl Actor {
         }
     }
 
+    fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
+        let import_data = match res {
+            Ok(Ok(entry)) => entry,
+            Ok(Err(e)) => {
+                tracing::error!("import failed: {e}");
+                return;
+            }
+            Err(e) => {
+                if e.is_cancelled() {
+                    tracing::warn!("import task failed: {e}");
+                } else {
+                    tracing::error!("import task panicked: {e}");
+                }
+                return;
+            }
+        };
+    }
+
     async fn run(mut self) {
         loop {
             tokio::select! {
@@ -129,6 +157,9 @@ impl Actor {
                         break;
                     };
                     self.handle_command(cmd).await;
+                }
+                Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
+                    self.finish_import(res);
                 }
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);
@@ -204,33 +235,41 @@ impl Store {
     }
 }
 
+/// An import source.
+///
+/// It must provide a way to read the data synchronously, as well as the size
+/// and the file location.
 #[derive(derive_more::Debug)]
 pub(crate) enum ImportSource {
-    TempFile((PathBuf, File)),
-    External(PathBuf),
+    TempFile(PathBuf, File, u64),
+    External(PathBuf, File, u64),
     Memory(#[debug(skip)] Bytes),
 }
 
 impl ImportSource {
-    fn content(&self) -> MemOrFile<&[u8], &Path> {
+    /// A reader for the import source.
+    fn read(&self) -> MemOrFile<std::io::Cursor<&[u8]>, &File> {
         match self {
-            Self::TempFile((path, file)) => MemOrFile::File(path.as_path()),
-            Self::External(path) => MemOrFile::File(path.as_path()),
-            Self::Memory(data) => MemOrFile::Mem(data.as_ref()),
+            Self::TempFile(_, file, _) => MemOrFile::File(file),
+            Self::External(_, file, _) => MemOrFile::File(file),
+            Self::Memory(data) => MemOrFile::Mem(std::io::Cursor::new(data.as_ref())),
         }
     }
 
-    fn len(&self) -> io::Result<u64> {
+    /// The size of the import source.
+    fn size(&self) -> u64 {
         match self {
-            Self::TempFile((path, file)) => std::fs::metadata(path).map(|m| m.len()),
-            Self::External(path) => std::fs::metadata(path).map(|m| m.len()),
-            Self::Memory(data) => Ok(data.len() as u64),
+            Self::TempFile(_, _, size) => *size,
+            Self::External(_, _, size) => *size,
+            Self::Memory(data) => data.len() as u64,
         }
     }
 }
 
 struct ImportEntry {
+    hash: Hash,
     source: ImportSource,
+    outboard: MemOrFile<Bytes, (PathBuf, u64)>,
 }
 
 async fn import_bytes_task(
@@ -265,8 +304,7 @@ async fn import_byte_stream_task(
             size = new_size;
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        out.send(ImportProgress::CopyProgress { offset: size })
-            .await?;
+        out.send_progress(ImportProgress::CopyProgress { offset: size })?;
     }
     if let Some((mut file, temp_path)) = disk {
         while let Some(chunk) = stream.next().await {
@@ -277,22 +315,81 @@ async fn import_byte_stream_task(
                 .await?;
         }
         out.send(ImportProgress::CopyDone).await?;
-        Ok(ImportEntry {
-            source: ImportSource::TempFile((temp_path, file)),
-        })
+        compute_outboard(ImportSource::TempFile(temp_path, file, size), options, out).await
     } else {
         out.send(ImportProgress::CopyDone).await?;
-        Ok(ImportEntry {
-            source: ImportSource::Memory(data.into()),
-        })
+        compute_outboard(ImportSource::Memory(data.into()), options, out).await
     }
 }
 
-async fn import_path_task(
-    path: PathBuf,
+async fn compute_outboard(
+    source: ImportSource,
     options: Arc<Options>,
     out: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
+    let size = source.size();
+    let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+    let root = bao_tree::blake3::Hash::from_bytes([0; 32]);
+    let outboard_size = raw_outboard_size(size);
+    let out2 = out.clone();
+    let send_progress = move |offset| {
+        out2.send_progress(ImportProgress::OutboardProgress { offset })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver dropped"))
+    };
+    let data = source.read();
+    let (hash, outboard) = if outboard_size > options.inline.max_outboard_inlined {
+        // outboard will eventually be stored as a file, so compute it directly to a file
+        // we don't know the hash yet, so we need to create a temp file
+        let outboard_path = options.path.temp_file_name();
+        let mut outboard_file = File::create(&outboard_path)?;
+        let mut outboard = PreOrderOutboard {
+            tree,
+            root,
+            data: &mut outboard_file,
+        };
+        init_outboard(data, &mut outboard, send_progress)?;
+        (outboard.root, MemOrFile::File((outboard_path, size)))
+    } else {
+        // outboard will be stored in memory, so compute it to a memory buffer
+        let mut outboard_file: Vec<u8> = Vec::new();
+        let mut outboard = PreOrderOutboard {
+            tree,
+            root,
+            data: &mut outboard_file,
+        };
+        init_outboard(data, &mut outboard, send_progress)?;
+        (outboard.root, MemOrFile::Mem(Bytes::from(outboard_file)))
+    };
+    out.send(ImportProgress::Done { hash }).await?;
+    Ok(ImportEntry {
+        hash: hash.into(),
+        source,
+        outboard,
+    })
+}
+
+pub(crate) fn init_outboard<R: Read, W: WriteAt>(
+    data: R,
+    outboard: &mut PreOrderOutboard<W>,
+    progress: impl Fn(u64) -> std::io::Result<()> + Send + Sync + 'static,
+) -> std::io::Result<()> {
+    use bao_tree::io::sync::CreateOutboard;
+
+    // wrap the reader in a progress reader, so we can report progress.
+    let reader = ProgressReader::new(data, progress);
+    // wrap the reader in a buffered reader, so we read in large chunks
+    // this reduces the number of io ops and also the number of progress reports
+    let buf_size = usize::try_from(outboard.tree.size())
+        .unwrap_or(usize::MAX)
+        .min(1024 * 1024);
+    let reader = BufReader::with_capacity(buf_size, reader);
+
+    outboard.init_from(reader)?;
+    Ok(())
+}
+
+async fn import_path_task(cmd: ImportPath, options: Arc<Options>) -> anyhow::Result<ImportEntry> {
+    let ImportPath { path, out, .. } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());
     }
@@ -304,12 +401,10 @@ async fn import_path_task(
 
     let size = path.metadata()?.len();
     out.send_progress(ImportProgress::Size { size })?;
-    if size <= options.inline.max_data_inlined {
+    let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
         out.send_progress(ImportProgress::CopyDone)?;
-        Ok(ImportEntry {
-            source: ImportSource::Memory(data.into()),
-        })
+        ImportSource::Memory(data.into())
     } else {
         let temp_path = options.path.temp_file_name();
         // copy from path to temp_path in increments of 64k and send progress
@@ -327,10 +422,9 @@ async fn import_path_task(
             yield_now().await;
         }
         out.send_progress(ImportProgress::CopyDone)?;
-        Ok(ImportEntry {
-            source: ImportSource::TempFile((temp_path, file)),
-        })
-    }
+        ImportSource::TempFile(temp_path, file, size)
+    };
+    compute_outboard(import_source, options, out).await
 }
 
 #[cfg(test)]

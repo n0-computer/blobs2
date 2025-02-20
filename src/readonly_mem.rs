@@ -15,7 +15,10 @@ use tokio::{
     task::{JoinError, JoinSet},
 };
 
-use crate::{bitfield::BitfieldState, mem::CompleteEntry, proto::*, Store, IROH_BLOCK_SIZE};
+use crate::{
+    bitfield::BitfieldState, mem::CompleteEntry, proto::*, util::SenderProgressExt, Store,
+    IROH_BLOCK_SIZE,
+};
 
 struct Actor {
     commands: mpsc::Receiver<Command>,
@@ -197,13 +200,9 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         entry.data().as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        match out.try_send(ExportProgress::CopyProgress {
+        out.send_progress(ExportProgress::CopyProgress {
             offset: offset as u64,
-        }) {
-            Ok(()) => (),
-            Err(e @ TrySendError::Closed(_)) => return Err(e.into()),
-            Err(TrySendError::Full(_)) => continue,
-        }
+        })?;
         yield_now().await;
     }
     Ok(())

@@ -144,3 +144,29 @@ impl<T> SenderProgressExt<T> for tokio::sync::mpsc::Sender<T> {
         }
     }
 }
+
+/// A reader that calls a callback with the number of bytes read after each read.
+pub(crate) struct ProgressReader<R, F: Fn(u64) -> std::io::Result<()>> {
+    inner: R,
+    offset: u64,
+    cb: F,
+}
+
+impl<R: std::io::Read, F: Fn(u64) -> std::io::Result<()>> ProgressReader<R, F> {
+    pub fn new(inner: R, cb: F) -> Self {
+        Self {
+            inner,
+            offset: 0,
+            cb,
+        }
+    }
+}
+
+impl<R: std::io::Read, F: Fn(u64) -> std::io::Result<()>> std::io::Read for ProgressReader<R, F> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.offset += read as u64;
+        (self.cb)(self.offset)?;
+        Ok(read)
+    }
+}

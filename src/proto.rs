@@ -7,10 +7,11 @@ use std::{io, path::PathBuf, pin::Pin};
 use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 pub use crate::bitfield::BitfieldEvent;
-use crate::{util::Tag, HashAndFormat};
+use crate::{util::Tag, BlobFormat, HashAndFormat};
 pub use bao_tree::io::mixed::EncodedItem;
 
 /// Import bao encoded data for the given hash with the iroh block size.
@@ -78,6 +79,8 @@ impl std::fmt::Debug for ImportByteStream {
 #[derive(Debug)]
 pub struct ImportPath {
     pub path: PathBuf,
+    pub mode: ImportMode,
+    pub format: BlobFormat,
     pub out: mpsc::Sender<ImportProgress>,
 }
 
@@ -129,6 +132,55 @@ pub enum ExportProgress {
     CopyProgress { offset: u64 },
     Done,
     Error { cause: anyhow::Error },
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ImportMode {
+    /// This mode will copy the file into the database before hashing.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been imported.
+    #[default]
+    Copy,
+    /// This mode will try to reference the file in place and assume it is unchanged after import.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified after it has been imported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum ExportMode {
+    /// This mode will copy the file to the target directory.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been exported.
+    #[default]
+    Copy,
+    /// This mode will try to move the file to the target directory and then reference it from
+    /// the database.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified in the target directory after it has been exported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
 }
 
 /// A fallible but owned iterator over the entries in a store.
