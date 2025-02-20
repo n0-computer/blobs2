@@ -132,11 +132,18 @@ mod redb_support {
 }
 
 pub trait SenderProgressExt<T> {
-    fn send_progress(&self, value: T) -> std::result::Result<(), mpsc::error::TrySendError<T>>;
+    fn send_progress<V: Into<T>>(
+        &self,
+        value: V,
+    ) -> std::result::Result<(), mpsc::error::TrySendError<T>>;
 }
 
 impl<T> SenderProgressExt<T> for tokio::sync::mpsc::Sender<T> {
-    fn send_progress(&self, value: T) -> std::result::Result<(), mpsc::error::TrySendError<T>> {
+    fn send_progress<V: Into<T>>(
+        &self,
+        value: V,
+    ) -> std::result::Result<(), mpsc::error::TrySendError<T>> {
+        let value = value.into();
         match self.try_send(value) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
