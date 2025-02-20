@@ -1,26 +1,7 @@
 use crate::bao_file::BaoFileConfig;
 use crate::bao_file::BaoFileStorage;
-use crate::util::MemOrFile;
-use crate::util::ProgressReader;
-use crate::util::SenderProgressExt;
 use crate::Hash;
-use crate::IROH_BLOCK_SIZE;
-use bao_tree::io::outboard::PreOrderMemOutboard;
-use bao_tree::io::outboard::PreOrderOutboard;
-use bao_tree::io::sync::WriteAt;
-use bao_tree::BaoTree;
-use bytes::Bytes;
-use entry_state::OutboardLocation;
-use meta::raw_outboard_size;
-use n0_future::future::yield_now;
-use n0_future::io::Cursor;
-use n0_future::StreamExt;
 use std::fs;
-use std::fs::File;
-use std::io;
-use std::io::BufReader;
-use std::io::Read;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,11 +50,17 @@ pub struct BaoFileHandleInner {
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 struct Actor {
+    // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
     options: Arc<Options>,
+    // Receiver for incoming user commands.
     commands: mpsc::Receiver<Command>,
+    // Tasks that are not expected to return a result. These are mainly bao import and export tasks.
     unit_tasks: JoinSet<()>,
+    // Import tasks that are expected to return an import entry that is to be integrated with the store data.
     import_tasks: JoinSet<Option<ImportEntry>>,
+    // Database actor that handles meta data.
     db: mpsc::Sender<meta::Command>,
+    // our private tokio runtime. It has to live somewhere.
     rt: tokio::runtime::Runtime,
 }
 
@@ -112,13 +99,13 @@ impl Actor {
                     .await
                     .ok();
             }
-            Command::ImportBytes(ImportBytes { data, out }) => {
+            Command::ImportBytes(cmd) => {
                 self.import_tasks
-                    .spawn(import_bytes_task(data, self.options.clone(), out));
+                    .spawn(import_bytes_task(cmd, self.options.clone()));
             }
-            Command::ImportByteStream(ImportByteStream { data, out }) => {
+            Command::ImportByteStream(cmd) => {
                 self.import_tasks
-                    .spawn(import_byte_stream_task(data, self.options.clone(), out));
+                    .spawn(import_byte_stream_task(cmd, self.options.clone()));
             }
             Command::ImportPath(cmd) => {
                 self.import_tasks

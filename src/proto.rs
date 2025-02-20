@@ -117,6 +117,7 @@ pub enum Command {
     CreateTag(CreateTag),
 }
 
+#[derive(Debug)]
 pub enum ImportProgress {
     CopyProgress { offset: u64 },
     Size { size: u64 },

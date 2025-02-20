@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, Read},
+    io::{self, Read, Seek},
 };
 
 use bao_tree::io::sync::{ReadAt, Size};
@@ -37,6 +37,15 @@ impl<A: Read, B: Read> Read for MemOrFile<A, B> {
         match self {
             MemOrFile::Mem(mem) => mem.read(buf),
             MemOrFile::File(file) => file.read(buf),
+        }
+    }
+}
+
+impl<A: Seek, B: Seek> Seek for MemOrFile<A, B> {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        match self {
+            MemOrFile::Mem(mem) => mem.seek(pos),
+            MemOrFile::File(file) => file.seek(pos),
         }
     }
 }
