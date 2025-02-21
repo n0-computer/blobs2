@@ -82,7 +82,7 @@ impl Actor {
     fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
         let Get { hash, tx } = cmd;
         let Some(entry) = tables.blobs().get(hash)? else {
-            tx.send(Ok(None)).ok();
+            tx.send(GetResult { hash, state: Ok(None) });
             return Ok(());
         };
         let entry = entry.value();
@@ -100,7 +100,7 @@ impl Actor {
             }
             EntryState::Partial { size } => EntryState::Partial { size },
         };
-        tx.send(Ok(Some(entry))).ok();
+        tx.send(GetResult { hash, state: Ok(Some(entry)) });
         Ok(())
     }
 

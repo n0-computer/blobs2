@@ -23,22 +23,22 @@ pub use bao_tree::io::mixed::EncodedItem;
 pub struct ImportBao {
     pub hash: Hash,
     pub size: u64,
-    pub data: tokio::sync::mpsc::Receiver<BaoContentItem>,
-    pub out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    pub data: mpsc::Receiver<BaoContentItem>,
+    pub out: oneshot::Sender<anyhow::Result<()>>,
 }
 
 /// Observe the bitfield of the given hash.
 #[derive(Debug)]
 pub struct Observe {
     pub hash: Hash,
-    pub out: tokio::sync::mpsc::Sender<BitfieldEvent>,
+    pub out: mpsc::Sender<BitfieldEvent>,
 }
 
 /// Import the given bytes.
 #[derive(Debug)]
 pub struct ImportBytes {
     pub data: Bytes,
-    pub out: tokio::sync::mpsc::Sender<ImportProgress>,
+    pub out: mpsc::Sender<ImportProgress>,
 }
 
 /// Export the given sizes in bao format, with the iroh block size.
@@ -48,7 +48,7 @@ pub struct ImportBytes {
 pub struct ExportBao {
     pub hash: Hash,
     pub ranges: ChunkRanges,
-    pub out: tokio::sync::mpsc::Sender<EncodedItem>,
+    pub out: mpsc::Sender<EncodedItem>,
 }
 
 /// Export a file to a target path.
@@ -60,7 +60,7 @@ pub struct ExportBao {
 pub struct ExportPath {
     pub hash: Hash,
     pub target: PathBuf,
-    pub out: tokio::sync::mpsc::Sender<ExportProgress>,
+    pub out: mpsc::Sender<ExportProgress>,
 }
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
@@ -189,6 +189,3 @@ pub enum ExportMode {
     /// if the file is very small or if the store does not support referencing files.
     TryReference,
 }
-
-/// A fallible but owned iterator over the entries in a store.
-pub type DbIter<T> = Box<dyn Iterator<Item = anyhow::Result<T>> + Send + Sync + 'static>;

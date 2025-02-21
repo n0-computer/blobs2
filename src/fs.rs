@@ -1,11 +1,17 @@
 use crate::bao_file::BaoFileConfig;
+use crate::bao_file::BaoFileHandle;
+use crate::bao_file::BaoFileHandleWeak;
 use crate::bao_file::BaoFileStorage;
 use crate::util::MemOrFile;
 use crate::Hash;
+use bytes::Bytes;
 use entry_state::DataLocation;
 use entry_state::OutboardLocation;
 use import::ImportSource;
+use meta::GetResult;
 use nested_enum_utils::enum_conversions;
+use quinn::rustls::crypto::hash;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -43,18 +49,6 @@ fn temp_name() -> String {
     format!("{}.temp", hex::encode(new_uuid()))
 }
 
-/// The inner part of a bao file handle.
-#[derive(Debug)]
-pub struct BaoFileHandleInner {
-    pub(crate) storage: RwLock<BaoFileStorage>,
-    config: Arc<BaoFileConfig>,
-    hash: Hash,
-}
-
-/// A cheaply cloneable handle to a bao file, including the hash and the configuration.
-#[derive(Debug, Clone, derive_more::Deref)]
-pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
-
 #[derive(Debug)]
 #[enum_conversions()]
 pub enum FsCommand {
@@ -69,6 +63,8 @@ struct Actor {
     commands: mpsc::Receiver<Command>,
     // Receiver for incoming file store specific commands.
     fs_commands: mpsc::Receiver<FsCommand>,
+    get_results_tx: mpsc::Sender<meta::GetResult>,
+    get_results_rx: mpsc::Receiver<meta::GetResult>,
     // Tasks that are not expected to return a result. These are mainly bao import and export tasks.
     unit_tasks: JoinSet<()>,
     // Import tasks that are expected to return an import entry that is to be integrated with the store data.
@@ -79,6 +75,9 @@ struct Actor {
     rt: Option<tokio::runtime::Runtime>,
     // monotonic counter
     epoch: u64,
+    // handles
+    handles: BTreeMap<Hash, BaoFileHandleWeak>,
+    waiting: BTreeMap<Hash, Vec<ExportPath>>,
 }
 
 impl Actor {
@@ -116,6 +115,16 @@ impl Actor {
             Command::ImportPath(cmd) => {
                 self.import_tasks
                     .spawn(import_path_task(cmd, self.options.clone()));
+            }
+            Command::ExportPath(cmd) => {
+                let hash: crate::Hash = cmd.hash.into();
+                let Some(handle) = self.handles.get(&hash).and_then(|weak| weak.upgrade()) else {
+                    let tx = self.get_results_tx.clone().reserve_owned().await.unwrap();
+                    self.db.send(meta::Get { hash, tx }.into()).await.ok();
+                    self.waiting.entry(hash).or_default().push(cmd);
+                    return;
+                };
+                self.unit_tasks.spawn(export_path_task(cmd, handle));
             }
             Command::SyncDb(cmd) => {
                 self.db.send(cmd.into()).await.ok();
@@ -211,6 +220,36 @@ impl Actor {
         import_data.out.send(ImportProgress::Done { hash });
     }
 
+    fn handle_get_result(&mut self, res: GetResult) {
+        let hash: crate::Hash = res.hash.into();
+        let config = Arc::new(BaoFileConfig::new(Arc::new(self.options.path.data_path.clone()), self.options.inline.max_data_inlined as usize, None));
+        let handle = match self.handles.get(&hash).and_then(|weak| weak.upgrade()) {
+            Some(handle) => handle,
+            None => {
+                let handle = match res.state {
+                    Ok(Some(EntryState::Complete { data_location, outboard_location })) => {
+                        BaoFileHandle::complete()
+                    }
+                    Ok(Some(EntryState::Partial { size })) => {
+                        BaoFileHandle::complete()
+                    }
+                    Ok(None) => {
+                        BaoFileHandle::incomplete_mem(config, hash)
+                    }
+                    Err(_cause) => {
+                        panic!()
+                    }
+                };
+                self.handles.insert(hash, handle.downgrade());
+                handle
+            }
+        };
+        let tasks = self.waiting.remove(&hash).unwrap_or_default();
+        for task in tasks {
+            self.unit_tasks.spawn(export_path_task(task, handle.clone()));
+        }
+    }
+
     async fn run(mut self) {
         loop {
             tokio::select! {
@@ -220,6 +259,9 @@ impl Actor {
                     };
                     trace!("{cmd:?}");
                     self.handle_command(cmd).await;
+                }
+                Some(res) = self.get_results_rx.recv() => {
+                    self.handle_get_result(res);
                 }
                 Some(cmd) = self.fs_commands.recv(), if !self.fs_commands.is_closed() => {
                     trace!("{cmd:?}");
@@ -258,16 +300,21 @@ impl Actor {
         );
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
+        let (get_results_tx, get_results_rx) = mpsc::channel(100);
         let db_actor = meta::Actor::new(db_path, db_recv)?;
         rt.spawn(db_actor.run());
         Ok(Self {
             options,
             commands,
             fs_commands,
+            get_results_tx,
+            get_results_rx,
             unit_tasks: JoinSet::new(),
             import_tasks: JoinSet::new(),
             db: db_send,
             epoch: 0,
+            handles: BTreeMap::new(),
+            waiting: BTreeMap::new(),
             rt: Some(rt),
         })
     }
@@ -279,6 +326,22 @@ impl Drop for Actor {
             rt.shutdown_background();
         }
     }
+}
+
+async fn export_path_task(
+    cmd: ExportPath,
+    handle: BaoFileHandle
+) {
+    let Ok(send) = cmd.out.clone().reserve_owned().await else {
+        return;
+    };
+    if let Err(cause) = export_path_impl(cmd, handle).await {
+        send.send(ExportProgress::Error { cause });
+    }
+}
+
+async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Result<()> {
+    Ok(())
 }
 
 impl Store {
@@ -344,7 +407,7 @@ impl DbStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::{fs::meta::Dump, util::Tag, HashAndFormat};
+    use crate::{fs::meta::Dump, test, util::Tag, HashAndFormat};
 
     use super::*;
     use testresult::TestResult;
@@ -371,11 +434,17 @@ mod tests {
             1024 * 1024,
             1024 * 1024 * 8,
         ];
+        let mut hashes = Vec::new();
         for size in sizes {
             let data = vec![0u8; size];
-            store.import_bytes(data.into()).await?;
+            let res = store.import_bytes(data.into()).await?;
+            hashes.push(res);
         }
         store.sync_db().await?;
+        for hash in hashes {
+            let path = testdir.path().join(format!("{hash}.txt"));
+            store.export_file(hash, path).await?;
+        }
         debug.dump().await?;
         Ok(())
     }

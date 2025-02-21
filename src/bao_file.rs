@@ -27,12 +27,11 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
+use tokio::sync::mpsc;
 
 use super::mem::SizeInfo;
 use crate::{
-    mem::IncompleteEntry,
-    util::{MemOrFile, SparseMemFile},
-    Hash, IROH_BLOCK_SIZE,
+    mem::IncompleteEntry, proto::BitfieldEvent, util::{MemOrFile, SparseMemFile}, Hash, IROH_BLOCK_SIZE
 };
 
 /// Data files are stored in 3 files. The data file, the outboard file,
@@ -88,6 +87,8 @@ pub struct CompleteStorage {
     /// outboard part, which can be in memory or on disk.
     #[debug("{:?}", outboard.as_ref().map_mem(|x| x.len()))]
     pub outboard: MemOrFile<Bytes, (File, u64)>,
+    /// Observers, just to keep them alive
+    pub observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
 impl CompleteStorage {
@@ -179,6 +180,7 @@ pub struct FileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
+    observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
 impl FileStorage {
@@ -230,14 +232,6 @@ impl FileStorage {
             }
         }
         Ok(())
-    }
-
-    fn read_data_at(&self, offset: u64, len: usize) -> io::Result<Bytes> {
-        read_to_end(&self.data, offset, len)
-    }
-
-    fn read_outboard_at(&self, offset: u64, len: usize) -> io::Result<Bytes> {
-        read_to_end(&self.outboard, offset, len)
     }
 }
 
@@ -429,6 +423,7 @@ impl BaoFileHandle {
             data: create_read_write(&paths.data)?,
             outboard: create_read_write(&paths.outboard)?,
             sizes: create_read_write(&paths.sizes)?,
+            observers: Vec::new(),
         });
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -438,13 +433,14 @@ impl BaoFileHandle {
     }
 
     /// Create a new complete bao file handle.
-    pub fn new_complete(
+    pub fn complete(
         config: Arc<BaoFileConfig>,
         hash: Hash,
         data: MemOrFile<Bytes, (File, u64)>,
         outboard: MemOrFile<Bytes, (File, u64)>,
     ) -> Self {
-        let storage = BaoFileStorage::Complete(CompleteStorage { data, outboard });
+        let observers = Vec::new();
+        let storage = BaoFileStorage::Complete(CompleteStorage { data, outboard, observers });
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
             config,
@@ -553,6 +549,7 @@ impl IncompleteEntry {
             data,
             outboard,
             sizes,
+            observers: Vec::new(),
         })
     }
 

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use n0_future::io;
 use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
 
@@ -17,7 +17,13 @@ pub use crate::proto::SyncDb;
 #[derive(Debug)]
 pub struct Get {
     pub hash: Hash,
-    pub tx: oneshot::Sender<ActorResult<Option<EntryState<Bytes>>>>,
+    pub tx: mpsc::OwnedPermit<GetResult>,
+}
+
+#[derive(Debug)]
+pub struct GetResult {
+    pub hash: Hash,
+    pub state: anyhow::Result<Option<EntryState<Bytes>>>,
 }
 
 /// Get the entry state for a hash.

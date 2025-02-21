@@ -68,7 +68,7 @@ impl Store {
         ObserveResult { receiver }
     }
 
-    pub async fn export_file(&self, hash: Hash, target: PathBuf) -> ExportFileResult {
+    pub fn export_file(&self, hash: Hash, target: PathBuf) -> ExportFileResult {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         self.sender
             .try_send(
