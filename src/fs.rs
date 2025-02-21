@@ -3,20 +3,23 @@ use crate::bao_file::BaoFileHandle;
 use crate::bao_file::BaoFileHandleWeak;
 use crate::bao_file::BaoFileStorage;
 use crate::util::MemOrFile;
+use crate::util::SenderProgressExt;
 use crate::Hash;
+use bao_tree::io::sync::ReadAt;
 use bytes::Bytes;
 use entry_state::DataLocation;
 use entry_state::OutboardLocation;
 use import::ImportSource;
 use meta::GetResult;
+use n0_future::future::yield_now;
 use nested_enum_utils::enum_conversions;
-use quinn::rustls::crypto::hash;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
+use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinError;
@@ -222,31 +225,62 @@ impl Actor {
 
     fn handle_get_result(&mut self, res: GetResult) {
         let hash: crate::Hash = res.hash.into();
-        let config = Arc::new(BaoFileConfig::new(Arc::new(self.options.path.data_path.clone()), self.options.inline.max_data_inlined as usize, None));
+        let config = Arc::new(BaoFileConfig::new(
+            Arc::new(self.options.path.data_path.clone()),
+            self.options.inline.max_data_inlined as usize,
+            None,
+        ));
         let handle = match self.handles.get(&hash).and_then(|weak| weak.upgrade()) {
             Some(handle) => handle,
             None => {
+                println!("opening files from handle!");
                 let handle = match res.state {
-                    Ok(Some(EntryState::Complete { data_location, outboard_location })) => {
-                        BaoFileHandle::complete()
+                    Ok(Some(EntryState::Complete {
+                        data_location,
+                        outboard_location,
+                    })) => {
+                        let data_location = match data_location {
+                            DataLocation::Inline(data) => MemOrFile::Mem(data),
+                            DataLocation::Owned(size) => {
+                                let path = self.options.path.owned_data_path(&hash);
+                                let file = std::fs::File::open(&path).unwrap();
+                                MemOrFile::File((file, size))
+                            }
+                            DataLocation::External(paths, size) => {
+                                let path = paths.into_iter().next().unwrap();
+                                let file = std::fs::File::open(&path).unwrap();
+                                MemOrFile::File((file, size))
+                            }
+                        };
+                        let outboard_location = match outboard_location {
+                            OutboardLocation::NotNeeded => MemOrFile::Mem(Bytes::new()),
+                            OutboardLocation::Inline(data) => MemOrFile::Mem(data),
+                            OutboardLocation::Owned => {
+                                let path = self.options.path.owned_outboard_path(&hash);
+                                let file = std::fs::File::open(&path).unwrap();
+                                let size = file.metadata().unwrap().len();
+                                MemOrFile::File((file, size))
+                            }
+                        };
+                        BaoFileHandle::complete(config, hash, data_location, outboard_location)
                     }
                     Ok(Some(EntryState::Partial { size })) => {
-                        BaoFileHandle::complete()
+                        BaoFileHandle::incomplete_file(config, hash).unwrap()
                     }
-                    Ok(None) => {
-                        BaoFileHandle::incomplete_mem(config, hash)
-                    }
+                    Ok(None) => BaoFileHandle::incomplete_mem(config, hash),
                     Err(_cause) => {
                         panic!()
                     }
                 };
+                println!("OPENED files from handle!");
                 self.handles.insert(hash, handle.downgrade());
                 handle
             }
         };
         let tasks = self.waiting.remove(&hash).unwrap_or_default();
         for task in tasks {
-            self.unit_tasks.spawn(export_path_task(task, handle.clone()));
+            self.unit_tasks
+                .spawn(export_path_task(task, handle.clone()));
         }
     }
 
@@ -328,10 +362,7 @@ impl Drop for Actor {
     }
 }
 
-async fn export_path_task(
-    cmd: ExportPath,
-    handle: BaoFileHandle
-) {
+async fn export_path_task(cmd: ExportPath, handle: BaoFileHandle) {
     let Ok(send) = cmd.out.clone().reserve_owned().await else {
         return;
     };
@@ -341,6 +372,40 @@ async fn export_path_task(
 }
 
 async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Result<()> {
+    let data = {
+        let guard = handle.storage.read().unwrap();
+        let BaoFileStorage::Complete(complete) = guard.deref() else {
+            anyhow::bail!("not a complete file");
+        };
+        match &complete.data {
+            MemOrFile::Mem(data) => MemOrFile::Mem(data.clone()),
+            MemOrFile::File((file, size)) => {
+                let file = file.try_clone()?;
+                MemOrFile::File((file, *size))
+            }
+        }
+    };
+    let mut target = fs::File::create(&cmd.target)?;
+    match data {
+        MemOrFile::Mem(data) => {
+            target.write_all(&data)?;
+        }
+        MemOrFile::File((file, size)) => {
+            let mut offset = 0;
+            let mut buf = vec![0u8; 1024 * 1024];
+            while offset < size {
+                let remaining = buf.len().min((size - offset) as usize);
+                let buf = &mut buf[..remaining];
+                file.read_exact_at(offset, buf)?;
+                target.write_all(buf)?;
+                cmd.out
+                    .send_progress(ExportProgress::CopyProgress { offset })?;
+                yield_now().await;
+                offset += buf.len() as u64;
+            }
+        }
+    }
+    cmd.out.send(ExportProgress::Done).await?;
     Ok(())
 }
 

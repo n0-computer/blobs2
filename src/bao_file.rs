@@ -31,7 +31,10 @@ use tokio::sync::mpsc;
 
 use super::mem::SizeInfo;
 use crate::{
-    mem::IncompleteEntry, proto::BitfieldEvent, util::{MemOrFile, SparseMemFile}, Hash, IROH_BLOCK_SIZE
+    mem::IncompleteEntry,
+    proto::BitfieldEvent,
+    util::{MemOrFile, SparseMemFile},
+    Hash, IROH_BLOCK_SIZE,
 };
 
 /// Data files are stored in 3 files. The data file, the outboard file,
@@ -440,7 +443,11 @@ impl BaoFileHandle {
         outboard: MemOrFile<Bytes, (File, u64)>,
     ) -> Self {
         let observers = Vec::new();
-        let storage = BaoFileStorage::Complete(CompleteStorage { data, outboard, observers });
+        let storage = BaoFileStorage::Complete(CompleteStorage {
+            data,
+            outboard,
+            observers,
+        });
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
             config,
