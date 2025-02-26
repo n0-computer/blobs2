@@ -11,8 +11,11 @@ use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
-pub use crate::bitfield::BitfieldEvent;
-use crate::{util::Tag, BlobFormat, HashAndFormat};
+use crate::{
+    bitfield::BitfieldUpdate,
+    util::{observer::Observer, Tag},
+    BlobFormat, HashAndFormat,
+};
 
 /// Import bao encoded data for the given hash with the iroh block size.
 ///
@@ -31,7 +34,7 @@ pub struct ImportBao {
 #[derive(Debug)]
 pub struct Observe {
     pub hash: Hash,
-    pub out: mpsc::Sender<BitfieldEvent>,
+    pub out: Observer<BitfieldUpdate>,
 }
 
 /// Import the given bytes.

@@ -1,6 +1,7 @@
-use std::fmt;
+use std::{fmt, future::Future};
 
 use n0_future::join_all;
+use quinn::rustls::crypto::hash::Output;
 use tokio::sync::mpsc;
 
 // A commutative combine trait for updates
@@ -10,12 +11,12 @@ pub trait Combine {
 
 // An observer that accumulates updates
 #[derive(Debug)]
-pub struct Observer<U: Combine> {
+pub struct Observer<U> {
     tx: mpsc::Sender<U>,
     pending_update: Option<U>,
 }
 
-impl<U: Combine> Observer<U> {
+impl<U> Observer<U> {
     // Create a new observer with an externally provided sender and no observers initially
     pub fn new(tx: mpsc::Sender<U>) -> Self {
         Self {
@@ -29,7 +30,10 @@ impl<U: Combine> Observer<U> {
     }
 
     // Send an update, handling queue full (no error) or remote drop scenarios with a single try_send
-    pub fn send(&mut self, update: U) -> Result<ObserveSuccess, ObserverError> {
+    pub fn send(&mut self, update: U) -> Result<ObserveSuccess, ObserverError>
+    where
+        U: Combine,
+    {
         // If we have a pending update, combine it with the new update
         let update_to_send = match self.pending_update.take() {
             Some(pending) => pending.combine(update),
@@ -63,6 +67,13 @@ impl<U: Combine> Observer<U> {
     pub fn into_pending_update(self) -> Option<U> {
         self.pending_update
     }
+
+    pub fn receiver_dropped(&self) -> impl Future<Output = ()> {
+        let tx = self.tx.clone();
+        async move {
+            tx.closed().await;
+        }
+    }
 }
 
 // Concrete error type for observer failures (only RemoteDropped remains)
@@ -89,13 +100,19 @@ impl fmt::Display for ObserverError {
 impl std::error::Error for ObserverError {}
 
 // ObserverManager struct to manage state (of type U) and observables
-#[derive(Debug, Default)]
-pub struct Observable<U: Combine> {
+#[derive(Debug)]
+pub struct Observable<U> {
     state: Option<U>,
     observers: Vec<Observer<U>>,
 }
 
-impl<U: Combine> Observable<U> {
+impl<U: Default> Default for Observable<U> {
+    fn default() -> Self {
+        Self::new(U::default())
+    }
+}
+
+impl<U> Observable<U> {
     // Create a new observer manager with the default state and no observables
     pub fn new(state: U) -> Self {
         Self {
@@ -107,7 +124,7 @@ impl<U: Combine> Observable<U> {
     // Add an observable to the manager
     pub fn add_observer(&mut self, mut observer: Observer<U>)
     where
-        U: Clone,
+        U: Combine + Clone,
     {
         let state = self.state().clone();
         if observer.send(state).is_ok() {
@@ -115,10 +132,14 @@ impl<U: Combine> Observable<U> {
         }
     }
 
+    pub fn observer_dropped(&mut self) {
+        self.observers.retain(|o| !o.is_closed());
+    }
+
     // Update the state and send the update to all observables, retaining only live observables
     pub fn update(&mut self, update: U)
     where
-        U: Clone,
+        U: Combine + Clone,
     {
         // Update the state by combining with the update
         self.state = Some(

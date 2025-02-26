@@ -28,14 +28,15 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
-use tokio::sync::mpsc;
 
 use super::mem::SizeInfo;
 use crate::{
     bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldUpdate},
     mem::IncompleteEntry,
-    proto::BitfieldEvent,
-    util::{MemOrFile, SparseMemFile},
+    util::{
+        observer::{Observable, Observer},
+        MemOrFile, SparseMemFile,
+    },
     Hash, IROH_BLOCK_SIZE,
 };
 
@@ -93,7 +94,7 @@ pub struct CompleteStorage {
     #[debug("{:?}", outboard.as_ref().map_mem(|x| x.len()))]
     pub outboard: MemOrFile<Bytes, (File, u64)>,
     /// Observers, just to keep them alive
-    pub observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    pub bitfield: Observable<BitfieldUpdate>,
 }
 
 impl CompleteStorage {
@@ -169,8 +170,7 @@ pub struct FileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
-    bitfield: ChunkRanges,
-    observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    bitfield: Observable<BitfieldUpdate>,
 }
 
 impl FileStorage {
@@ -226,25 +226,14 @@ impl FileStorage {
                 }
             }
         }
-        if !self.observers.is_empty() {
-            let added = ranges - &self.bitfield;
-            if !added.is_empty() {
-                self.bitfield |= added.clone();
-                let update = BitfieldUpdate {
-                    added,
-                    size: BaoBlobSize::from_size_and_ranges(
-                        NonZeroU64::new(size).unwrap(),
-                        &self.bitfield,
-                    )
-                    .into(),
-                };
-                self.observers.retain(|sender| {
-                    sender
-                        .try_send(BitfieldEvent::Update(update.clone()))
-                        .is_ok()
-                });
-            }
-        }
+        let current = &self.bitfield.state().ranges;
+        let added = ranges - current;
+        let update = BitfieldUpdate {
+            ranges: added,
+            size: BaoBlobSize::from_size_and_ranges(NonZeroU64::new(size).unwrap(), &current)
+                .into(),
+        };
+        self.bitfield.update(update);
         Ok(())
     }
 }
@@ -284,6 +273,22 @@ impl BaoFileStorage {
     #[cfg(feature = "fs-store")]
     pub fn take(&mut self) -> Self {
         std::mem::take(self)
+    }
+
+    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
+        match self {
+            BaoFileStorage::Complete(c) => &c.bitfield,
+            BaoFileStorage::Incomplete(i) => &i.bitfield,
+            BaoFileStorage::IncompleteMem(i) => &i.bitfield,
+        }
+    }
+
+    fn bitfield_mut(&mut self) -> &mut Observable<BitfieldUpdate> {
+        match self {
+            BaoFileStorage::Complete(c) => &mut c.bitfield,
+            BaoFileStorage::Incomplete(i) => &mut i.bitfield,
+            BaoFileStorage::IncompleteMem(i) => &mut i.bitfield,
+        }
     }
 
     /// Create a new mutable mem storage.
@@ -353,21 +358,12 @@ pub struct BaoFileConfig {
     dir: Arc<PathBuf>,
     /// Maximum data size (inclusive) before switching to file mode.
     max_mem: usize,
-    /// Callback to call when we switch to file mode.
-    ///
-    /// Todo: make this async.
-    #[debug("{:?}", on_file_create.as_ref().map(|_| ()))]
-    pub on_file_create: Option<CreateCb>,
 }
 
 impl BaoFileConfig {
     /// Create a new deferred batch writer configuration.
-    pub fn new(dir: Arc<PathBuf>, max_mem: usize, on_file_create: Option<CreateCb>) -> Self {
-        Self {
-            dir,
-            max_mem,
-            on_file_create,
-        }
+    pub fn new(dir: Arc<PathBuf>, max_mem: usize) -> Self {
+        Self { dir, max_mem }
     }
 
     /// Get the paths for a hash.
@@ -437,8 +433,7 @@ impl BaoFileHandle {
             data: create_read_write(&paths.data)?,
             outboard: create_read_write(&paths.outboard)?,
             sizes: create_read_write(&paths.sizes)?,
-            observers: Vec::new(),
-            bitfield: ChunkRanges::empty(), // todo
+            bitfield: Default::default(), // todo
         });
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -454,11 +449,15 @@ impl BaoFileHandle {
         data: MemOrFile<Bytes, (File, u64)>,
         outboard: MemOrFile<Bytes, (File, u64)>,
     ) -> Self {
-        let observers = Vec::new();
+        let size = data.size() as u64;
+        let ranges = ChunkRanges::all();
         let storage = BaoFileStorage::Complete(CompleteStorage {
             data,
             outboard,
-            observers,
+            bitfield: Observable::new(BitfieldUpdate {
+                ranges,
+                size: BaoBlobSizeOpt::Verified(size),
+            }),
         });
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -467,20 +466,15 @@ impl BaoFileHandle {
         }))
     }
 
-    pub fn add_observer(&self, sender: mpsc::Sender<BitfieldEvent>) {
+    pub fn add_observer(&self, observer: Observer<BitfieldUpdate>) {
         let mut lock = self.storage.write().unwrap();
         // todo: send current state
-        match lock.deref_mut() {
-            BaoFileStorage::Complete(s) => {
-                s.observers.push(sender);
-            }
-            BaoFileStorage::Incomplete(s) => {
-                s.observers.push(sender);
-            }
-            BaoFileStorage::IncompleteMem(s) => {
-                s.observers.push(sender);
-            }
-        }
+        lock.deref_mut().bitfield_mut().add_observer(observer);
+    }
+
+    pub fn observer_dropped(&self) {
+        let mut lock = self.storage.write().unwrap();
+        lock.deref_mut().bitfield_mut().observer_dropped();
     }
 
     /// Transform the storage in place. If the transform fails, the storage will
@@ -629,7 +623,6 @@ impl IncompleteEntry {
             data,
             outboard,
             sizes,
-            observers: self.observers,
             bitfield: self.bitfield,
         })
     }

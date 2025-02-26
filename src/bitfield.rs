@@ -18,6 +18,21 @@ pub enum BaoBlobSize {
     Verified(u64),
 }
 
+fn is_validated(size: NonZeroU64, ranges: ChunkRanges) -> bool {
+    let size = size.get();
+    // ChunkNum::chunks will be at least 1, so this is safe.
+    let last_chunk = ChunkNum::chunks(size) - 1;
+    if ranges.contains(&last_chunk) {
+        true
+    } else {
+        false
+    }
+}
+
+fn is_complete(size: u64, ranges: ChunkRanges) -> bool {
+    ChunkRanges::from(..ChunkNum::chunks(size)).is_subset(&ranges)
+}
+
 impl BaoBlobSize {
     /// Create a new `BaoBlobSize` with the given size and verification status.
     pub fn new(size: u64, verified: bool) -> Self {
@@ -161,49 +176,24 @@ const EMPTY_HASH: [u8; 32] = [
     0xcc, 0x9a, 0x93, 0xca, 0xe4, 0x1f, 0x32, 0x62, // cc9a93cae41f3262
 ];
 
-/// Events from observing a local bitfield
-#[derive(Debug, PartialEq, Eq, derive_more::From, Clone)]
-pub enum BitfieldEvent {
-    /// The full state of the bitfield
-    State(BitfieldState),
-    /// An update to the bitfield
-    Update(BitfieldUpdate),
-}
-
-/// The state of a bitfield
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct BitfieldState {
-    /// The ranges that are set
-    pub ranges: ChunkRanges,
-    /// Whatever size information is available
-    pub size: BaoBlobSizeOpt,
-}
-
 /// An update to a bitfield
 ///
 /// Note that removals are extremely rare, so we model them as a full new state
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct BitfieldUpdate {
     /// The ranges that were added
-    pub added: ChunkRanges,
+    pub ranges: ChunkRanges,
     /// Possible update to the size information. can this be just a u64?
     pub size: BaoBlobSizeOpt,
 }
 
 impl Combine for BitfieldUpdate {
     fn combine(self, that: Self) -> Self {
-        let size = BaoBlobSizeOpt::combine(self.size, that.size, &self.added, &that.added);
-        let added = self.added | that.added;
-        Self { added, size }
-    }
-}
-
-impl BitfieldState {
-    /// State for a completely unknown bitfield
-    pub fn unknown() -> Self {
+        let size = BaoBlobSizeOpt::combine(self.size, that.size, &self.ranges, &that.ranges);
+        let added = self.ranges | that.ranges;
         Self {
-            ranges: ChunkRanges::empty(),
-            size: BaoBlobSizeOpt::Unknown,
+            ranges: added,
+            size,
         }
     }
 }

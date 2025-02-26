@@ -27,9 +27,9 @@ use tokio::{
 use tracing::error;
 
 use crate::{
-    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldEvent, BitfieldState, BitfieldUpdate},
+    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldUpdate},
     proto::*,
-    util::{SenderProgressExt, SparseMemFile, Tag},
+    util::{observer::Observable, SenderProgressExt, SparseMemFile, Tag},
     HashAndFormat, Store, IROH_BLOCK_SIZE,
 };
 
@@ -112,18 +112,7 @@ impl Actor {
             Command::Observe(Observe { hash, out }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
-                if out
-                    .try_send(
-                        BitfieldState {
-                            ranges: entry.bitfield().clone(),
-                            size: entry.size().into(),
-                        }
-                        .into(),
-                    )
-                    .is_ok()
-                {
-                    entry.observers().push(out);
-                }
+                entry.observers().add_observer(out);
             }
             Command::ImportBytes(ImportBytes { data, out }) => {
                 self.import_tasks.spawn(import_bytes_task(data, out));
@@ -195,29 +184,19 @@ impl Actor {
         let entry = self.state.data.entry(hash).or_default();
         let mut entry = entry.write().unwrap();
         let size = import_data.data.len() as u64;
-        let old_bitfield = entry.bitfield().clone();
+        let old_bitfield = entry.bitfield().state().ranges.clone();
         import_data.out.send(ImportProgress::Done { hash });
         *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
-        if entry.observers().is_empty() {
-            return;
-        }
         let added = ChunkRanges::from(..ChunkNum::full_chunks(size));
         let added = &added - old_bitfield;
-        // todo: also trigger event when verification status changes?
-        // is that even needed? A verification status change can only happen
-        // when there is also a bitmap change.
         if added.is_empty() {
             return;
         }
         let update = BitfieldUpdate {
-            added,
+            ranges: added,
             size: BaoBlobSizeOpt::Verified(size),
         };
-        entry.observers().retain(|sender| {
-            sender
-                .try_send(BitfieldEvent::Update(update.clone()))
-                .is_ok()
-        });
+        entry.observers().update(update);
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -283,29 +262,21 @@ async fn import_bao_task(
                     .data
                     .write_at(start, &leaf.data)
                     .expect("writing to mem can never fail");
-                if entry.observers.is_empty() {
-                    continue;
-                }
                 let added = ChunkRanges::from(ChunkNum::chunks(start)..ChunkNum::full_chunks(end));
-                let added = &added - &entry.bitfield;
+                let added = &added - &entry.bitfield.state().ranges;
                 if added.is_empty() {
                     continue;
                 }
-                entry.bitfield |= added.clone();
                 let update = BitfieldUpdate {
-                    added,
+                    ranges: added,
                     size: BaoBlobSize::from_size_and_ranges(
                         NonZeroU64::try_from(size).unwrap(),
-                        &entry.bitfield,
+                        &entry.bitfield.state().ranges,
                     )
                     .into(),
                 };
-                entry.observers.retain(|sender| {
-                    sender
-                        .try_send(BitfieldEvent::Update(update.clone()))
-                        .is_ok()
-                });
-                if entry.bitfield == ChunkRanges::from(..ChunkNum::chunks(size)) {
+                entry.bitfield.update(update);
+                if entry.bitfield.state().ranges == ChunkRanges::from(..ChunkNum::chunks(size)) {
                     let data = std::mem::take(&mut entry.data);
                     let outboard = std::mem::take(&mut entry.outboard);
                     let data: Bytes = <Vec<u8>>::try_from(data).unwrap().into();
@@ -522,7 +493,7 @@ impl Entry {
         }
     }
 
-    fn bitfield(&self) -> &ChunkRanges {
+    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
         match self {
             Self::Incomplete(entry) => entry.bitfield(),
             Self::Complete(entry) => entry.bitfield(),
@@ -536,10 +507,10 @@ impl Entry {
         }
     }
 
-    fn observers(&mut self) -> &mut Vec<mpsc::Sender<BitfieldEvent>> {
+    fn observers(&mut self) -> &mut Observable<BitfieldUpdate> {
         match self {
-            Self::Incomplete(entry) => &mut entry.observers,
-            Self::Complete(entry) => &mut entry.observers,
+            Self::Incomplete(entry) => &mut entry.bitfield,
+            Self::Complete(entry) => &mut entry.bitfield,
         }
     }
 }
@@ -551,21 +522,20 @@ pub(crate) struct IncompleteEntry {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
-    pub(crate) bitfield: ChunkRanges,
-    pub(crate) observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    pub(crate) bitfield: Observable<BitfieldUpdate>,
 }
 
 impl IncompleteEntry {
     pub fn size(&self) -> BaoBlobSize {
         let size = self.size.current_size();
         if let Some(size) = NonZeroU64::new(size) {
-            return BaoBlobSize::from_size_and_ranges(size, &self.bitfield);
+            return BaoBlobSize::from_size_and_ranges(size, &self.bitfield.state().ranges);
         } else {
             return BaoBlobSize::Verified(size);
         }
     }
 
-    fn bitfield(&self) -> &ChunkRanges {
+    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
         &self.bitfield
     }
 
@@ -595,36 +565,20 @@ impl IncompleteEntry {
                 }
             }
         }
-        if !self.observers.is_empty() {
-            let added = ranges - &self.bitfield;
-            if !added.is_empty() {
-                self.bitfield |= added.clone();
-                let update = BitfieldUpdate {
-                    added,
-                    size: BaoBlobSize::from_size_and_ranges(
-                        NonZeroU64::new(size).unwrap(),
-                        &self.bitfield,
-                    )
-                    .into(),
-                };
-                self.observers.retain(|sender| {
-                    sender
-                        .try_send(BitfieldEvent::Update(update.clone()))
-                        .is_ok()
-                });
-            }
-        }
+        let update = BitfieldUpdate {
+            ranges: ranges.clone(),
+            size: BaoBlobSizeOpt::Unverified(size),
+        };
+        self.bitfield.update(update);
         Ok(())
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CompleteEntry {
-    data: Bytes,
-    outboard: Bytes,
-    bitfield: ChunkRanges,
-    // these observers observe nothing, this is just to keep them alive
-    observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    pub(crate) data: Bytes,
+    pub(crate) outboard: Bytes,
+    bitfield: Observable<BitfieldUpdate>,
 }
 
 impl CompleteEntry {
@@ -642,8 +596,10 @@ impl CompleteEntry {
         Self {
             data,
             outboard,
-            bitfield,
-            observers: Vec::new(),
+            bitfield: Observable::new(BitfieldUpdate {
+                ranges: bitfield.clone(),
+                size: BaoBlobSizeOpt::Verified(size),
+            }),
         }
     }
 
@@ -652,8 +608,12 @@ impl CompleteEntry {
         BaoBlobSize::Verified(size)
     }
 
-    pub fn bitfield(&self) -> &ChunkRanges {
+    pub fn bitfield(&self) -> &Observable<BitfieldUpdate> {
         &self.bitfield
+    }
+
+    pub fn bitfield_mut(&mut self) -> &mut Observable<BitfieldUpdate> {
+        &mut self.bitfield
     }
 
     pub fn data(&self) -> impl AsRef<[u8]> + '_ {
@@ -662,10 +622,6 @@ impl CompleteEntry {
 
     pub fn outboard(&self) -> impl AsRef<[u8]> + '_ {
         self.outboard.as_ref()
-    }
-
-    pub fn observers(&mut self) -> &mut Vec<mpsc::Sender<BitfieldEvent>> {
-        &mut self.observers
     }
 }
 

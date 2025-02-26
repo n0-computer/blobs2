@@ -17,15 +17,18 @@ use tokio::{
 };
 
 use crate::{
-    bitfield::BitfieldState, mem::CompleteEntry, proto::*, util::SenderProgressExt, Store,
-    IROH_BLOCK_SIZE,
+    bitfield::BitfieldUpdate,
+    mem::CompleteEntry,
+    proto::*,
+    util::{observer::Observable, SenderProgressExt},
+    Store, IROH_BLOCK_SIZE,
 };
 
 struct Actor {
     commands: mpsc::Receiver<Command>,
     unit_tasks: JoinSet<()>,
     data: HashMap<Hash, CompleteEntry>,
-    observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    observers: Observable<BitfieldUpdate>,
 }
 
 impl Actor {
@@ -37,7 +40,7 @@ impl Actor {
             data,
             commands,
             unit_tasks: JoinSet::new(),
-            observers: Vec::new(),
+            observers: Default::default(),
         }
     }
 
@@ -66,30 +69,26 @@ impl Actor {
             }
             Command::Observe(Observe { hash, out }) => {
                 if let Some(entry) = self.data.get_mut(&hash) {
-                    let ranges = entry.bitfield().clone();
-                    let size = entry.size().into();
-                    // if we can't send, we drop out, so the caller will get an error
-                    if out.try_send(BitfieldState { ranges, size }.into()).is_err() {
-                        return;
-                    }
-                    entry.observers().push(out);
+                    entry.bitfield_mut().add_observer(out);
                 } else {
-                    // if we can't send, we drop out, so the caller will get an error
-                    if out.try_send(BitfieldState::unknown().into()).is_err() {
-                        return;
-                    }
-                    self.observers.push(out);
+                    self.observers.add_observer(out);
                 }
             }
             Command::ExportBao(ExportBao { hash, ranges, out }) => {
-                let entry = self.data.get(&hash).cloned();
+                let entry = self
+                    .data
+                    .get(&hash)
+                    .map(|e| (e.data.clone(), e.outboard.clone()));
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry, ranges, out));
             }
             Command::ExportPath(ExportPath {
                 hash, target, out, ..
             }) => {
-                let entry = self.data.get(&hash).cloned();
+                let entry = self
+                    .data
+                    .get(&hash)
+                    .map(|e| (e.data.clone(), e.outboard.clone()));
                 self.unit_tasks.spawn(export_path_task(entry, target, out));
             }
             _ => {}
@@ -121,11 +120,11 @@ impl Actor {
 
 async fn export_bao_task(
     hash: Hash,
-    entry: Option<CompleteEntry>,
+    entry: Option<(Bytes, Bytes)>,
     ranges: ChunkRanges,
     sender: tokio::sync::mpsc::Sender<EncodedItem>,
 ) {
-    let entry = match entry {
+    let (data, outboard) = match entry {
         Some(entry) => entry,
         None => {
             sender
@@ -140,8 +139,6 @@ async fn export_bao_task(
             return;
         }
     };
-    let data = entry.data();
-    let outboard = entry.outboard();
     let size = data.as_ref().len() as u64;
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let outboard = PreOrderMemOutboard {
@@ -168,7 +165,7 @@ impl Store {
 }
 
 async fn export_path_task(
-    entry: Option<CompleteEntry>,
+    entry: Option<(Bytes, Bytes)>,
     target: PathBuf,
     out: mpsc::Sender<ExportProgress>,
 ) {
@@ -187,19 +184,19 @@ async fn export_path_task(
 }
 
 async fn export_path_impl(
-    entry: CompleteEntry,
+    (data, outboard): (Bytes, Bytes),
     target: PathBuf,
     out: &mpsc::Sender<ExportProgress>,
 ) -> anyhow::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
-    let size = entry.size().value();
+    let size = data.len() as u64;
     out.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
-        entry.data().as_ref().read_exact_at(offset, buf)?;
+        data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
         out.send_progress(ExportProgress::CopyProgress {
             offset: offset as u64,

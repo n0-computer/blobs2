@@ -1,5 +1,4 @@
 //! The user facing API of the store.
-//!
 use std::{
     future::Future,
     io,
@@ -22,7 +21,12 @@ use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 
-use crate::{proto::*, util::Tag, HashAndFormat, Store, IROH_BLOCK_SIZE};
+use crate::{
+    bitfield::BitfieldUpdate,
+    proto::*,
+    util::{observer::Observer, Tag},
+    HashAndFormat, Store, IROH_BLOCK_SIZE,
+};
 
 impl Store {
     pub fn import_bytes(&self, data: bytes::Bytes) -> ImportResult {
@@ -62,7 +66,13 @@ impl Store {
     pub fn observe(&self, hash: Hash) -> ObserveResult {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         self.sender
-            .try_send(Observe { hash, out: sender }.into())
+            .try_send(
+                Observe {
+                    hash,
+                    out: Observer::new(sender),
+                }
+                .into(),
+            )
             .ok();
         ObserveResult { receiver }
     }
@@ -192,11 +202,11 @@ impl Stream for ImportResult {
 }
 
 pub struct ObserveResult {
-    receiver: tokio::sync::mpsc::Receiver<BitfieldEvent>,
+    receiver: tokio::sync::mpsc::Receiver<BitfieldUpdate>,
 }
 
 impl Stream for ObserveResult {
-    type Item = BitfieldEvent;
+    type Item = BitfieldUpdate;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.poll_recv(cx) {

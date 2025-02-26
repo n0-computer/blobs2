@@ -1,7 +1,5 @@
 use std::{
-    any,
     collections::BTreeMap,
-    f32::consts::E,
     fs,
     io::Write,
     ops::Deref,
@@ -10,11 +8,8 @@ use std::{
 };
 
 use bao_tree::{
-    io::{
-        mixed::traverse_ranges_validated, outboard::PreOrderOutboard, sync::ReadAt, BaoContentItem,
-        Leaf,
-    },
-    BaoTree, ChunkNum, ChunkRanges,
+    io::{mixed::traverse_ranges_validated, sync::ReadAt, BaoContentItem, Leaf},
+    ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use entry_state::{DataLocation, OutboardLocation};
@@ -23,15 +18,16 @@ use meta::GetResult;
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use tokio::{
-    sync::{mpsc, mpsc::OwnedPermit, oneshot},
+    sync::{mpsc, oneshot},
     task::{JoinError, JoinSet},
 };
 use tracing::{error, trace, warn};
 
 use crate::{
     bao_file::{BaoFileConfig, BaoFileHandle, BaoFileHandleWeak, BaoFileStorage, HandleChange},
-    util::{MemOrFile, SenderProgressExt},
-    Hash, IROH_BLOCK_SIZE,
+    bitfield::BitfieldUpdate,
+    util::{observer::Observer, MemOrFile, SenderProgressExt},
+    Hash,
 };
 
 mod entry_state;
@@ -41,7 +37,7 @@ mod options;
 mod util;
 use entry_state::EntryState;
 use import::{import_byte_stream_task, import_bytes_task, import_path_task, ImportEntry};
-use options::{Options, PathOptions};
+use options::Options;
 
 use super::{proto::*, Store};
 
@@ -173,6 +169,7 @@ impl Actor {
                     self.waiting.entry(hash).or_default().push(cmd.into());
                     return;
                 };
+                self.unit_tasks.spawn(observe_task(cmd, Ok(handle)));
             }
             Command::SyncDb(cmd) => {
                 self.db.send(cmd.into()).await.ok();
@@ -403,7 +400,6 @@ impl Actor {
         let config = Arc::new(BaoFileConfig::new(
             Arc::new(options.path.data_path.clone()),
             options.inline.max_data_inlined as usize,
-            None,
         ));
         rt.spawn(db_actor.run());
         Ok(Self {
@@ -512,8 +508,12 @@ async fn observe_task(
     }
 }
 
-async fn observe_impl(handle: BaoFileHandle, out: mpsc::Sender<BitfieldEvent>) {
+async fn observe_impl(handle: BaoFileHandle, out: Observer<BitfieldUpdate>) {
+    let receiver_dropped = out.receiver_dropped();
     handle.add_observer(out);
+    // this keeps the handle alive until the observer is dropped
+    receiver_dropped.await;
+    handle.observer_dropped();
 }
 
 async fn export_bao_task(
@@ -673,12 +673,11 @@ mod tests {
     use std::collections::HashMap;
 
     use bao_tree::{blake3, io::outboard::PreOrderMemOutboard, ChunkRanges};
-    use quinn::Chunk;
+    use n0_future::StreamExt;
     use testresult::TestResult;
-    use tokio::io::AsyncReadExt;
 
     use super::*;
-    use crate::{util::Tag, HashAndFormat};
+    use crate::{util::Tag, HashAndFormat, IROH_BLOCK_SIZE};
 
     fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
@@ -687,6 +686,39 @@ mod tests {
         encoded.extend_from_slice(&size.to_le_bytes());
         bao_tree::io::sync::encode_ranges_validated(&data, &outboard, ranges, &mut encoded)?;
         Ok((outboard.root, encoded))
+    }
+
+    #[tokio::test]
+    async fn observe() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let sizes = [
+            // 0,
+            // 1,
+            // 1024,
+            // 1024 * 16 - 1,
+            // 1024 * 16,
+            // 1024 * 16 + 1,
+            // 1024 * 1024,
+            1024 * 1024 * 8,
+        ];
+        for size in sizes {
+            let data = vec![1u8; size];
+            let ranges = ChunkRanges::all();
+            let (hash, bao) = create_n0_bao(&data, &ranges)?;
+            let mut obs = store.observe(hash);
+            let task = tokio::spawn(async move {
+                while let Some(ev) = obs.next().await {
+                    println!("{ev:?}");
+                }
+            });
+            store.import_bao_bytes(hash, ranges, bao.into()).await?;
+            task.await?;
+        }
+        Ok(())
     }
 
     #[tokio::test]
