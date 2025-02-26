@@ -4,6 +4,7 @@
 //! commands. E.g. an immutable store can just return an error for import commands.
 use std::{io, path::PathBuf, pin::Pin};
 
+pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
@@ -12,7 +13,6 @@ use tokio::sync::{mpsc, oneshot};
 
 pub use crate::bitfield::BitfieldEvent;
 use crate::{util::Tag, BlobFormat, HashAndFormat};
-pub use bao_tree::io::mixed::EncodedItem;
 
 /// Import bao encoded data for the given hash with the iroh block size.
 ///

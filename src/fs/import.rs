@@ -10,22 +10,22 @@
 //!
 //! The various ..._task fns return an `Option<ImportEntry>`. If import fails for whatever reason, the error goes
 //! to the requester, and the task returns None.
-use bao_tree::{
-    blake3::Hash,
-    io::{outboard::PreOrderOutboard, sync::WriteAt},
-    BaoTree,
-};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, Read, Seek, Write},
     path::PathBuf,
     sync::Arc,
 };
-use tracing::trace;
 
+use bao_tree::{
+    blake3::Hash,
+    io::{outboard::PreOrderOutboard, sync::WriteAt},
+    BaoTree,
+};
 use bytes::Bytes;
 use n0_future::StreamExt;
 use tokio::{sync::mpsc, task::yield_now};
+use tracing::trace;
 
 use super::{meta::raw_outboard_size, options::Options};
 use crate::{
@@ -282,16 +282,16 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
 #[cfg(test)]
 mod tests {
 
+    use bao_tree::io::outboard::PreOrderMemOutboard;
+    use n0_future::stream;
+    use testresult::TestResult;
+
+    use super::*;
     use crate::{
         fs::options::{InlineOptions, PathOptions},
         proto::{BoxedByteStream, ImportMode},
         BlobFormat,
     };
-
-    use super::*;
-    use bao_tree::io::outboard::PreOrderMemOutboard;
-    use n0_future::stream;
-    use testresult::TestResult;
 
     async fn drain<T>(mut recv: mpsc::Receiver<T>) -> TestResult<Vec<T>> {
         let mut res = Vec::new();

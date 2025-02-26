@@ -1,6 +1,5 @@
 //! The user facing API of the store.
 //!
-//!
 use std::{
     future::Future,
     io,
@@ -249,11 +248,27 @@ pub struct ExportBaoResult {
 }
 
 impl ExportBaoResult {
-    pub async fn to_vec(self) -> io::Result<Vec<u8>> {
+    pub async fn bao_to_vec(self) -> io::Result<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.to_byte_stream();
         while let Some(item) = stream.next().await {
             data.extend_from_slice(&item?);
+        }
+        Ok(data)
+    }
+
+    pub async fn data_to_vec(mut self) -> io::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        while let Some(item) = self.receiver.recv().await {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    data.extend_from_slice(&leaf.data);
+                }
+                EncodedItem::Parent(_) => {}
+                EncodedItem::Size(_) => {}
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+            }
         }
         Ok(data)
     }

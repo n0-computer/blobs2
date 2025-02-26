@@ -8,6 +8,7 @@ mod sparse_mem_file;
 pub use mem_or_file::MemOrFile;
 pub use sparse_mem_file::SparseMemFile;
 use tokio::sync::mpsc;
+pub mod observer;
 
 /// A tag
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]

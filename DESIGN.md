@@ -1,20 +1,24 @@
-# Blob store design
+# Blob store trade offs
 
-BLAKE3 hashed data and BLAKE3 verified streaming/bao are extremely deterministic.
+BLAKE3 hashed data and BLAKE3 verified streaming/bao are fully deterministic.
 
-The iroh blobs protocol is implemented in this spirit. Even for complex requests like requests that involve multiple ranges or entire hash sequences, for every request, there is exactly one sequence of bytes that is a valid answer. And the requester will notice if an answer is incorrect after at most 16 KiB of data.
+The iroh blobs protocol is implemented in this spirit. Even for complex requests like requests that involve multiple ranges or entire hash sequences, for every request, there is exactly one sequence of bytes that is the correct answer. And the requester will notice if data is incorrect after at most 16 KiB of data.
 
 So why is designing a blob store for BLAKE3 hashed data so complex? What are the challenges?
 
+## Terminology
+
+The job of a blob store is to store two pieces of data per hash, the actual data itself and an `outboard` containing the BLAKE3 hash tree that connects each chunk of data to the root. Data and outboard are kept separate so that the data can be used as-is.
+
 ## In memory store
 
-In the simplest case, you store data in memory. If you want to serve complete blobs, you just need a map from hash to data and outboard stored in a cheaply cloneable container like `bytes::Bytes`. Even if you want to also handle incomplete blobs, you use a map from hash and chunk number to (<= 1024 byte) data block, and that's it. Such a store is relatively easy to implement using a crate like [bao-tree] and a simple [BTreeMap] wrapped in a [Mutex].
+In the simplest case, you store data in memory. If you want to serve complete blobs, you just need a map from hash to data and outboard stored in a cheaply cloneable container like [bytes::Bytes]. Even if you want to also handle incomplete blobs, you use a map from hash and chunk number to (<= 1024 byte) data block, and that's it. Such a store is relatively easy to implement using a crate like [bao-tree] and a simple [BTreeMap] wrapped in a [Mutex].
 
-But the whole point of a blob store - in particular for iroh-blobs, where we don't have an upper size limit for blobs - is to store *a lot* of data persistently. So an in memory store won't do for all use cases.
+But the whole point of a blob store - in particular for iroh-blobs, where we don't have an upper size limit for blobs - is to store *a lot* of data persistently. So while an in memory store implementation is included in iroh-blobs, an in memory store won't do for all use cases.
 
 ## Ok, fine. Let's use a database
 
-We want a database that works on the various platforms we support for iroh, and that does not come with a giant dependency tree or non-rust dependencies. So our current choice is an embedded database called `redb`. But as we will see the exact choice of database does not matter that much.
+We want a database that works on the various platforms we support for iroh, and that does not come with a giant dependency tree or non-rust dependencies. So our current choice is an embedded database called [redb]. But as we will see the exact choice of database does not matter that much.
 
 A naive implementation of a block store using a relational or key value database would just duplicate the above approach. A map from hash and chunk number to a <= 1024 byte data block, except now in a persistent table.
 
@@ -30,7 +34,7 @@ First of all, it is very inefficient if you deal with a large number of tiny blo
 
 Also, now we are very much dependant on the quirks of whatever file system our target operating system has. Many older file systems like FAT32 or EXT2 are notoriously bad in handling directories with millions of files. And we can't just limit ourselves to e.g. linux servers with modern file systems, since we also want to support mobile platforms and windows PCs.
 
-And last but not least, creating a the metadata for a file is very expensive compared to writing a few bytes. We would be limited to a pathetically low download speed when bulk downloading millions of blobs, like for example an iroh collection containing the linux source code. For very small files embedded databases are [frequently much faster](https://www.sqlite.org/fasterthanfs.html) than the file system.
+And last but not least, creating a the metadata for a file is very expensive compared to writing a few bytes. We would be limited to a pathetically low download speed when bulk downloading millions of blobs, like for example an iroh collection containing the linux source code. For very small files embedded databases are [frequently faster](https://www.sqlite.org/fasterthanfs.html) than the file system.
 
 There are additional problems when dealing with large incomplete files. Enough to fill a book. More on that later.
 
@@ -38,35 +42,31 @@ There are additional problems when dealing with large incomplete files. Enough t
 
 It seems that databases are good for small blobs, and the file system works great for large blobs. So what about a hybrid approach where small blobs are stored entirely inline in a database, but large blobs are stored as files in the file system? This is complex, but provides very good performance both for millions of small blobs and for a few giant blobs.
 
-We won't ever have a directory with millions of files, since tiny files never make it to the file system in the first place. And we won't need to read giant files through the bottleneck of a database, so access to large files will be as fast as the hardware allows.
+We won't ever have a directory with millions of files, since tiny files never make it to the file system in the first place. And we won't need to read giant files through the bottleneck of a database, so access to large files will be as fast and as concurrent as the hardware allows.
 
 This is exactly the approach that we currently take in the iroh-blobs file based store. For both data files and outboards, there is a configurable threshold below which the data will be stored inline in the database. The configuration can be useful for debugging and testing, e.g. you can force all data on disk by setting both thresholds to 0. But the defaults of 16 KiB for inline outboard and data size make a lot of sense and will rarely have to be changed in production.
 
+While this is the most complex approach, there is really no alternative if you want good performance both for a large number of tiny blobs and a small number of giant blobs.
+
+# The hybrid blob store in detail
+
 ### Sizes
 
-A complication here is that when we have a hash to get data for, we do not know its size. So we can not immediately decide whether it should go into a file or the database. Even once we request the data from a remote peer, we don't know the exact size. A remote node could lie about the size, e.g. tell us that the blob has an absurdly large size. As we get validated chunks the uncertainty about the size decreases. After the first validated chunk of data, the uncertainty is only a factor of 2, and as we receive the last chunk we know the exact size.
+A complication with the hybrid approach is that when we have a hash to get data for, we do not know its size. So we can not immediately decide whether it should go into a file or the database. Even once we request the data from a remote peer, we don't know the exact size. A remote node could lie about the size, e.g. tell us that the blob has an absurdly large size. As we get validated chunks the uncertainty about the size decreases. After the first validated chunk of data, the uncertainty is only a factor of 2, and as we receive the last chunk we know the exact size.
 
 This is not the end of the world, but it does mean that we need to keep the data for a hash in some weird indeterminate state before we have enough data to decide if it will be stored in memory or on disk.
 
-todo: move this section!
-
-The way this is currently implemented is as follows: as we start downloading a new blob from a remote, the information about this blob is kept fully in memory. The database is not touched at all, which means that the data would be gone after a crash. On the plus side, no matter what lies a remote node tells us, they will not create much work for us.
-
-As soon as we know that the data is going to be larger than the inlining threshold, we create an entry in the db marking the data as present but incomplete, and create files for the data and outboard. There is also an additional file which contains the most precisely known size.
-
-As soon as the blob becomes complete, an entry is created that marks the data as complete. At this point the inlining rules will be applied. Data that is below the inline threshold will be moved into the metadata database, likewise with the outboard.
-
 ### Metadata
 
-We want to have the ability to quickly list all blobs or determine if we have data for a blob. Small blobs live completely in the database, so for these this is not a problem. For large blobs we want to keep a bit of metadata in the database as well, such as whether they are complete and if not if we at least have a verified size. But we also don't want to keep more than this in the metadata database, so we don't have to update it frequently as new data comes in.
+We want to have the ability to quickly list all blobs or determine if we have data for a blob. Small blobs live completely in the database, so for these this is not a problem. But even for large blobs we want to keep a bit of metadata in the database as well, such as whether they are complete and if not if we at least have a verified size. But we also don't want to keep more than this in the metadata database, so we don't have to update it frequently as new data comes in. An individual database update is very fast, but syncing the update to disk is extremely slow no matter how small the update is. So the secret to fast download speeds is to not touch the metadata database at all if possible.
 
 ### The metadata table
 
-The metadata table is a mapping from a BLAKE3 hash to an entry state. The entry state can be either `complete` or `partial`.
+The metadata table is a mapping from a BLAKE3 hash to an entry state. The rough entry state can be either `complete` or `partial`.
 
 #### Complete entry state
 
-Data can either be `inline` in the metadata db, `owned` in a canonical location in the file system (in this case we don't have to store the path since it can be computed from the hash), or `external` in a number of user owned paths that have to be explicitly stored. In the `owned` or `external` case we store the size in the metadata, since getting it from a file has a cost.
+Data can either be `inline` in the metadata db, `owned` in a canonical location in the file system (in this case we don't have to store the path since it can be computed from the hash), or `external` in a number of user owned paths that have to be explicitly stored. In the `owned` or `external` case we store the size in the metadata, since getting it from a file is an io operation with non-zero cost.
 
 An outboard can either be `inline` in the metadata db, `owned` in a canonical location in the file system, or `not needed` in case the data is less large than a chunk group size. Any data <= 16 KiB will have an outboard of size 0 which we don't bother to store at all. Outboards are never in user owned paths, so we never have to store a path for them.
 
@@ -82,17 +82,26 @@ The inline data table is kept separate from the metadata table since it will ten
 
 The tags table is just a simple CRUD table that is completely independent of the other tables. It is just kept together with the other tables for simplicity.
 
-## File lifecycle
+
+todo: move this section!
+
+The way this is currently implemented is as follows: as we start downloading a new blob from a remote, the information about this blob is kept fully in memory. The database is not touched at all, which means that the data would be gone after a crash. On the plus side, no matter what lies a remote node tells us, they will not create much work for us.
+
+As soon as we know that the data is going to be larger than the inlining threshold, we create an entry in the db marking the data as present but incomplete, and create files for the data and outboard. There is also an additional file which contains the most precisely known size.
+
+As soon as the blob becomes complete, an entry is created that marks the data as complete. At this point the inlining rules will be applied. Data that is below the inline threshold will be moved into the metadata database, likewise with the outboard.
+
+## Blob lifecycle
 
 There are two fundamentally different ways how data can be added to a blob store. 
 
 ### Adding local files by name
 
-If we add data locally, e.g. from a file, we don't know the hash. We have to compute the complete outboard, the root hash, and then atomically move the file into the store under the root hash. If there was partial data there before, we can just replace it with the new complete data and outboard. Once the data is stored under the hash, neither the data nor the outboard will be changed.
+If we add data locally, e.g. from a file, we have the data but don't know the hash. We have to compute the complete outboard, the root hash, and then atomically move the file into the store under the root hash. Depending on the size of the file, data and outboard will end up in the file system or in the database. If there was partial data there before, we can just replace it with the new complete data and outboard. Once the data is stored under the hash, neither the data nor the outboard will be changed.
 
 ### Syncing remote blobs by hash
 
-If we sync data from a remote node, we do know the hash but don't have the data. In case the blob is small, we can atomically write the data, so we have a similar situation as above. But as soon as the data is larger than a chunk group size (16 KiB), we will have a situation where the data has to be written incrementally. This is much more complex than adding local files. We now have to keep track of which chunks of the blob we have locally, and which chunks of the blob we can *prove* to have locally (not the same thing if you have a chunk group size > 1).
+If we sync data from a remote node, we do know the hash but don't have the data. In case the blob is small, we can request and atomically write the data, so we have a similar situation as above. But as soon as the data is larger than a chunk group size (16 KiB), we will have a situation where the data has to be written incrementally. This is much more complex than adding local files. We now have to keep track of which chunks of the blob we have locally, and which chunks of the blob we can *prove* to have locally (not the same thing if you have a chunk group size > 1).
 
 ### Blob deletion
 
@@ -100,7 +109,7 @@ On creation, blobs are tagged with a temporary tag that prevents them from being
 
 We also provide a way to explicitly delete blobs by hash, but that is meant to be used only in case of an emergency. You have some data that you want **gone** no matter how dire the consequences are.
 
-Deletion is always *complete*. There is currently no mechanism to protect or delete ranges of a file. This makes a number of things easier. A chunk of a blob can only go from not present (all zeroes) to present (whatever the correct data is for the chunk), not the other way. And this means that all changes due to syncing from a remote source commute.
+Deletion is always *complete*. There is currently no mechanism to protect or delete ranges of a file. This makes a number of things easier. A chunk of a blob can only go from not present (all zeroes) to present (whatever the correct data is for the chunk), not the other way. And this means that all changes due to syncing from a remote source commute, which makes dealing with concurrent downloads from multiple sources much easier.
 
 Deletion runs in the background, and conceptually you should think of it as always being on. Currently there is a small delay between a blob being untagged and it being deleted, but in the future blobs will be immediately deleted as soon as they are no longer tagged.
 

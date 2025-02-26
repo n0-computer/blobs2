@@ -211,7 +211,6 @@ impl Actor {
         }
         let update = BitfieldUpdate {
             added,
-            removed: ChunkRanges::empty(),
             size: BaoBlobSizeOpt::Verified(size),
         };
         entry.observers().retain(|sender| {
@@ -295,7 +294,6 @@ async fn import_bao_task(
                 entry.bitfield |= added.clone();
                 let update = BitfieldUpdate {
                     added,
-                    removed: ChunkRanges::empty(),
                     size: BaoBlobSize::from_size_and_ranges(
                         NonZeroU64::try_from(size).unwrap(),
                         &entry.bitfield,
@@ -548,13 +546,13 @@ impl Entry {
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct IncompleteEntry {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
-    bitfield: ChunkRanges,
-    observers: Vec<mpsc::Sender<BitfieldEvent>>,
+    pub(crate) bitfield: ChunkRanges,
+    pub(crate) observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
 impl IncompleteEntry {
@@ -569,6 +567,54 @@ impl IncompleteEntry {
 
     fn bitfield(&self) -> &ChunkRanges {
         &self.bitfield
+    }
+
+    pub(super) fn write_batch(
+        &mut self,
+        size: u64,
+        batch: &[BaoContentItem],
+        ranges: &ChunkRanges,
+    ) -> std::io::Result<()> {
+        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+        for item in batch {
+            match item {
+                BaoContentItem::Parent(parent) => {
+                    if let Some(offset) = tree.pre_order_offset(parent.node) {
+                        let o0 = offset
+                            .checked_mul(64)
+                            .expect("u64 overflow multiplying to hash pair offset");
+                        let o1 = o0.checked_add(32).expect("u64 overflow");
+                        let outboard = &mut self.outboard;
+                        outboard.write_all_at(o0, parent.pair.0.as_bytes().as_slice())?;
+                        outboard.write_all_at(o1, parent.pair.1.as_bytes().as_slice())?;
+                    }
+                }
+                BaoContentItem::Leaf(leaf) => {
+                    self.size.write(leaf.offset, size);
+                    self.data.write_all_at(leaf.offset, leaf.data.as_ref())?;
+                }
+            }
+        }
+        if !self.observers.is_empty() {
+            let added = ranges - &self.bitfield;
+            if !added.is_empty() {
+                self.bitfield |= added.clone();
+                let update = BitfieldUpdate {
+                    added,
+                    size: BaoBlobSize::from_size_and_ranges(
+                        NonZeroU64::new(size).unwrap(),
+                        &self.bitfield,
+                    )
+                    .into(),
+                };
+                self.observers.retain(|sender| {
+                    sender
+                        .try_send(BitfieldEvent::Update(update.clone()))
+                        .is_ok()
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -623,18 +669,6 @@ impl CompleteEntry {
     }
 }
 
-impl Default for IncompleteEntry {
-    fn default() -> Self {
-        Self {
-            data: Default::default(),
-            outboard: Default::default(),
-            size: SizeInfo::default(),
-            bitfield: ChunkRanges::empty(),
-            observers: Vec::new(),
-        }
-    }
-}
-
 fn print_outboard(hashes: &[u8]) {
     assert!(hashes.len() % 64 == 0);
     for chunk in hashes.chunks(64) {
@@ -663,7 +697,7 @@ mod tests {
             println!("item: {:?}", item);
         }
         let stream = store.export_bao(hash, ChunkRanges::all());
-        let exported = stream.to_vec().await?;
+        let exported = stream.bao_to_vec().await?;
 
         let store2 = Store::memory();
         let mut or = store2.observe(hash);
@@ -676,7 +710,10 @@ mod tests {
             .import_bao_bytes(hash, ChunkRanges::all(), exported.clone().into())
             .await?;
 
-        let exported2 = store2.export_bao(hash, ChunkRanges::all()).to_vec().await?;
+        let exported2 = store2
+            .export_bao(hash, ChunkRanges::all())
+            .bao_to_vec()
+            .await?;
         assert_eq!(exported, exported2);
 
         Ok(())

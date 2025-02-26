@@ -1,5 +1,4 @@
 //! Protocol for the metadata database.
-use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
 use bytes::Bytes;
 use n0_future::io;
 use nested_enum_utils::enum_conversions;
@@ -7,8 +6,8 @@ use redb::{AccessGuard, StorageError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
-
 pub use crate::proto::SyncDb;
+use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
 
 /// Get the entry state for a hash.
 ///

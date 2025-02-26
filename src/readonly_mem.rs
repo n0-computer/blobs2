@@ -1,3 +1,9 @@
+use std::{
+    collections::HashMap,
+    io::{self, Write},
+    path::PathBuf,
+};
+
 use bao_tree::{
     blake3::Hash,
     io::{mixed::traverse_ranges_validated, outboard::PreOrderMemOutboard, sync::ReadAt},
@@ -5,11 +11,6 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::future::yield_now;
-use std::{
-    collections::HashMap,
-    io::{self, Write},
-    path::PathBuf,
-};
 use tokio::{
     sync::mpsc::{self, error::TrySendError},
     task::{JoinError, JoinSet},
@@ -210,8 +211,9 @@ async fn export_path_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bao_tree::blake3;
+
+    use super::*;
 
     #[tokio::test]
     async fn smoke() {

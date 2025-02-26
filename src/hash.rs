@@ -1,8 +1,8 @@
 //! The blake3 hash used in Iroh.
 
-use bao_tree::blake3;
 use std::{borrow::Borrow, fmt, str::FromStr};
 
+use bao_tree::blake3;
 use postcard::experimental::max_size::MaxSize;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 

@@ -1,10 +1,10 @@
-use crate::Hash;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use super::temp_name;
+use crate::Hash;
 
 /// Options for directories used by the file store.
 #[derive(Debug, Clone)]

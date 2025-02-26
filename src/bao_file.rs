@@ -12,7 +12,8 @@
 use std::{
     fs::{File, OpenOptions},
     io,
-    ops::Deref,
+    num::NonZeroU64,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{Arc, RwLock, Weak},
 };
@@ -23,7 +24,7 @@ use bao_tree::{
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
     },
-    BaoTree,
+    BaoTree, ChunkRanges,
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
@@ -31,6 +32,7 @@ use tokio::sync::mpsc;
 
 use super::mem::SizeInfo;
 use crate::{
+    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldUpdate},
     mem::IncompleteEntry,
     proto::BitfieldEvent,
     util::{MemOrFile, SparseMemFile},
@@ -95,22 +97,6 @@ pub struct CompleteStorage {
 }
 
 impl CompleteStorage {
-    /// Read from the data file at the given offset, until end of file or max bytes.
-    pub fn read_data_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        match &self.data {
-            MemOrFile::Mem(mem) => mem.as_ref().read_at(offset, buf),
-            MemOrFile::File((file, _size)) => file.read_at(offset, buf),
-        }
-    }
-
-    /// Read from the outboard file at the given offset, until end of file or max bytes.
-    pub fn read_outboard_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        match &self.outboard {
-            MemOrFile::Mem(mem) => mem.as_ref().read_at(offset, buf),
-            MemOrFile::File((file, _size)) => file.read_at(offset, buf),
-        }
-    }
-
     /// The size of the data file.
     pub fn data_size(&self) -> u64 {
         match &self.data {
@@ -183,6 +169,7 @@ pub struct FileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
+    bitfield: ChunkRanges,
     observers: Vec<mpsc::Sender<BitfieldEvent>>,
 }
 
@@ -205,7 +192,12 @@ impl FileStorage {
         }
     }
 
-    fn write_batch(&mut self, size: u64, batch: &[BaoContentItem]) -> io::Result<()> {
+    fn write_batch(
+        &mut self,
+        size: u64,
+        batch: &[BaoContentItem],
+        ranges: &ChunkRanges,
+    ) -> io::Result<()> {
         let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
         for item in batch {
             match item {
@@ -232,6 +224,25 @@ impl FileStorage {
                     let size = tree.size();
                     self.sizes.write_all_at(index, &size.to_le_bytes())?;
                 }
+            }
+        }
+        if !self.observers.is_empty() {
+            let added = ranges - &self.bitfield;
+            if !added.is_empty() {
+                self.bitfield |= added.clone();
+                let update = BitfieldUpdate {
+                    added,
+                    size: BaoBlobSize::from_size_and_ranges(
+                        NonZeroU64::new(size).unwrap(),
+                        &self.bitfield,
+                    )
+                    .into(),
+                };
+                self.observers.retain(|sender| {
+                    sender
+                        .try_send(BitfieldEvent::Update(update.clone()))
+                        .is_ok()
+                });
             }
         }
         Ok(())
@@ -346,7 +357,7 @@ pub struct BaoFileConfig {
     ///
     /// Todo: make this async.
     #[debug("{:?}", on_file_create.as_ref().map(|_| ()))]
-    on_file_create: Option<CreateCb>,
+    pub on_file_create: Option<CreateCb>,
 }
 
 impl BaoFileConfig {
@@ -377,9 +388,9 @@ impl ReadAt for DataReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let guard = self.0.storage.read().unwrap();
         match guard.deref() {
-            BaoFileStorage::Complete(x) => x.data.read_at(offset, buf),
             BaoFileStorage::IncompleteMem(x) => x.data.read_at(offset, buf),
             BaoFileStorage::Incomplete(x) => x.data.read_at(offset, buf),
+            BaoFileStorage::Complete(x) => x.data.read_at(offset, buf),
         }
     }
 }
@@ -399,7 +410,7 @@ impl ReadAt for OutboardReader {
     }
 }
 
-enum HandleChange {
+pub enum HandleChange {
     None,
     MemToFile,
     // later: size verified
@@ -427,6 +438,7 @@ impl BaoFileHandle {
             outboard: create_read_write(&paths.outboard)?,
             sizes: create_read_write(&paths.sizes)?,
             observers: Vec::new(),
+            bitfield: ChunkRanges::empty(), // todo
         });
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -453,6 +465,22 @@ impl BaoFileHandle {
             config,
             hash,
         }))
+    }
+
+    pub fn add_observer(&self, sender: mpsc::Sender<BitfieldEvent>) {
+        let mut lock = self.storage.write().unwrap();
+        // todo: send current state
+        match lock.deref_mut() {
+            BaoFileStorage::Complete(s) => {
+                s.observers.push(sender);
+            }
+            BaoFileStorage::Incomplete(s) => {
+                s.observers.push(sender);
+            }
+            BaoFileStorage::IncompleteMem(s) => {
+                s.observers.push(sender);
+            }
+        }
     }
 
     /// Transform the storage in place. If the transform fails, the storage will
@@ -518,9 +546,54 @@ impl BaoFileHandle {
         self.hash
     }
 
+    pub fn config(&self) -> &BaoFileConfig {
+        &self.config
+    }
+
     /// Downgrade to a weak reference.
     pub fn downgrade(&self) -> BaoFileHandleWeak {
         BaoFileHandleWeak(Arc::downgrade(&self.0))
+    }
+
+    /// This is the synchronous impl for writing a batch.
+    pub fn write_batch(
+        &self,
+        size: u64,
+        batch: &[BaoContentItem],
+        ranges: &ChunkRanges,
+    ) -> io::Result<HandleChange> {
+        let mut storage = self.storage.write().unwrap();
+        match storage.deref_mut() {
+            BaoFileStorage::IncompleteMem(mem) => {
+                // check if we need to switch to file mode, otherwise write to memory
+                if max_offset(batch) <= self.config.max_mem as u64 {
+                    mem.write_batch(size, batch, ranges)?;
+                    Ok(HandleChange::None)
+                } else {
+                    // create the paths. This allocates 3 pathbufs, so we do it
+                    // only when we need to.
+                    let paths = self.config.paths(&self.hash);
+                    // *first* switch to file mode, *then* write the batch.
+                    //
+                    // otherwise we might allocate a lot of memory if we get
+                    // a write at the end of a very large file.
+                    let mut file_batch = std::mem::take(mem).persist(paths)?;
+                    file_batch.write_batch(size, batch, ranges)?;
+                    *storage = BaoFileStorage::Incomplete(file_batch);
+                    Ok(HandleChange::MemToFile)
+                }
+            }
+            BaoFileStorage::Incomplete(file) => {
+                // already in file mode, just write the batch
+                file.write_batch(size, batch, ranges)?;
+                Ok(HandleChange::None)
+            }
+            BaoFileStorage::Complete(_) => {
+                // we are complete, so just ignore the write
+                // unless there is a bug, this would just write the exact same data
+                Ok(HandleChange::None)
+            }
+        }
     }
 }
 
@@ -542,7 +615,7 @@ impl SizeInfo {
 
 impl IncompleteEntry {
     /// Persist the batch to disk, creating a FileBatch.
-    fn persist(&self, paths: DataPaths) -> io::Result<FileStorage> {
+    fn persist(self, paths: DataPaths) -> io::Result<FileStorage> {
         let mut data = create_read_write(&paths.data)?;
         let mut outboard = create_read_write(&paths.outboard)?;
         let mut sizes = create_read_write(&paths.sizes)?;
@@ -556,7 +629,8 @@ impl IncompleteEntry {
             data,
             outboard,
             sizes,
-            observers: Vec::new(),
+            observers: self.observers,
+            bitfield: self.bitfield,
         })
     }
 

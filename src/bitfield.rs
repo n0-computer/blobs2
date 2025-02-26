@@ -1,6 +1,10 @@
 use std::num::NonZeroU64;
 
 use bao_tree::{blake3, ChunkNum, ChunkRanges, ChunkRangesRef};
+use tokio::sync::mpsc;
+use tracing::error;
+
+use crate::util::observer::Combine;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct UnverifiedSize(u64);
@@ -83,6 +87,30 @@ pub enum BaoBlobSizeOpt {
 }
 
 impl BaoBlobSizeOpt {
+    pub fn combine(
+        a: BaoBlobSizeOpt,
+        b: BaoBlobSizeOpt,
+        ar: &ChunkRanges,
+        br: &ChunkRanges,
+    ) -> Self {
+        match (a, b) {
+            (a, BaoBlobSizeOpt::Unknown) => a,
+            (BaoBlobSizeOpt::Unknown, b) => b,
+            (BaoBlobSizeOpt::Verified(a), BaoBlobSizeOpt::Verified(b)) => {
+                if a != b {
+                    error!("mismatched verified sizes: {a} != {b}");
+                }
+                BaoBlobSizeOpt::Verified(a.max(b))
+            }
+            (a @ BaoBlobSizeOpt::Verified(_), BaoBlobSizeOpt::Unverified(_)) => a,
+            (BaoBlobSizeOpt::Unverified(_), b @ BaoBlobSizeOpt::Verified(_)) => b,
+            (BaoBlobSizeOpt::Unverified(a), BaoBlobSizeOpt::Unverified(b)) => {
+                // todo! use ar and br
+                BaoBlobSizeOpt::Unverified(a.max(b))
+            }
+        }
+    }
+
     /// Get the value of the size, if known
     pub fn value(self) -> Option<u64> {
         match self {
@@ -134,7 +162,7 @@ const EMPTY_HASH: [u8; 32] = [
 ];
 
 /// Events from observing a local bitfield
-#[derive(Debug, PartialEq, Eq, derive_more::From)]
+#[derive(Debug, PartialEq, Eq, derive_more::From, Clone)]
 pub enum BitfieldEvent {
     /// The full state of the bitfield
     State(BitfieldState),
@@ -143,7 +171,7 @@ pub enum BitfieldEvent {
 }
 
 /// The state of a bitfield
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BitfieldState {
     /// The ranges that are set
     pub ranges: ChunkRanges,
@@ -152,14 +180,22 @@ pub struct BitfieldState {
 }
 
 /// An update to a bitfield
-#[derive(Debug, PartialEq, Eq, Clone)]
+///
+/// Note that removals are extremely rare, so we model them as a full new state
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct BitfieldUpdate {
     /// The ranges that were added
     pub added: ChunkRanges,
-    /// The ranges that were removed
-    pub removed: ChunkRanges,
-    /// Possible update to the size information
+    /// Possible update to the size information. can this be just a u64?
     pub size: BaoBlobSizeOpt,
+}
+
+impl Combine for BitfieldUpdate {
+    fn combine(self, that: Self) -> Self {
+        let size = BaoBlobSizeOpt::combine(self.size, that.size, &self.added, &that.added);
+        let added = self.added | that.added;
+        Self { added, size }
+    }
 }
 
 impl BitfieldState {
