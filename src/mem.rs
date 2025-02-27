@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io::{self, Write},
     num::NonZeroU64,
+    ops::DerefMut,
     path::PathBuf,
     sync::{Arc, RwLock},
     time::SystemTime,
@@ -15,7 +16,7 @@ use bao_tree::{
         sync::{Outboard, ReadAt, WriteAt},
         BaoContentItem,
     },
-    BaoTree, ChunkNum, ChunkRanges, TreeNode,
+    BaoTree, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode,
 };
 use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
@@ -29,7 +30,10 @@ use tracing::error;
 use crate::{
     bitfield::{BaoBlobSize, Bitfield},
     proto::*,
-    util::{observer::Observable, SenderProgressExt, SparseMemFile, Tag},
+    util::{
+        observer::{Observable, Observer},
+        SenderProgressExt, SparseMemFile, Tag,
+    },
     HashAndFormat, Store, IROH_BLOCK_SIZE,
 };
 
@@ -112,7 +116,7 @@ impl Actor {
             Command::Observe(Observe { hash, out }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
-                entry.observers().add_observer(out);
+                entry.add_observer(out);
             }
             Command::ImportBytes(ImportBytes { data, out }) => {
                 self.import_tasks.spawn(import_bytes_task(data, out));
@@ -181,22 +185,20 @@ impl Actor {
             }
         };
         let hash = import_data.outboard.root();
+        let size = import_data.data.len() as u64;
         let entry = self.state.data.entry(hash).or_default();
         let mut entry = entry.write().unwrap();
-        let size = import_data.data.len() as u64;
-        let old_bitfield = entry.bitfield().state().ranges.clone();
-        import_data.out.send(ImportProgress::Done { hash });
-        *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
-        let added = ChunkRanges::from(..ChunkNum::full_chunks(size));
-        let added = &added - old_bitfield;
-        if added.is_empty() {
+        let Entry::Incomplete(incomplete) = entry.deref_mut() else {
+            import_data.out.send(ImportProgress::Done { hash });
             return;
-        }
-        let update = Bitfield {
-            ranges: added,
-            size,
         };
-        entry.observers().update(update);
+        incomplete.update(Bitfield {
+            ranges: ChunkRanges::all(),
+            size,
+        });
+        import_data.out.send(ImportProgress::Done { hash });
+        let mut added = ChunkRanges::all();
+        *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -469,6 +471,20 @@ impl Default for Entry {
 }
 
 impl Entry {
+    fn ranges(&self) -> &ChunkRangesRef {
+        match self {
+            Self::Incomplete(entry) => &entry.bitfield.state().ranges,
+            Self::Complete(_) => &ChunkRangesRef::single(&ChunkNum(0)),
+        }
+    }
+
+    fn add_observer(&mut self, out: Observer<Bitfield>) {
+        match self {
+            Self::Incomplete(entry) => entry.add_observer(out),
+            Self::Complete(entry) => entry.add_observer(out),
+        }
+    }
+
     fn data(&self) -> &[u8] {
         match self {
             Self::Incomplete(entry) => entry.data.as_ref(),
@@ -490,24 +506,10 @@ impl Entry {
         }
     }
 
-    fn bitfield(&self) -> &Observable<Bitfield> {
-        match self {
-            Self::Incomplete(entry) => entry.bitfield(),
-            Self::Complete(entry) => entry.bitfield(),
-        }
-    }
-
     fn incomplete_mut(&mut self) -> Option<&mut IncompleteEntry> {
         match self {
             Self::Incomplete(entry) => Some(entry),
             Self::Complete(_) => None,
-        }
-    }
-
-    fn observers(&mut self) -> &mut Observable<Bitfield> {
-        match self {
-            Self::Incomplete(entry) => &mut entry.bitfield,
-            Self::Complete(entry) => &mut entry.bitfield,
         }
     }
 }
@@ -523,8 +525,16 @@ pub(crate) struct IncompleteEntry {
 }
 
 impl IncompleteEntry {
+    pub fn add_observer(&mut self, out: Observer<Bitfield>) {
+        self.bitfield.add_observer(out);
+    }
+
     pub fn bitfield(&self) -> &Observable<Bitfield> {
         &self.bitfield
+    }
+
+    pub fn update(&mut self, update: Bitfield) {
+        self.bitfield.update(update);
     }
 
     pub fn size(&self) -> u64 {
@@ -570,7 +580,6 @@ impl IncompleteEntry {
 pub(crate) struct CompleteEntry {
     pub(crate) data: Bytes,
     pub(crate) outboard: Bytes,
-    bitfield: Observable<Bitfield>,
 }
 
 impl CompleteEntry {
@@ -582,29 +591,20 @@ impl CompleteEntry {
         (hash, entry)
     }
 
+    pub fn add_observer(&mut self, mut out: Observer<Bitfield>) {
+        let state = Bitfield {
+            ranges: ChunkRanges::all(),
+            size: self.size(),
+        };
+        out.send(state).ok();
+    }
+
     pub fn new(data: Bytes, outboard: Bytes) -> Self {
-        let size = data.len() as u64;
-        let bitfield = ChunkRanges::from(..ChunkNum::chunks(size));
-        Self {
-            data,
-            outboard,
-            bitfield: Observable::new(Bitfield {
-                ranges: bitfield.clone(),
-                size,
-            }),
-        }
+        Self { data, outboard }
     }
 
     pub fn size(&self) -> u64 {
         self.data.len() as u64
-    }
-
-    pub fn bitfield(&self) -> &Observable<Bitfield> {
-        &self.bitfield
-    }
-
-    pub fn bitfield_mut(&mut self) -> &mut Observable<Bitfield> {
-        &mut self.bitfield
     }
 
     pub fn data(&self) -> impl AsRef<[u8]> + '_ {

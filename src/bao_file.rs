@@ -93,11 +93,17 @@ pub struct CompleteStorage {
     /// outboard part, which can be in memory or on disk.
     #[debug("{:?}", outboard.as_ref().map_mem(|x| x.len()))]
     pub outboard: MemOrFile<Bytes, (File, u64)>,
-    /// Observers, just to keep them alive
-    pub bitfield: Observable<Bitfield>,
 }
 
 impl CompleteStorage {
+    pub fn add_observer(&mut self, mut observer: Observer<Bitfield>) {
+        let bitfield = Bitfield {
+            ranges: ChunkRanges::all(),
+            size: self.data_size(),
+        };
+        observer.send(bitfield);
+    }
+
     /// The size of the data file.
     pub fn data_size(&self) -> u64 {
         match &self.data {
@@ -174,6 +180,10 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
+    fn add_observer(&mut self, observer: Observer<Bitfield>) {
+        self.bitfield.add_observer(observer);
+    }
+
     /// Split into data, outboard and sizes files.
     pub fn into_parts(self) -> (File, File, File) {
         (self.data, self.outboard, self.sizes)
@@ -266,27 +276,19 @@ impl Default for BaoFileStorage {
 }
 
 impl BaoFileStorage {
-    /// Take the storage out, leaving an empty storage in its place.
-    ///
-    /// Be careful to put something back in its place, or you will lose data.
-    #[cfg(feature = "fs-store")]
-    pub fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    fn bitfield(&self) -> &Observable<Bitfield> {
+    fn observer_dropped(&mut self) {
         match self {
-            BaoFileStorage::Complete(c) => &c.bitfield,
-            BaoFileStorage::Incomplete(i) => &i.bitfield,
-            BaoFileStorage::IncompleteMem(i) => &i.bitfield,
+            BaoFileStorage::Complete(_) => {}
+            BaoFileStorage::Incomplete(i) => i.bitfield.observer_dropped(),
+            BaoFileStorage::IncompleteMem(i) => i.bitfield.observer_dropped(),
         }
     }
 
-    fn bitfield_mut(&mut self) -> &mut Observable<Bitfield> {
+    fn add_observer(&mut self, observer: Observer<Bitfield>) {
         match self {
-            BaoFileStorage::Complete(c) => &mut c.bitfield,
-            BaoFileStorage::Incomplete(i) => &mut i.bitfield,
-            BaoFileStorage::IncompleteMem(i) => &mut i.bitfield,
+            BaoFileStorage::Complete(c) => c.add_observer(observer),
+            BaoFileStorage::Incomplete(i) => i.add_observer(observer),
+            BaoFileStorage::IncompleteMem(i) => i.add_observer(observer),
         }
     }
 
@@ -448,13 +450,7 @@ impl BaoFileHandle {
         data: MemOrFile<Bytes, (File, u64)>,
         outboard: MemOrFile<Bytes, (File, u64)>,
     ) -> Self {
-        let size = data.size() as u64;
-        let ranges = ChunkRanges::all();
-        let storage = BaoFileStorage::Complete(CompleteStorage {
-            data,
-            outboard,
-            bitfield: Observable::new(Bitfield { ranges, size }),
-        });
+        let storage = BaoFileStorage::Complete(CompleteStorage { data, outboard });
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
             config,
@@ -463,14 +459,11 @@ impl BaoFileHandle {
     }
 
     pub fn add_observer(&self, observer: Observer<Bitfield>) {
-        let mut lock = self.storage.write().unwrap();
-        // todo: send current state
-        lock.deref_mut().bitfield_mut().add_observer(observer);
+        self.storage.write().unwrap().add_observer(observer);
     }
 
     pub fn observer_dropped(&self) {
-        let mut lock = self.storage.write().unwrap();
-        lock.deref_mut().bitfield_mut().observer_dropped();
+        self.storage.write().unwrap().observer_dropped();
     }
 
     /// Transform the storage in place. If the transform fails, the storage will

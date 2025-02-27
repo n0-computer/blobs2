@@ -69,7 +69,7 @@ impl Actor {
             }
             Command::Observe(Observe { hash, out }) => {
                 if let Some(entry) = self.data.get_mut(&hash) {
-                    entry.bitfield_mut().add_observer(out);
+                    entry.add_observer(out);
                 } else {
                     self.observers.add_observer(out);
                 }
