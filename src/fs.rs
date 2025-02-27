@@ -95,6 +95,33 @@ struct Actor {
     config: Arc<BaoFileConfig>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
+
+impl Slot {
+    pub async fn get(&self) -> Option<BaoFileHandle> {
+        let slot = self.0.lock().await;
+        slot.as_ref().and_then(|weak| weak.upgrade())
+    }
+
+    pub async fn get_or_create(
+        &self,
+        make: impl Fn() -> anyhow::Result<BaoFileHandle>,
+    ) -> anyhow::Result<BaoFileHandle> {
+        let mut slot = self.0.lock().await;
+        if let Some(weak) = &*slot {
+            if let Some(handle) = weak.upgrade() {
+                return Ok(handle);
+            }
+        }
+        let handle = make();
+        if let Ok(handle) = &handle {
+            *slot = Some(handle.downgrade());
+        }
+        handle
+    }
+}
+
 impl Actor {
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
