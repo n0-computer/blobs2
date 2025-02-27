@@ -31,7 +31,7 @@ use derive_more::Debug;
 
 use super::mem::SizeInfo;
 use crate::{
-    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldUpdate},
+    bitfield::Bitfield,
     mem::IncompleteEntry,
     util::{
         observer::{Observable, Observer},
@@ -94,7 +94,7 @@ pub struct CompleteStorage {
     #[debug("{:?}", outboard.as_ref().map_mem(|x| x.len()))]
     pub outboard: MemOrFile<Bytes, (File, u64)>,
     /// Observers, just to keep them alive
-    pub bitfield: Observable<BitfieldUpdate>,
+    pub bitfield: Observable<Bitfield>,
 }
 
 impl CompleteStorage {
@@ -170,7 +170,7 @@ pub struct FileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
-    bitfield: Observable<BitfieldUpdate>,
+    bitfield: Observable<Bitfield>,
 }
 
 impl FileStorage {
@@ -194,11 +194,11 @@ impl FileStorage {
 
     fn write_batch(
         &mut self,
-        size: u64,
+        size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
     ) -> io::Result<()> {
-        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         for item in batch {
             match item {
                 BaoContentItem::Parent(parent) => {
@@ -228,10 +228,9 @@ impl FileStorage {
         }
         let current = &self.bitfield.state().ranges;
         let added = ranges - current;
-        let update = BitfieldUpdate {
+        let update = Bitfield {
             ranges: added,
-            size: BaoBlobSize::from_size_and_ranges(NonZeroU64::new(size).unwrap(), &current)
-                .into(),
+            size: size.get(),
         };
         self.bitfield.update(update);
         Ok(())
@@ -275,7 +274,7 @@ impl BaoFileStorage {
         std::mem::take(self)
     }
 
-    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
+    fn bitfield(&self) -> &Observable<Bitfield> {
         match self {
             BaoFileStorage::Complete(c) => &c.bitfield,
             BaoFileStorage::Incomplete(i) => &i.bitfield,
@@ -283,7 +282,7 @@ impl BaoFileStorage {
         }
     }
 
-    fn bitfield_mut(&mut self) -> &mut Observable<BitfieldUpdate> {
+    fn bitfield_mut(&mut self) -> &mut Observable<Bitfield> {
         match self {
             BaoFileStorage::Complete(c) => &mut c.bitfield,
             BaoFileStorage::Incomplete(i) => &mut i.bitfield,
@@ -454,10 +453,7 @@ impl BaoFileHandle {
         let storage = BaoFileStorage::Complete(CompleteStorage {
             data,
             outboard,
-            bitfield: Observable::new(BitfieldUpdate {
-                ranges,
-                size: BaoBlobSizeOpt::Verified(size),
-            }),
+            bitfield: Observable::new(Bitfield { ranges, size }),
         });
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -466,7 +462,7 @@ impl BaoFileHandle {
         }))
     }
 
-    pub fn add_observer(&self, observer: Observer<BitfieldUpdate>) {
+    pub fn add_observer(&self, observer: Observer<Bitfield>) {
         let mut lock = self.storage.write().unwrap();
         // todo: send current state
         lock.deref_mut().bitfield_mut().add_observer(observer);
@@ -518,7 +514,7 @@ impl BaoFileHandle {
     pub fn current_size(&self) -> io::Result<u64> {
         match self.storage.read().unwrap().deref() {
             BaoFileStorage::Complete(mem) => Ok(mem.data_size()),
-            BaoFileStorage::IncompleteMem(mem) => Ok(mem.size().value()),
+            BaoFileStorage::IncompleteMem(mem) => Ok(mem.size()),
             BaoFileStorage::Incomplete(file) => file.current_size(),
         }
     }
@@ -552,7 +548,7 @@ impl BaoFileHandle {
     /// This is the synchronous impl for writing a batch.
     pub fn write_batch(
         &self,
-        size: u64,
+        size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
     ) -> io::Result<HandleChange> {

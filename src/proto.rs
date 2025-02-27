@@ -2,7 +2,7 @@
 //!
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
-use std::{io, path::PathBuf, pin::Pin};
+use std::{io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
 pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    bitfield::BitfieldUpdate,
+    bitfield::Bitfield,
     util::{observer::Observer, Tag},
     BlobFormat, HashAndFormat,
 };
@@ -25,7 +25,7 @@ use crate::{
 #[derive(Debug)]
 pub struct ImportBao {
     pub hash: Hash,
-    pub size: u64,
+    pub size: NonZeroU64,
     pub data: mpsc::Receiver<BaoContentItem>,
     pub out: oneshot::Sender<anyhow::Result<()>>,
 }
@@ -34,7 +34,7 @@ pub struct ImportBao {
 #[derive(Debug)]
 pub struct Observe {
     pub hash: Hash,
-    pub out: Observer<BitfieldUpdate>,
+    pub out: Observer<Bitfield>,
 }
 
 /// Import the given bytes.

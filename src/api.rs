@@ -2,6 +2,7 @@
 use std::{
     future::Future,
     io,
+    num::NonZeroU64,
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
@@ -22,9 +23,12 @@ use n0_future::{Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    bitfield::BitfieldUpdate,
+    bitfield::Bitfield,
     proto::*,
-    util::{observer::Observer, Tag},
+    util::{
+        observer::{Aggregator, Observer},
+        Tag,
+    },
     HashAndFormat, Store, IROH_BLOCK_SIZE,
 };
 
@@ -64,6 +68,12 @@ impl Store {
     }
 
     pub fn observe(&self, hash: Hash) -> ObserveResult {
+        if hash.as_bytes() == &crate::bitfield::EMPTY_HASH {
+            // todo: where to put the tx?
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(Bitfield::complete_empty()).ok();
+            return ObserveResult { receiver: rx };
+        }
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         self.sender
             .try_send(
@@ -101,7 +111,15 @@ impl Store {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         let (out, out_receiver) = tokio::sync::oneshot::channel();
         let size = u64::from_le_bytes(stream.read::<8>().await?);
-        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+        let Some(size) = NonZeroU64::new(size) else {
+            // todo: drain stream here?
+            if hash == crate::bitfield::EMPTY_HASH {
+                return Ok(());
+            } else {
+                return Err(anyhow::anyhow!("invalid size for hash"));
+            }
+        };
+        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash, ranges, tree, stream);
         self.sender.try_send(
             ImportBao {
@@ -202,11 +220,17 @@ impl Stream for ImportResult {
 }
 
 pub struct ObserveResult {
-    receiver: tokio::sync::mpsc::Receiver<BitfieldUpdate>,
+    receiver: tokio::sync::mpsc::Receiver<Bitfield>,
+}
+
+impl ObserveResult {
+    pub fn aggregated(self) -> Aggregator<Bitfield> {
+        Aggregator::new(self.receiver)
+    }
 }
 
 impl Stream for ObserveResult {
-    type Item = BitfieldUpdate;
+    type Item = Bitfield;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.poll_recv(cx) {

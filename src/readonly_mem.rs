@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use crate::{
-    bitfield::BitfieldUpdate,
+    bitfield::Bitfield,
     mem::CompleteEntry,
     proto::*,
     util::{observer::Observable, SenderProgressExt},
@@ -28,7 +28,7 @@ struct Actor {
     commands: mpsc::Receiver<Command>,
     unit_tasks: JoinSet<()>,
     data: HashMap<Hash, CompleteEntry>,
-    observers: Observable<BitfieldUpdate>,
+    observers: Observable<Bitfield>,
 }
 
 impl Actor {

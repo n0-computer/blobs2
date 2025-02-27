@@ -2,11 +2,13 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Write,
+    num::NonZeroU64,
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use anyhow::Context;
 use bao_tree::{
     io::{mixed::traverse_ranges_validated, sync::ReadAt, BaoContentItem, Leaf},
     ChunkNum, ChunkRanges,
@@ -25,7 +27,7 @@ use tracing::{error, trace, warn};
 
 use crate::{
     bao_file::{BaoFileConfig, BaoFileHandle, BaoFileHandleWeak, BaoFileStorage, HandleChange},
-    bitfield::BitfieldUpdate,
+    bitfield::{is_validated, Bitfield},
     util::{observer::Observer, MemOrFile, SenderProgressExt},
     Hash,
 };
@@ -450,12 +452,12 @@ async fn import_bao_task(
 
 fn chunk_range(leaf: &Leaf) -> ChunkRanges {
     let start = ChunkNum::chunks(leaf.offset);
-    let end = ChunkNum::full_chunks(leaf.offset + leaf.data.len() as u64);
+    let end = ChunkNum::chunks(leaf.offset + leaf.data.len() as u64);
     (start..end).into()
 }
 
 async fn import_bao_impl(
-    size: u64,
+    size: NonZeroU64,
     mut data: mpsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     sender: mpsc::Sender<meta::Command>,
@@ -488,7 +490,14 @@ async fn import_bao_impl(
             ranges = ChunkRanges::empty();
         }
         if let BaoContentItem::Leaf(leaf) = &item {
-            ranges |= chunk_range(leaf);
+            let leaf_range = chunk_range(leaf);
+            if is_validated(size, &leaf_range) {
+                anyhow::ensure!(
+                    size.get() == leaf.offset + leaf.data.len() as u64,
+                    "invalid leaf"
+                );
+            }
+            ranges |= leaf_range;
         }
         batch.push(item);
     }
@@ -508,7 +517,7 @@ async fn observe_task(
     }
 }
 
-async fn observe_impl(handle: BaoFileHandle, out: Observer<BitfieldUpdate>) {
+async fn observe_impl(handle: BaoFileHandle, out: Observer<Bitfield>) {
     let receiver_dropped = out.receiver_dropped();
     handle.add_observer(out);
     // this keeps the handle alive until the observer is dropped
@@ -677,7 +686,13 @@ mod tests {
     use testresult::TestResult;
 
     use super::*;
-    use crate::{util::Tag, HashAndFormat, IROH_BLOCK_SIZE};
+    use crate::{
+        util::{
+            observer::{Aggregator, Combine},
+            Tag,
+        },
+        HashAndFormat, IROH_BLOCK_SIZE,
+    };
 
     fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
@@ -696,23 +711,28 @@ mod tests {
         let options = Options::new(&db_dir);
         let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
         let sizes = [
-            // 0,
-            // 1,
-            // 1024,
-            // 1024 * 16 - 1,
-            // 1024 * 16,
-            // 1024 * 16 + 1,
-            // 1024 * 1024,
+            0,
+            1,
+            1024,
+            1024 * 16 - 1,
+            1024 * 16,
+            1024 * 16 + 1,
+            1024 * 1024,
             1024 * 1024 * 8,
         ];
         for size in sizes {
             let data = vec![1u8; size];
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
-            let mut obs = store.observe(hash);
+            let obs = store.observe(hash);
             let task = tokio::spawn(async move {
-                while let Some(ev) = obs.next().await {
-                    println!("{ev:?}");
+                let mut agg = obs.aggregated();
+                while let Some(delta) = agg.next().await {
+                    let state = agg.state();
+                    println!("{:?} complete={}", state, state.is_complete());
+                    if state.is_complete() {
+                        break;
+                    }
                 }
             });
             store.import_bao_bytes(hash, ranges, bao.into()).await?;

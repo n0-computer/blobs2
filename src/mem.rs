@@ -21,13 +21,13 @@ use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{
     io::AsyncReadExt,
-    sync::mpsc::{self, error::TrySendError, OwnedPermit},
+    sync::mpsc::{self, OwnedPermit},
     task::{JoinError, JoinSet},
 };
 use tracing::error;
 
 use crate::{
-    bitfield::{BaoBlobSize, BaoBlobSizeOpt, BitfieldUpdate},
+    bitfield::{BaoBlobSize, Bitfield},
     proto::*,
     util::{observer::Observable, SenderProgressExt, SparseMemFile, Tag},
     HashAndFormat, Store, IROH_BLOCK_SIZE,
@@ -192,9 +192,9 @@ impl Actor {
         if added.is_empty() {
             return;
         }
-        let update = BitfieldUpdate {
+        let update = Bitfield {
             ranges: added,
-            size: BaoBlobSizeOpt::Verified(size),
+            size,
         };
         entry.observers().update(update);
     }
@@ -229,10 +229,11 @@ impl Actor {
 
 async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
-    size: u64,
+    size: NonZeroU64,
     mut stream: mpsc::Receiver<BaoContentItem>,
     out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
 ) {
+    let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
         entry.size.write(0, size);
     }
@@ -267,13 +268,9 @@ async fn import_bao_task(
                 if added.is_empty() {
                     continue;
                 }
-                let update = BitfieldUpdate {
+                let update = Bitfield {
                     ranges: added,
-                    size: BaoBlobSize::from_size_and_ranges(
-                        NonZeroU64::try_from(size).unwrap(),
-                        &entry.bitfield.state().ranges,
-                    )
-                    .into(),
+                    size,
                 };
                 entry.bitfield.update(update);
                 if entry.bitfield.state().ranges == ChunkRanges::from(..ChunkNum::chunks(size)) {
@@ -295,7 +292,7 @@ async fn export_bao_task(
     ranges: ChunkRanges,
     sender: mpsc::Sender<EncodedItem>,
 ) {
-    let size = entry.read().unwrap().size().value();
+    let size = entry.read().unwrap().size();
     let data = ExportData {
         data: entry.clone(),
     };
@@ -386,7 +383,7 @@ async fn export_path_impl(
 ) -> anyhow::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
-    let size = entry.read().unwrap().size().value();
+    let size = entry.read().unwrap().size();
     out.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
@@ -486,14 +483,14 @@ impl Entry {
         }
     }
 
-    fn size(&self) -> BaoBlobSize {
+    fn size(&self) -> u64 {
         match self {
             Self::Incomplete(entry) => entry.size(),
             Self::Complete(entry) => entry.size(),
         }
     }
 
-    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
+    fn bitfield(&self) -> &Observable<Bitfield> {
         match self {
             Self::Incomplete(entry) => entry.bitfield(),
             Self::Complete(entry) => entry.bitfield(),
@@ -507,7 +504,7 @@ impl Entry {
         }
     }
 
-    fn observers(&mut self) -> &mut Observable<BitfieldUpdate> {
+    fn observers(&mut self) -> &mut Observable<Bitfield> {
         match self {
             Self::Incomplete(entry) => &mut entry.bitfield,
             Self::Complete(entry) => &mut entry.bitfield,
@@ -522,30 +519,25 @@ pub(crate) struct IncompleteEntry {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
-    pub(crate) bitfield: Observable<BitfieldUpdate>,
+    pub(crate) bitfield: Observable<Bitfield>,
 }
 
 impl IncompleteEntry {
-    pub fn size(&self) -> BaoBlobSize {
-        let size = self.size.current_size();
-        if let Some(size) = NonZeroU64::new(size) {
-            return BaoBlobSize::from_size_and_ranges(size, &self.bitfield.state().ranges);
-        } else {
-            return BaoBlobSize::Verified(size);
-        }
+    pub fn bitfield(&self) -> &Observable<Bitfield> {
+        &self.bitfield
     }
 
-    fn bitfield(&self) -> &Observable<BitfieldUpdate> {
-        &self.bitfield
+    pub fn size(&self) -> u64 {
+        self.bitfield.state().size
     }
 
     pub(super) fn write_batch(
         &mut self,
-        size: u64,
+        size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
     ) -> std::io::Result<()> {
-        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         for item in batch {
             match item {
                 BaoContentItem::Parent(parent) => {
@@ -560,14 +552,14 @@ impl IncompleteEntry {
                     }
                 }
                 BaoContentItem::Leaf(leaf) => {
-                    self.size.write(leaf.offset, size);
+                    self.size.write(leaf.offset, size.get());
                     self.data.write_all_at(leaf.offset, leaf.data.as_ref())?;
                 }
             }
         }
-        let update = BitfieldUpdate {
+        let update = Bitfield {
             ranges: ranges.clone(),
-            size: BaoBlobSizeOpt::Unverified(size),
+            size: size.get(),
         };
         self.bitfield.update(update);
         Ok(())
@@ -578,7 +570,7 @@ impl IncompleteEntry {
 pub(crate) struct CompleteEntry {
     pub(crate) data: Bytes,
     pub(crate) outboard: Bytes,
-    bitfield: Observable<BitfieldUpdate>,
+    bitfield: Observable<Bitfield>,
 }
 
 impl CompleteEntry {
@@ -596,23 +588,22 @@ impl CompleteEntry {
         Self {
             data,
             outboard,
-            bitfield: Observable::new(BitfieldUpdate {
+            bitfield: Observable::new(Bitfield {
                 ranges: bitfield.clone(),
-                size: BaoBlobSizeOpt::Verified(size),
+                size,
             }),
         }
     }
 
-    pub fn size(&self) -> BaoBlobSize {
-        let size = self.data.len() as u64;
-        BaoBlobSize::Verified(size)
+    pub fn size(&self) -> u64 {
+        self.data.len() as u64
     }
 
-    pub fn bitfield(&self) -> &Observable<BitfieldUpdate> {
+    pub fn bitfield(&self) -> &Observable<Bitfield> {
         &self.bitfield
     }
 
-    pub fn bitfield_mut(&mut self) -> &mut Observable<BitfieldUpdate> {
+    pub fn bitfield_mut(&mut self) -> &mut Observable<Bitfield> {
         &mut self.bitfield
     }
 

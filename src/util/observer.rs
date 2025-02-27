@@ -1,6 +1,9 @@
-use std::{fmt, future::Future};
+use std::{
+    fmt::{self, Debug},
+    future::Future,
+};
 
-use n0_future::join_all;
+use n0_future::{join_all, Stream};
 use quinn::rustls::crypto::hash::Output;
 use tokio::sync::mpsc;
 
@@ -99,7 +102,7 @@ impl fmt::Display for ObserverError {
 
 impl std::error::Error for ObserverError {}
 
-// ObserverManager struct to manage state (of type U) and observables
+// An observable variable
 #[derive(Debug)]
 pub struct Observable<U> {
     state: Option<U>,
@@ -113,7 +116,7 @@ impl<U: Default> Default for Observable<U> {
 }
 
 impl<U> Observable<U> {
-    // Create a new observer manager with the default state and no observables
+    // Create a new observable with the default state and no observables
     pub fn new(state: U) -> Self {
         Self {
             state: Some(state),
@@ -132,6 +135,7 @@ impl<U> Observable<U> {
         }
     }
 
+    /// Notify the observable that an observer was dropped
     pub fn observer_dropped(&mut self) {
         self.observers.retain(|o| !o.is_closed());
     }
@@ -170,6 +174,73 @@ impl<U> Observable<U> {
         observers.retain_mut(|o| !o.is_closed());
         if !observers.is_empty() {
             join_all(observers.into_iter().map(|o| o.finish())).await;
+        }
+    }
+}
+
+pub struct Aggregator<U> {
+    recv: mpsc::Receiver<U>,
+    state: Option<U>,
+}
+
+impl<U> Aggregator<U> {
+    pub fn new(recv: mpsc::Receiver<U>) -> Self
+    where
+        U: Default,
+    {
+        Self {
+            recv,
+            state: Some(U::default()),
+        }
+    }
+
+    /// Get the current state
+    pub fn state(&self) -> &U {
+        self.state.as_ref().expect("poisoned")
+    }
+
+    /// Drain the receiver and return the latest state
+    pub fn latest(&mut self) -> &U
+    where
+        U: Combine + Debug,
+    {
+        let curr = self.state.take().expect("poisoned");
+        self.state = Some(self.aggregate_non_pending(curr));
+        self.state()
+    }
+
+    fn aggregate_non_pending(&mut self, initial: U) -> U
+    where
+        U: Combine + Debug,
+    {
+        let mut curr = initial;
+        while let Some(update) = self.recv.try_recv().ok() {
+            println!("update {:?}", update);
+            curr = curr.combine(update);
+        }
+        curr
+    }
+}
+
+impl<U> Stream for Aggregator<U>
+where
+    U: Combine + Clone + Unpin + Default + Debug,
+{
+    type Item = U;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.recv.poll_recv(cx) {
+            std::task::Poll::Ready(Some(update)) => {
+                let delta = this.aggregate_non_pending(update);
+                this.state = Some(this.state.take().expect("poisoned").combine(delta.clone()));
+                std::task::Poll::Ready(Some(delta))
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
 }
