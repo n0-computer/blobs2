@@ -71,7 +71,7 @@ impl Store {
         if hash.as_bytes() == &crate::bitfield::EMPTY_HASH {
             // todo: where to put the tx?
             let (tx, rx) = tokio::sync::mpsc::channel(1);
-            tx.try_send(Bitfield::complete_empty()).ok();
+            tx.try_send(Bitfield::complete(0)).ok();
             return ObserveResult { receiver: rx };
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
@@ -194,7 +194,10 @@ impl Future for ImportResult {
             match self.receiver.poll_recv(cx) {
                 Poll::Ready(Some(ImportProgress::Done { hash })) => break Poll::Ready(Ok(hash)),
                 Poll::Ready(Some(ImportProgress::Error { cause })) => {
-                    break Poll::Ready(Err(cause))
+                    break Poll::Ready(Err(anyhow::anyhow!(
+                        "import task ended unexpectedly {}",
+                        cause
+                    )))
                 }
                 Poll::Ready(Some(_)) => continue,
                 Poll::Ready(None) => {

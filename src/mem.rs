@@ -28,7 +28,7 @@ use tokio::{
 use tracing::error;
 
 use crate::{
-    bitfield::{BaoBlobSize, Bitfield},
+    bitfield::Bitfield,
     proto::*,
     util::{
         observer::{Observable, Observer},

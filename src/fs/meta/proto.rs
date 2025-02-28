@@ -16,12 +16,11 @@ use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
 #[derive(Debug)]
 pub struct Get {
     pub hash: Hash,
-    pub tx: mpsc::OwnedPermit<GetResult>,
+    pub tx: oneshot::Sender<GetResult>,
 }
 
 #[derive(Debug)]
 pub struct GetResult {
-    pub hash: Hash,
     pub state: anyhow::Result<Option<EntryState<Bytes>>>,
 }
 
@@ -73,21 +72,10 @@ pub struct Tags {
     pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
 }
 
-/// Modification method: set a tag to a value, or remove it.
-#[derive(derive_more::Debug)]
-pub struct SetTag {
-    pub tag: Tag,
-    pub value: Option<HashAndFormat>,
-    #[debug(skip)]
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
-}
-
 /// Modification method: create a new unique tag and set it to a value.
-#[derive(Debug)]
-pub struct CreateTag {
-    pub hash: HashAndFormat,
-    pub tx: oneshot::Sender<anyhow::Result<Tag>>,
-}
+pub use crate::proto::CreateTag;
+/// Modification method: set a tag to a value, or remove it.
+pub use crate::proto::SetTag;
 
 #[derive(Debug)]
 #[enum_conversions(Command)]

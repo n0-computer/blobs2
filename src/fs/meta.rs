@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::SystemTime};
 use bao_tree::BaoTree;
 use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 mod proto;
 pub use proto::*;
 mod tables;
@@ -52,6 +52,34 @@ impl From<ActorError> for io::Error {
 
 pub type ActorResult<T> = Result<T, ActorError>;
 
+#[derive(Debug, Clone)]
+pub struct Db {
+    pub sender: mpsc::Sender<Command>,
+}
+
+impl Db {
+    pub fn new(sender: mpsc::Sender<Command>) -> Self {
+        Self { sender }
+    }
+
+    /// Get the entry state for a hash, if any.
+    pub async fn get(&self, hash: Hash) -> anyhow::Result<Option<EntryState<Bytes>>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(Get { hash, tx }.into()).await?;
+        let res = rx.await?;
+        Ok(res.state?)
+    }
+
+    /// Send a command. This exists so the main actor can directly forward commands.
+    ///
+    /// This will fail only if the database actor is dead. In that case the main
+    /// actor should probably also shut down.
+    pub async fn send(&self, cmd: Command) -> anyhow::Result<()> {
+        self.sender.send(cmd).await?;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct Actor {
     db: redb::Database,
@@ -82,10 +110,7 @@ impl Actor {
     fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
         let Get { hash, tx } = cmd;
         let Some(entry) = tables.blobs().get(hash)? else {
-            tx.send(GetResult {
-                hash,
-                state: Ok(None),
-            });
+            tx.send(GetResult { state: Ok(None) }).ok();
             return Ok(());
         };
         let entry = entry.value();
@@ -104,9 +129,9 @@ impl Actor {
             EntryState::Partial { size } => EntryState::Partial { size },
         };
         tx.send(GetResult {
-            hash,
             state: Ok(Some(entry)),
-        });
+        })
+        .ok();
         Ok(())
     }
 

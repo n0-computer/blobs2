@@ -101,20 +101,12 @@ impl CompleteStorage {
             ranges: ChunkRanges::all(),
             size: self.data_size(),
         };
-        observer.send(bitfield);
+        observer.send(bitfield).ok();
     }
 
     /// The size of the data file.
     pub fn data_size(&self) -> u64 {
         match &self.data {
-            MemOrFile::Mem(mem) => mem.len() as u64,
-            MemOrFile::File((_file, size)) => *size,
-        }
-    }
-
-    /// The size of the outboard file.
-    pub fn outboard_size(&self) -> u64 {
-        match &self.outboard {
             MemOrFile::Mem(mem) => mem.len() as u64,
             MemOrFile::File((_file, size)) => *size,
         }
@@ -348,8 +340,6 @@ pub struct BaoFileHandleInner {
 /// A cheaply cloneable handle to a bao file, including the hash and the configuration.
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
-
-pub(crate) type CreateCb = Arc<dyn Fn(&Hash) -> io::Result<()> + Send + Sync>;
 
 /// Configuration for the deferred batch writer. It will start writing to memory,
 /// and then switch to a file when the memory limit is reached.

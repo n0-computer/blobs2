@@ -1,11 +1,11 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::Write,
     num::NonZeroU64,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicU64, Arc},
 };
 
 use anyhow::Context;
@@ -16,7 +16,6 @@ use bao_tree::{
 use bytes::Bytes;
 use entry_state::{DataLocation, OutboardLocation};
 use import::ImportSource;
-use meta::GetResult;
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use tokio::{
@@ -27,8 +26,8 @@ use tracing::{error, trace, warn};
 
 use crate::{
     bao_file::{BaoFileConfig, BaoFileHandle, BaoFileHandleWeak, BaoFileStorage, HandleChange},
-    bitfield::{is_validated, Bitfield},
-    util::{observer::Observer, MemOrFile, SenderProgressExt},
+    bitfield::is_validated,
+    util::{MemOrFile, SenderProgressExt},
     Hash,
 };
 
@@ -56,65 +55,152 @@ fn temp_name() -> String {
 
 #[derive(Debug)]
 #[enum_conversions()]
-pub enum FsCommand {
+pub enum InternalCommand {
     Dump(meta::Dump),
+    FinishImport(ImportEntry),
 }
 
+/// Context needed by most tasks
 #[derive(Debug)]
-#[enum_conversions()]
-enum WaitingTask {
-    ExportPath(ExportPath),
-    ExportBao(ExportBao),
-    ImportBao(ImportBao),
-    Observe(Observe),
+struct TaskContext {
+    // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
+    options: Arc<Options>,
+    // Bao file configuration.
+    config: Arc<BaoFileConfig>,
+    // Metadata database, basically a mpsc sender with some extra functionality.
+    db: meta::Db,
+    // Handle to send internal commands
+    internal_cmd_tx: mpsc::Sender<InternalCommand>,
+    // Epoch counter to provide a total order for databse operations
+    epoch: AtomicU64,
 }
 
 #[derive(Debug)]
 struct Actor {
-    // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
-    options: Arc<Options>,
+    // Context that can be cheaply shared with tasks.
+    context: Arc<TaskContext>,
     // Receiver for incoming user commands.
-    commands: mpsc::Receiver<Command>,
+    cmd_rx: mpsc::Receiver<Command>,
     // Receiver for incoming file store specific commands.
-    fs_commands: mpsc::Receiver<FsCommand>,
-    get_results_tx: mpsc::Sender<meta::GetResult>,
-    db_answers_rx: mpsc::Receiver<meta::GetResult>,
-    // Tasks that are not expected to return a result. These are mainly bao import and export tasks.
-    unit_tasks: JoinSet<()>,
-    // Import tasks that are expected to return an import entry that is to be integrated with the store data.
-    import_tasks: JoinSet<Option<ImportEntry>>,
-    // Database actor that handles meta data.
-    db: mpsc::Sender<meta::Command>,
+    fs_cmd_rx: mpsc::Receiver<InternalCommand>,
+    // Tasks for import and export operations.
+    tasks: JoinSet<()>,
+    // handles
+    handles: HashMap<Hash, Slot>,
     // our private tokio runtime. It has to live somewhere.
     rt: Option<tokio::runtime::Runtime>,
-    // monotonic counter
-    epoch: u64,
-    // handles
-    handles: BTreeMap<Hash, BaoFileHandleWeak>,
-    waiting: BTreeMap<Hash, Vec<WaitingTask>>,
-    config: Arc<BaoFileConfig>,
 }
 
+/// Wraps a slot and the task context.
+/// 
+/// This contains everything a hash-specific task should need.
+struct LazyHandle {
+    slot: Slot,
+    context: Arc<TaskContext>,
+}
+
+impl LazyHandle {
+    pub fn db(&self) -> &meta::Db {
+        &self.context.db
+    }
+
+    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> anyhow::Result<BaoFileHandle> {
+        let hash = hash.into();
+        self.slot
+            .get_or_create(|| async {
+                let res = self
+                    .context
+                    .db
+                    .get(hash)
+                    .await
+                    .context("failed to get entry")?;
+                match res {
+                    Some(state) => open_bao_file(
+                        &hash.into(),
+                        state,
+                        self.context.options.clone(),
+                        self.context.config.clone(),
+                    ),
+                    None => Ok(BaoFileHandle::incomplete_mem(
+                        self.context.config.clone(),
+                        hash.into(),
+                    )),
+                }
+            })
+            .await
+    }
+}
+
+fn open_bao_file(
+    hash: &Hash,
+    state: EntryState<Bytes>,
+    options: Arc<Options>,
+    config: Arc<BaoFileConfig>,
+) -> anyhow::Result<BaoFileHandle> {
+    Ok(match state {
+        EntryState::Complete {
+            data_location,
+            outboard_location,
+        } => {
+            let data_location = match data_location {
+                DataLocation::Inline(data) => MemOrFile::Mem(data),
+                DataLocation::Owned(size) => {
+                    let path = options.path.owned_data_path(&hash);
+                    let file = fs::File::open(&path)?;
+                    MemOrFile::File((file, size))
+                }
+                DataLocation::External(paths, size) => {
+                    let Some(path) = paths.into_iter().next() else {
+                        anyhow::bail!("no external data path");
+                    };
+                    let file = fs::File::open(&path)?;
+                    MemOrFile::File((file, size))
+                }
+            };
+            let outboard_location = match outboard_location {
+                OutboardLocation::NotNeeded => MemOrFile::Mem(Bytes::new()),
+                OutboardLocation::Inline(data) => MemOrFile::Mem(data),
+                OutboardLocation::Owned => {
+                    let path = options.path.owned_outboard_path(hash);
+                    let file = fs::File::open(&path)?;
+                    let size = file.metadata()?.len();
+                    MemOrFile::File((file, size))
+                }
+            };
+            BaoFileHandle::complete(config, *hash, data_location, outboard_location)
+        }
+        EntryState::Partial { .. } => BaoFileHandle::incomplete_file(config, *hash)?,
+    })
+}
+
+/// An entry for each hash, containing a weak reference to a BaoFileHandle
+/// wrapped in a tokio mutex so handle creation is sequential.
 #[derive(Debug, Clone, Default)]
 struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
 
 impl Slot {
+    /// Get the handle if it exists and is still alive.
     pub async fn get(&self) -> Option<BaoFileHandle> {
         let slot = self.0.lock().await;
         slot.as_ref().and_then(|weak| weak.upgrade())
     }
 
-    pub async fn get_or_create(
-        &self,
-        make: impl Fn() -> anyhow::Result<BaoFileHandle>,
-    ) -> anyhow::Result<BaoFileHandle> {
+    /// Get the handle if it exists and is still alive, otherwise load it from the database.
+    /// If there is nothing in the database, create a new in-memory handle.
+    ///
+    /// `make` will be called if the a live handle does not exist.
+    pub async fn get_or_create<F, Fut>(&self, make: F) -> anyhow::Result<BaoFileHandle>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<BaoFileHandle>>,
+    {
         let mut slot = self.0.lock().await;
         if let Some(weak) = &*slot {
             if let Some(handle) = weak.upgrade() {
                 return Ok(handle);
             }
         }
-        let handle = make();
+        let handle = make().await;
         if let Ok(handle) = &handle {
             *slot = Some(handle.downgrade());
         }
@@ -123,19 +209,31 @@ impl Slot {
 }
 
 impl Actor {
+    fn db(&self) -> &meta::Db {
+        &self.context.db
+    }
+
+    fn options(&self) -> &Arc<Options> {
+        &self.context.options
+    }
+
+    fn context(&self) -> Arc<TaskContext> {
+        self.context.clone()
+    }
+
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::CreateTag(CreateTag { hash, tx }) => {
-                self.db.send(meta::CreateTag { hash, tx }.into()).await.ok();
+            Command::SyncDb(cmd) => {
+                self.db().send(cmd.into()).await.ok();
             }
-            Command::SetTag(SetTag { tag, value, tx }) => {
-                self.db
-                    .send(meta::SetTag { tag, value, tx }.into())
-                    .await
-                    .ok();
+            Command::CreateTag(cmd) => {
+                self.db().send(cmd.into()).await.ok();
+            }
+            Command::SetTag(cmd) => {
+                self.db().send(cmd.into()).await.ok();
             }
             Command::Tags(Tags { tx }) => {
-                self.db
+                self.db()
                     .send(
                         meta::Tags {
                             filter: Box::new(|_, k, v| Some((k.value(), v.value()))),
@@ -147,97 +245,63 @@ impl Actor {
                     .ok();
             }
             Command::ImportBytes(cmd) => {
-                self.import_tasks
-                    .spawn(import_bytes_task(cmd, self.options.clone()));
+                self.tasks.spawn(import_bytes_task(cmd, self.context()));
             }
             Command::ImportByteStream(cmd) => {
-                self.import_tasks
-                    .spawn(import_byte_stream_task(cmd, self.options.clone()));
+                self.tasks
+                    .spawn(import_byte_stream_task(cmd, self.context()));
             }
             Command::ImportPath(cmd) => {
-                self.import_tasks
-                    .spawn(import_path_task(cmd, self.options.clone()));
+                self.tasks.spawn(import_path_task(cmd, self.context()));
             }
             Command::ExportPath(cmd) => {
-                let hash: crate::Hash = cmd.hash.into();
-                let Some(handle) = self.handles.get(&hash).and_then(|weak| weak.upgrade()) else {
-                    let tx = self.get_results_tx.clone().reserve_owned().await.unwrap();
-                    self.db.send(meta::Get { hash, tx }.into()).await.ok();
-                    self.waiting.entry(hash).or_default().push(cmd.into());
-                    return;
-                };
-                self.unit_tasks.spawn(export_path_task(cmd, Ok(handle)));
+                let handle = self.get_handle(cmd.hash);
+                self.tasks.spawn(export_path_task(cmd, handle));
             }
             Command::ExportBao(cmd) => {
-                let hash: crate::Hash = cmd.hash.into();
-                let Some(handle) = self.handles.get(&hash).and_then(|weak| weak.upgrade()) else {
-                    let tx = self.get_results_tx.clone().reserve_owned().await.unwrap();
-                    self.db.send(meta::Get { hash, tx }.into()).await.ok();
-                    self.waiting.entry(hash).or_default().push(cmd.into());
-                    return;
-                };
-                self.unit_tasks.spawn(export_bao_task(cmd, Ok(handle)));
+                let handle = self.get_handle(cmd.hash);
+                self.tasks.spawn(export_bao_task(cmd, handle));
             }
             Command::ImportBao(cmd) => {
-                let hash: crate::Hash = cmd.hash.into();
-                let Some(handle) = self.handles.get(&hash).and_then(|weak| weak.upgrade()) else {
-                    let tx = self.get_results_tx.clone().reserve_owned().await.unwrap();
-                    self.db.send(meta::Get { hash, tx }.into()).await.ok();
-                    self.waiting.entry(hash).or_default().push(cmd.into());
-                    return;
-                };
-                let sender = self.db.clone();
-                self.unit_tasks
-                    .spawn(import_bao_task(cmd, Ok(handle), sender));
+                let handle = self.get_handle(cmd.hash);
+                self.tasks.spawn(import_bao_task(cmd, handle));
             }
             Command::Observe(cmd) => {
-                let hash: crate::Hash = cmd.hash.into();
-                let Some(handle) = self.handles.get(&hash).and_then(|weak| weak.upgrade()) else {
-                    let tx = self.get_results_tx.clone().reserve_owned().await.unwrap();
-                    self.db.send(meta::Get { hash, tx }.into()).await.ok();
-                    self.waiting.entry(hash).or_default().push(cmd.into());
-                    return;
-                };
-                self.unit_tasks.spawn(observe_task(cmd, Ok(handle)));
-            }
-            Command::SyncDb(cmd) => {
-                self.db.send(cmd.into()).await.ok();
+                let handle = self.get_handle(cmd.hash);
+                self.tasks.spawn(observe_task(cmd, handle));
             }
             _ => {}
         }
     }
 
-    async fn handle_fs_command(&mut self, cmd: FsCommand) {
+    fn get_handle(&mut self, hash: impl Into<Hash>) -> LazyHandle {
+        LazyHandle {
+            slot: self.handles.entry(hash.into()).or_default().clone(),
+            context: self.context.clone(),
+        }
+    }
+
+    async fn handle_fs_command(&mut self, cmd: InternalCommand) {
         match cmd {
-            FsCommand::Dump(cmd) => {
-                self.db.send(cmd.into()).await.ok();
+            InternalCommand::Dump(cmd) => {
+                self.db().send(cmd.into()).await.ok();
+            }
+            InternalCommand::FinishImport(cmd) => {
+                let handle = self.get_handle(cmd.hash);
+                self.finish_import(cmd).await;
             }
         }
     }
 
-    fn log_unit_task(&self, res: Result<(), JoinError>) {
+    fn log_task_result(&self, res: Result<(), JoinError>) {
         if let Err(e) = res {
             error!("task failed: {e}");
         }
     }
 
-    async fn finish_import(&mut self, res: Result<Option<ImportEntry>, JoinError>) {
-        let import_data = match res {
-            Ok(Some(entry)) => entry,
-            Ok(None) => {
-                warn!("import failed");
-                return;
-            }
-            Err(e) => {
-                if e.is_cancelled() {
-                    warn!("import task failed: {e}");
-                } else {
-                    error!("import task panicked: {e}");
-                }
-                return;
-            }
-        };
+    async fn finish_import(&mut self, import_data: ImportEntry) {
         let hash: crate::Hash = import_data.hash.into();
+        let handle = self.get_handle(hash);
         // convert the import source to a data location and drop the open files
         let data_location = match import_data.source {
             ImportSource::Memory(data) => DataLocation::Inline(data),
@@ -245,7 +309,7 @@ impl Actor {
             ImportSource::TempFile(path, _file, size) => {
                 // this will always work on any unix, but on windows there might be an issue if the target file is open!
                 // possibly open with FILE_SHARE_DELETE on windows?
-                let target = self.options.path.owned_data_path(&hash);
+                let target = self.options().path.owned_data_path(&hash);
                 trace!(
                     "moving temp file to owned data location: {} -> {}",
                     path.display(),
@@ -262,7 +326,7 @@ impl Actor {
             MemOrFile::Mem(bytes) => OutboardLocation::Inline(bytes),
             MemOrFile::File(path) => {
                 // the same caveat as above applies here
-                let target = self.options.path.owned_outboard_path(&hash);
+                let target = self.options().path.owned_outboard_path(&hash);
                 trace!(
                     "moving temp file to owned outboard location: {} -> {}",
                     path.display(),
@@ -278,12 +342,12 @@ impl Actor {
             data_location,
             outboard_location,
         };
-        self.db
+        self.db()
             .send(
                 meta::Update {
                     hash,
                     state,
-                    epoch: self.epoch,
+                    epoch: 0,
                     tx: None,
                 }
                 .into(),
@@ -294,108 +358,22 @@ impl Actor {
         import_data.out.send(ImportProgress::Done { hash });
     }
 
-    fn open_bao_file(
-        &self,
-        hash: &Hash,
-        state: EntryState<Bytes>,
-    ) -> anyhow::Result<BaoFileHandle> {
-        let config = self.config.clone();
-        Ok(match state {
-            EntryState::Complete {
-                data_location,
-                outboard_location,
-            } => {
-                let data_location = match data_location {
-                    DataLocation::Inline(data) => MemOrFile::Mem(data),
-                    DataLocation::Owned(size) => {
-                        let path = self.options.path.owned_data_path(&hash);
-                        let file = std::fs::File::open(&path)?;
-                        MemOrFile::File((file, size))
-                    }
-                    DataLocation::External(paths, size) => {
-                        let Some(path) = paths.into_iter().next() else {
-                            anyhow::bail!("no external data path");
-                        };
-                        let file = std::fs::File::open(&path)?;
-                        MemOrFile::File((file, size))
-                    }
-                };
-                let outboard_location = match outboard_location {
-                    OutboardLocation::NotNeeded => MemOrFile::Mem(Bytes::new()),
-                    OutboardLocation::Inline(data) => MemOrFile::Mem(data),
-                    OutboardLocation::Owned => {
-                        let path = self.options.path.owned_outboard_path(hash);
-                        let file = std::fs::File::open(&path)?;
-                        let size = file.metadata()?.len();
-                        MemOrFile::File((file, size))
-                    }
-                };
-                BaoFileHandle::complete(config, *hash, data_location, outboard_location)
-            }
-            EntryState::Partial { .. } => BaoFileHandle::incomplete_file(config, *hash)?,
-        })
-    }
-
-    async fn handle_db_answer(&mut self, res: GetResult) {
-        let hash: crate::Hash = res.hash.into();
-        let config = self.config.clone();
-        let handle = match self.handles.get(&hash).and_then(|weak| weak.upgrade()) {
-            Some(handle) => Ok(handle),
-            None => {
-                let handle = match res.state {
-                    Ok(Some(entry)) => self.open_bao_file(&hash, entry),
-                    Ok(None) => Ok(BaoFileHandle::incomplete_mem(config, hash)),
-                    Err(cause) => Err(cause),
-                };
-                if let Ok(handle) = &handle {
-                    self.handles.insert(hash, handle.downgrade());
-                }
-                handle.map_err(Arc::new)
-            }
-        };
-        let tasks = self.waiting.remove(&hash).unwrap_or_default();
-        for task in tasks {
-            match task {
-                WaitingTask::ExportPath(cmd) => {
-                    self.unit_tasks.spawn(export_path_task(cmd, handle.clone()));
-                }
-                WaitingTask::ExportBao(cmd) => {
-                    self.unit_tasks.spawn(export_bao_task(cmd, handle.clone()));
-                }
-                WaitingTask::ImportBao(cmd) => {
-                    let sender = self.db.clone();
-                    self.unit_tasks
-                        .spawn(import_bao_task(cmd, handle.clone(), sender));
-                }
-                WaitingTask::Observe(cmd) => {
-                    self.unit_tasks.spawn(observe_task(cmd, handle.clone()));
-                }
-            }
-        }
-    }
-
     async fn run(mut self) {
         loop {
             tokio::select! {
-                cmd = self.commands.recv() => {
+                cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else {
                         break;
                     };
                     trace!("{cmd:?}");
                     self.handle_command(cmd).await;
                 }
-                Some(res) = self.db_answers_rx.recv() => {
-                    self.handle_db_answer(res).await;
-                }
-                Some(cmd) = self.fs_commands.recv(), if !self.fs_commands.is_closed() => {
+                Some(cmd) = self.fs_cmd_rx.recv() => {
                     trace!("{cmd:?}");
                     self.handle_fs_command(cmd).await;
                 }
-                Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
-                    self.finish_import(res).await;
-                }
-                Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
-                    self.log_unit_task(res);
+                Some(res) = self.tasks.join_next(), if !self.tasks.is_empty() => {
+                    self.log_task_result(res);
                 }
             }
         }
@@ -404,8 +382,9 @@ impl Actor {
     async fn new(
         db_path: PathBuf,
         rt: tokio::runtime::Runtime,
-        commands: mpsc::Receiver<Command>,
-        fs_commands: mpsc::Receiver<FsCommand>,
+        cmd_rx: mpsc::Receiver<Command>,
+        fs_commands_rx: mpsc::Receiver<InternalCommand>,
+        fs_commands_tx: mpsc::Sender<InternalCommand>,
         options: Arc<Options>,
     ) -> anyhow::Result<Self> {
         trace!(
@@ -424,26 +403,27 @@ impl Actor {
         );
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
-        let (get_results_tx, get_results_rx) = mpsc::channel(100);
         let db_actor = meta::Actor::new(db_path, db_recv)?;
+        // the bao file config is just things from the options packed together and
+        // wrapped in an arc.
         let config = Arc::new(BaoFileConfig::new(
             Arc::new(options.path.data_path.clone()),
             options.inline.max_data_inlined as usize,
         ));
+        let slot_context = Arc::new(TaskContext {
+            options,
+            config,
+            db: meta::Db::new(db_send),
+            internal_cmd_tx: fs_commands_tx,
+            epoch: AtomicU64::new(0),
+        });
         rt.spawn(db_actor.run());
         Ok(Self {
-            config,
-            options,
-            commands,
-            fs_commands,
-            get_results_tx,
-            db_answers_rx: get_results_rx,
-            unit_tasks: JoinSet::new(),
-            import_tasks: JoinSet::new(),
-            db: db_send,
-            epoch: 0,
-            handles: BTreeMap::new(),
-            waiting: BTreeMap::new(),
+            context: slot_context,
+            cmd_rx,
+            fs_cmd_rx: fs_commands_rx,
+            tasks: JoinSet::new(),
+            handles: Default::default(),
             rt: Some(rt),
         })
     }
@@ -457,17 +437,17 @@ impl Drop for Actor {
     }
 }
 
-async fn import_bao_task(
-    cmd: ImportBao,
-    handle: std::result::Result<BaoFileHandle, Arc<anyhow::Error>>,
-    sender: mpsc::Sender<meta::Command>,
-) {
+async fn import_bao_task(cmd: ImportBao, handle: LazyHandle) {
+    let meta = handle.db().clone();
     let ImportBao {
-        size, data, out, ..
+        size,
+        data,
+        out,
+        hash,
     } = cmd;
-    match handle {
+    match handle.get_or_create(hash).await {
         Ok(handle) => {
-            let res = import_bao_impl(size, data, handle, sender).await;
+            let res = import_bao_impl(size, data, handle, meta).await;
             out.send(res).ok();
         }
         Err(cause) => {
@@ -487,7 +467,7 @@ async fn import_bao_impl(
     size: NonZeroU64,
     mut data: mpsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
-    sender: mpsc::Sender<meta::Command>,
+    db: meta::Db,
 ) -> anyhow::Result<()> {
     let mut batch = Vec::<BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
@@ -500,18 +480,17 @@ async fn import_bao_impl(
                 let hash = handle.hash();
                 let epoch = 0; // not needed here, since creating a partial entry won't delete files
                 let state = EntryState::Partial { size: None };
-                sender
-                    .send(
-                        meta::Update {
-                            hash,
-                            epoch,
-                            state,
-                            tx: None,
-                        }
-                        .into(),
-                    )
-                    .await
-                    .ok();
+                db.send(
+                    meta::Update {
+                        hash,
+                        epoch,
+                        state,
+                        tx: None,
+                    }
+                    .into(),
+                )
+                .await
+                .ok();
             }
             batch.clear();
             ranges = ChunkRanges::empty();
@@ -534,32 +513,21 @@ async fn import_bao_impl(
     Ok(())
 }
 
-async fn observe_task(
-    cmd: Observe,
-    handle: std::result::Result<BaoFileHandle, Arc<anyhow::Error>>,
-) {
-    let Observe { out, .. } = cmd;
-    if let Ok(handle) = handle {
-        observe_impl(handle, out).await;
-    }
-}
-
-async fn observe_impl(handle: BaoFileHandle, out: Observer<Bitfield>) {
-    let receiver_dropped = out.receiver_dropped();
-    handle.add_observer(out);
+async fn observe_task(cmd: Observe, handle: LazyHandle) {
+    let Ok(handle) = handle.get_or_create(cmd.hash).await else {
+        return;
+    };
+    let receiver_dropped = cmd.out.receiver_dropped();
+    handle.add_observer(cmd.out);
     // this keeps the handle alive until the observer is dropped
     receiver_dropped.await;
-    handle.observer_dropped();
 }
 
-async fn export_bao_task(
-    cmd: ExportBao,
-    handle: std::result::Result<BaoFileHandle, Arc<anyhow::Error>>,
-) {
+async fn export_bao_task(cmd: ExportBao, handle: LazyHandle) {
     let Ok(send) = cmd.out.clone().reserve_owned().await else {
         return;
     };
-    match handle {
+    match handle.get_or_create(cmd.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_bao_impl(cmd, handle).await {
                 send.send(EncodedItem::Error(bao_tree::io::EncodeError::Io(
@@ -585,14 +553,11 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
     Ok(())
 }
 
-async fn export_path_task(
-    cmd: ExportPath,
-    handle: std::result::Result<BaoFileHandle, Arc<anyhow::Error>>,
-) {
+async fn export_path_task(cmd: ExportPath, handle: LazyHandle) {
     let Ok(send) = cmd.out.clone().reserve_owned().await else {
         return;
     };
-    match handle {
+    match handle.get_or_create(cmd.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_path_impl(cmd, handle).await {
                 send.send(ExportProgress::Error { cause });
@@ -676,6 +641,7 @@ impl Store {
                 rt,
                 commands_rx,
                 fs_commands_rx,
+                fs_commands_tx.clone(),
                 Arc::new(options),
             ))
             .await??;
@@ -688,11 +654,11 @@ impl Store {
 }
 
 pub struct DbStore {
-    db: mpsc::Sender<FsCommand>,
+    db: mpsc::Sender<InternalCommand>,
 }
 
 impl DbStore {
-    fn from_sender(db: mpsc::Sender<FsCommand>) -> Self {
+    fn from_sender(db: mpsc::Sender<InternalCommand>) -> Self {
         Self { db }
     }
 

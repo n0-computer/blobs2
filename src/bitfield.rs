@@ -1,22 +1,11 @@
 use std::num::NonZeroU64;
 
-use bao_tree::{blake3, ChunkNum, ChunkRanges, ChunkRangesRef};
-use tokio::sync::mpsc;
-use tracing::error;
+use bao_tree::{ChunkNum, ChunkRanges};
 
 use crate::util::observer::Combine;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct UnverifiedSize(u64);
-
-/// The size of a bao file
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum BaoBlobSize {
-    /// A remote side told us the size, but we have insufficient data to verify it.
-    Unverified(u64),
-    /// We have verified the size.
-    Verified(u64),
-}
 
 pub fn is_validated(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
     let size = size.get();
@@ -33,59 +22,6 @@ pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
     let complete = ChunkRanges::from(..ChunkNum::chunks(size.get()));
     // is_subset is a bit weirdly named. This means that complete is a subset of ranges.
     complete.is_subset(&ranges)
-}
-
-impl BaoBlobSize {
-    /// Create a new `BaoBlobSize` with the given size and verification status.
-    pub fn new(size: u64, verified: bool) -> Self {
-        if verified {
-            BaoBlobSize::Verified(size)
-        } else {
-            BaoBlobSize::Unverified(size)
-        }
-    }
-
-    pub fn from_size_and_ranges(size: NonZeroU64, ranges: &ChunkRangesRef) -> BaoBlobSize {
-        let size = size.get();
-        // ChunkNum::chunks will be at least 1, so this is safe.
-        let last_chunk = ChunkNum::chunks(size) - 1;
-        if ranges.contains(&last_chunk) {
-            BaoBlobSize::Verified(size)
-        } else {
-            BaoBlobSize::Unverified(size)
-        }
-    }
-
-    pub fn from_size_and_ranges_and_hash(
-        size: u64,
-        ranges: &ChunkRangesRef,
-        hash: &blake3::Hash,
-    ) -> BaoBlobSize {
-        if size == 0 {
-            // Getting called with 0 is weird, but we still have to handle it.
-            if hash == &EMPTY_HASH && ranges.is_empty() {
-                BaoBlobSize::Verified(0)
-            } else {
-                BaoBlobSize::Unverified(0)
-            }
-        } else {
-            // full_chunks will be at least 1, so this is safe.
-            let last_chunk = ChunkNum::chunks(size) - 1;
-            if ranges.contains(&last_chunk) {
-                BaoBlobSize::Verified(size)
-            } else {
-                BaoBlobSize::Unverified(size)
-            }
-        }
-    }
-
-    /// Get just the value, no matter if it is verified or not.
-    pub fn value(&self) -> u64 {
-        match self {
-            BaoBlobSize::Unverified(size) => *size,
-            BaoBlobSize::Verified(size) => *size,
-        }
-    }
 }
 
 pub const EMPTY_HASH: [u8; 32] = [
@@ -111,10 +47,10 @@ impl Bitfield {
     ///
     /// An empty blob size can not be validated the usual way, so we need to
     /// check the hash.
-    pub fn complete_empty() -> Self {
+    pub fn complete(size: u64) -> Self {
         Self {
             ranges: ChunkRanges::all(),
-            size: 0,
+            size,
         }
     }
 
@@ -177,39 +113,9 @@ impl Combine for Bitfield {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use bao_tree::blake3;
 
-    #[test]
-    fn test_bao_blob_size() {
-        let hash = blake3::hash(&[]);
-        let size = BaoBlobSize::from_size_and_ranges_and_hash(0, &ChunkRanges::empty(), &hash);
-        assert_eq!(size, BaoBlobSize::Verified(0));
-        let hash = blake3::hash(b"a");
-        let size =
-            BaoBlobSize::from_size_and_ranges_and_hash(1, &ChunkRanges::from(..ChunkNum(1)), &hash);
-        assert_eq!(size, BaoBlobSize::Verified(1));
-        let hash = blake3::hash(&[0u8; 1024]);
-        let size = BaoBlobSize::from_size_and_ranges_and_hash(
-            1024,
-            &ChunkRanges::from(..ChunkNum(1)),
-            &hash,
-        );
-        assert_eq!(size, BaoBlobSize::Verified(1024));
-        let hash = blake3::hash(&[0u8; 1025]);
-        let size = BaoBlobSize::from_size_and_ranges_and_hash(
-            1025,
-            &ChunkRanges::from(..ChunkNum(1)),
-            &hash,
-        );
-        assert_eq!(size, BaoBlobSize::Unverified(1025));
-        let hash = blake3::hash(&[0u8; 1025]);
-        let size = BaoBlobSize::from_size_and_ranges_and_hash(
-            1025,
-            &ChunkRanges::from(ChunkNum(1)..ChunkNum(2)),
-            &hash,
-        );
-        assert_eq!(size, BaoBlobSize::Verified(1025));
-    }
+    use super::*;
 
     #[test]
     fn test_empty_hash() {
