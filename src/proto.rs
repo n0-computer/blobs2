@@ -136,12 +136,24 @@ pub enum ImportProgress {
     Error { cause: anyhow::Error },
 }
 
+impl From<anyhow::Error> for ImportProgress {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Error { cause: e }
+    }
+}
+
 #[derive(Debug)]
 pub enum ExportProgress {
     Size { size: u64 },
     CopyProgress { offset: u64 },
     Done,
     Error { cause: anyhow::Error },
+}
+
+impl From<anyhow::Error> for ExportProgress {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Error { cause: e }
+    }
 }
 
 /// The import mode describes how files will be imported.

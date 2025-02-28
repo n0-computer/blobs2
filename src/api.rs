@@ -67,9 +67,14 @@ impl Store {
         ExportBaoResult { receiver }
     }
 
+    /// Observe the bitfield of the given hash.
+    ///
+    /// Returns an infinite stream of bitfields. The first bitfield is the
+    /// current state, and the following bitfields are updates.
+    ///
+    /// Once a blob is complete, there will be no more updates.
     pub fn observe(&self, hash: Hash) -> ObserveResult {
         if hash.as_bytes() == &crate::bitfield::EMPTY_HASH {
-            // todo: where to put the tx?
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.try_send(Bitfield::complete(0)).ok();
             return ObserveResult { receiver: rx };
@@ -222,6 +227,9 @@ impl Stream for ImportResult {
     }
 }
 
+/// An infinite stream of bitfields, where the first is the current state
+/// and all following are updates. Once a blob is complete, there will be no
+/// more updates.
 pub struct ObserveResult {
     receiver: tokio::sync::mpsc::Receiver<Bitfield>,
 }
@@ -238,8 +246,7 @@ impl Stream for ObserveResult {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.poll_recv(cx) {
             Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+            _ => Poll::Pending,
         }
     }
 }

@@ -19,7 +19,10 @@ use std::{
 
 use bao_tree::{
     blake3::Hash,
-    io::{outboard::PreOrderOutboard, sync::WriteAt},
+    io::{
+        outboard::{self, PreOrderOutboard},
+        sync::WriteAt,
+    },
     BaoTree,
 };
 use bytes::Bytes;
@@ -48,6 +51,10 @@ pub enum ImportSource {
 }
 
 impl ImportSource {
+    fn is_mem(&self) -> bool {
+        matches!(self, Self::Memory(_))
+    }
+
     /// A reader for the import source.
     fn read(&self) -> MemOrFile<std::io::Cursor<&[u8]>, &File> {
         match self {
@@ -79,7 +86,14 @@ pub struct ImportEntry {
     pub hash: Hash,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
-    pub out: mpsc::OwnedPermit<ImportProgress>,
+    pub out: mpsc::Sender<ImportProgress>,
+}
+
+impl ImportEntry {
+    /// True if both data and outboard are in memory.
+    pub fn is_mem(&self) -> bool {
+        self.source.is_mem() && self.outboard.is_mem()
+    }
 }
 
 /// Start a task to import from a [`Bytes`] in memory.
@@ -100,7 +114,7 @@ pub async fn import_byte_stream_task(cmd: ImportByteStream, ctx: Arc<TaskContext
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
         Err(cause) => {
-            send.send(ImportProgress::Error { cause });
+            send.send(cause.into());
         }
     }
 }
@@ -201,7 +215,7 @@ async fn compute_outboard(
         hash: hash.into(),
         source,
         outboard,
-        out: out.reserve_owned().await?,
+        out,
     })
 }
 
@@ -234,7 +248,7 @@ pub async fn import_path_task(cmd: ImportPath, context: Arc<TaskContext>) {
             context.internal_cmd_tx.send(res.into()).await.ok();
         }
         Err(cause) => {
-            send.send(ImportProgress::Error { cause });
+            send.send(cause.into());
         }
     }
 }

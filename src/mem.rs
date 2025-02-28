@@ -192,12 +192,8 @@ impl Actor {
             import_data.out.send(ImportProgress::Done { hash });
             return;
         };
-        incomplete.update(Bitfield {
-            ranges: ChunkRanges::all(),
-            size,
-        });
+        incomplete.update(Bitfield::complete(size));
         import_data.out.send(ImportProgress::Done { hash });
-        let mut added = ChunkRanges::all();
         *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
     }
 
@@ -270,10 +266,7 @@ async fn import_bao_task(
                 if added.is_empty() {
                     continue;
                 }
-                let update = Bitfield {
-                    ranges: added,
-                    size,
-                };
+                let update = Bitfield::new(added, size);
                 entry.bitfield.update(update);
                 if entry.bitfield.state().ranges == ChunkRanges::from(..ChunkNum::chunks(size)) {
                     let data = std::mem::take(&mut entry.data);
@@ -567,10 +560,7 @@ impl IncompleteEntry {
                 }
             }
         }
-        let update = Bitfield {
-            ranges: ranges.clone(),
-            size: size.get(),
-        };
+        let update = Bitfield::new(ranges.clone(), size.get());
         self.bitfield.update(update);
         Ok(())
     }
@@ -592,10 +582,7 @@ impl CompleteEntry {
     }
 
     pub fn add_observer(&mut self, mut out: Observer<Bitfield>) {
-        let state = Bitfield {
-            ranges: ChunkRanges::all(),
-            size: self.size(),
-        };
+        let state = Bitfield::complete(self.size());
         out.send(state).ok();
     }
 

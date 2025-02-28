@@ -4,12 +4,16 @@ use std::{
 };
 
 use n0_future::{join_all, Stream};
-use quinn::rustls::crypto::hash::Output;
 use tokio::sync::mpsc;
 
 // A commutative combine trait for updates
 pub trait Combine {
     fn combine(self, other: Self) -> Self;
+}
+
+pub trait CombineInPlace: Combine {
+    fn combine_with(&mut self, other: Self) -> Self;
+    fn is_neutral(&self) -> bool;
 }
 
 // An observer that accumulates updates
@@ -65,10 +69,6 @@ impl<U> Observer<U> {
 
     pub fn pending_update(&self) -> Option<&U> {
         self.pending_update.as_ref()
-    }
-
-    pub fn into_pending_update(self) -> Option<U> {
-        self.pending_update
     }
 
     pub fn receiver_dropped(&self) -> impl Future<Output = ()> {
@@ -138,6 +138,24 @@ impl<U> Observable<U> {
     /// Notify the observable that an observer was dropped
     pub fn observer_dropped(&mut self) {
         self.observers.retain(|o| !o.is_closed());
+    }
+
+    // Update the state and send the update to all observables, retaining only live observables
+    pub fn update2(&mut self, update: U)
+    where
+        U: CombineInPlace + Clone,
+    {
+        // Update the state by combining with the update
+        let state = self.state.as_mut().expect("State must be initialized");
+        let delta = state.combine_with(update);
+
+        if delta.is_neutral() {
+            return;
+        }
+
+        // Send the update to all observables and filter out dropped ones
+        self.observers
+            .retain_mut(|observable| observable.send(delta.clone()).is_ok());
     }
 
     // Update the state and send the update to all observables, retaining only live observables
@@ -215,7 +233,6 @@ impl<U> Aggregator<U> {
     {
         let mut curr = initial;
         while let Some(update) = self.recv.try_recv().ok() {
-            println!("update {:?}", update);
             curr = curr.combine(update);
         }
         curr
@@ -249,7 +266,7 @@ where
 #[cfg(test)]
 mod tests {
     use testresult::TestResult;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::mpsc;
 
     use super::*;
 

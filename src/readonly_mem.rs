@@ -170,16 +170,14 @@ async fn export_path_task(
     out: mpsc::Sender<ExportProgress>,
 ) {
     let Some(entry) = entry else {
-        out.send(ExportProgress::Error {
-            cause: anyhow::anyhow!("hash not found"),
-        })
-        .await
-        .ok();
+        out.send(anyhow::anyhow!("hash not found").into())
+            .await
+            .ok();
         return;
     };
     match export_path_impl(entry, target, &out).await {
         Ok(()) => out.send(ExportProgress::Done).await.ok(),
-        Err(e) => out.send(ExportProgress::Error { cause: e }).await.ok(),
+        Err(cause) => out.send(cause.into()).await.ok(),
     };
 }
 

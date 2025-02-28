@@ -220,7 +220,9 @@ impl Actor {
     }
 
     fn update(tables: &mut Tables, cmd: Update) -> ActorResult<()> {
-        let Update { hash, state, .. } = cmd;
+        let Update {
+            hash, state, tx, ..
+        } = cmd;
         let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
             EntryState::Complete {
@@ -251,7 +253,9 @@ impl Actor {
         if let Some(outboard) = outboard {
             tables.inline_outboard.insert(hash, outboard.as_ref())?;
         }
-        // todo: send what changed based on old_entry_opt
+        if let Some(tx) = tx {
+            tx.send(Ok(())).ok();
+        }
         Ok(())
     }
 

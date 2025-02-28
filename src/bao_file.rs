@@ -97,10 +97,7 @@ pub struct CompleteStorage {
 
 impl CompleteStorage {
     pub fn add_observer(&mut self, mut observer: Observer<Bitfield>) {
-        let bitfield = Bitfield {
-            ranges: ChunkRanges::all(),
-            size: self.data_size(),
-        };
+        let bitfield = Bitfield::complete(self.data.size());
         observer.send(bitfield).ok();
     }
 
@@ -230,10 +227,7 @@ impl FileStorage {
         }
         let current = &self.bitfield.state().ranges;
         let added = ranges - current;
-        let update = Bitfield {
-            ranges: added,
-            size: size.get(),
-        };
+        let update = Bitfield::new(added, size.get());
         self.bitfield.update(update);
         Ok(())
     }
@@ -407,8 +401,7 @@ impl BaoFileHandle {
     /// Create a new bao file handle.
     ///
     /// This will create a new file handle with an empty memory storage.
-    /// Since there are very likely to be many of these, we use an arc rwlock
-    pub fn incomplete_mem(config: Arc<BaoFileConfig>, hash: Hash) -> Self {
+    pub fn new_incomplete_mem(config: Arc<BaoFileConfig>, hash: Hash) -> Self {
         let storage = BaoFileStorage::incomplete_mem();
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(storage),
@@ -418,7 +411,7 @@ impl BaoFileHandle {
     }
 
     /// Create a new bao file handle with a partial file.
-    pub fn incomplete_file(config: Arc<BaoFileConfig>, hash: Hash) -> io::Result<Self> {
+    pub fn new_incomplete_file(config: Arc<BaoFileConfig>, hash: Hash) -> io::Result<Self> {
         let paths = config.paths(&hash);
         let storage = BaoFileStorage::Incomplete(FileStorage {
             data: create_read_write(&paths.data)?,
@@ -434,7 +427,7 @@ impl BaoFileHandle {
     }
 
     /// Create a new complete bao file handle.
-    pub fn complete(
+    pub fn new_complete(
         config: Arc<BaoFileConfig>,
         hash: Hash,
         data: MemOrFile<Bytes, (File, u64)>,
@@ -446,6 +439,27 @@ impl BaoFileHandle {
             config,
             hash,
         }))
+    }
+
+    /// Complete the handle
+    pub fn complete(
+        &self,
+        data: MemOrFile<Bytes, (File, u64)>,
+        outboard: MemOrFile<Bytes, (File, u64)>,
+    ) {
+        let mut guard = self.storage.write().unwrap();
+        let res = match guard.deref_mut() {
+            BaoFileStorage::Complete(_) => None,
+            BaoFileStorage::IncompleteMem(entry) => Some(&mut entry.bitfield),
+            BaoFileStorage::Incomplete(entry) => Some(&mut entry.bitfield),
+        };
+        if let Some(bitfield) = res {
+            bitfield.update(Bitfield {
+                ranges: ChunkRanges::all(),
+                size: data.size(),
+            });
+            *guard.deref_mut() = BaoFileStorage::Complete(CompleteStorage { data, outboard });
+        }
     }
 
     pub fn add_observer(&self, observer: Observer<Bitfield>) {
