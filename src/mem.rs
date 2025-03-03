@@ -28,6 +28,7 @@ use tokio::{
 use tracing::error;
 
 use crate::{
+    bao_file::CompleteStorage,
     bitfield::Bitfield,
     proto::*,
     util::{
@@ -453,7 +454,7 @@ struct State {
 
 #[derive(Debug, derive_more::From)]
 enum Entry {
-    Incomplete(IncompleteEntry),
+    Incomplete(IncompleteMemStorage),
     Complete(CompleteEntry),
 }
 
@@ -499,7 +500,7 @@ impl Entry {
         }
     }
 
-    fn incomplete_mut(&mut self) -> Option<&mut IncompleteEntry> {
+    fn incomplete_mut(&mut self) -> Option<&mut IncompleteMemStorage> {
         match self {
             Self::Incomplete(entry) => Some(entry),
             Self::Complete(_) => None,
@@ -510,14 +511,18 @@ impl Entry {
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.
 #[derive(Debug, Default)]
-pub(crate) struct IncompleteEntry {
+pub(crate) struct IncompleteMemStorage {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
     pub(crate) bitfield: Observable<Bitfield>,
 }
 
-impl IncompleteEntry {
+impl IncompleteMemStorage {
+    pub fn into_complete(&self) -> CompleteStorage {
+        todo!()
+    }
+
     pub fn add_observer(&mut self, out: Observer<Bitfield>) {
         self.bitfield.add_observer(out);
     }
@@ -539,7 +544,7 @@ impl IncompleteEntry {
         size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         for item in batch {
             match item {

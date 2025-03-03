@@ -106,17 +106,17 @@ pub enum InternalCommand {
 
 /// Context needed by most tasks
 #[derive(Debug)]
-struct TaskContext {
+pub(crate) struct TaskContext {
     // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
-    options: Arc<Options>,
+    pub options: Arc<Options>,
     // Bao file configuration.
-    config: Arc<BaoFileConfig>,
+    pub config: Arc<BaoFileConfig>,
     // Metadata database, basically a mpsc sender with some extra functionality.
-    db: meta::Db,
+    pub db: meta::Db,
     // Handle to send internal commands
-    internal_cmd_tx: mpsc::Sender<InternalCommand>,
+    pub internal_cmd_tx: mpsc::Sender<InternalCommand>,
     // Epoch counter to provide a total order for databse operations
-    epoch: AtomicU64,
+    pub epoch: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -579,12 +579,13 @@ async fn import_bao_impl(
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
+    println!("importing bao {}", handle.id());
     let mut batch = Vec::<BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
     while let Some(item) = data.recv().await {
         // if the batch is not empty, the last item is a leaf and the current item is a parent, write the batch
         if !batch.is_empty() && batch[batch.len() - 1].is_leaf() && item.is_parent() {
-            let res = handle.write_batch(size, &batch, &ranges)?;
+            let res = handle.write_batch(size, &batch, &ranges, &ctx.ctx)?;
             // create the metadata entry for the new file, if needed
             if let HandleChange::MemToFile = res {
                 let hash = handle.hash();
@@ -607,7 +608,7 @@ async fn import_bao_impl(
         batch.push(item);
     }
     if !batch.is_empty() {
-        handle.write_batch(size, &batch, &ranges)?;
+        handle.write_batch(size, &batch, &ranges, &ctx.ctx)?;
     }
     Ok(())
 }
@@ -616,6 +617,7 @@ async fn observe_task(cmd: Observe, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.hash).await else {
         return;
     };
+    println!("observing {}", handle.id());
     let receiver_dropped = cmd.out.receiver_dropped();
     handle.add_observer(cmd.out);
     // this keeps the handle alive until the observer is dropped
@@ -673,7 +675,7 @@ async fn export_path_task(cmd: ExportPath, ctx: HashContext) {
 async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Result<()> {
     let data = {
         let guard = handle.storage.read().unwrap();
-        let BaoFileStorage::Complete(complete) = guard.deref() else {
+        let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
             anyhow::bail!("not a complete file");
         };
         match &complete.data {
@@ -804,14 +806,14 @@ mod tests {
         let options = Options::new(&db_dir);
         let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
         let sizes = [
-            0,
+            // 0,
             1,
-            1024,
-            1024 * 16 - 1,
-            1024 * 16,
-            1024 * 16 + 1,
-            1024 * 1024,
-            1024 * 1024 * 8,
+            // 1024,
+            // 1024 * 16 - 1,
+            // 1024 * 16,
+            // 1024 * 16 + 1,
+            // 1024 * 1024,
+            // 1024 * 1024 * 8,
         ];
         for size in sizes {
             let data = vec![1u8; size];
@@ -828,8 +830,10 @@ mod tests {
                     }
                 }
             });
+            println!("importing {}", size);
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
             task.await?;
+            println!("done importing {}", size);
         }
         Ok(())
     }

@@ -7,7 +7,7 @@ use n0_future::{join_all, Stream};
 use tokio::sync::mpsc;
 
 // A commutative combine trait for updates
-pub trait Combine {
+pub trait Combine: Debug {
     fn combine(self, other: Self) -> Self;
 }
 
@@ -41,11 +41,19 @@ impl<U> Observer<U> {
     where
         U: Combine,
     {
+        println!("Sending update 2: {:?}", update);
         // If we have a pending update, combine it with the new update
         let update_to_send = match self.pending_update.take() {
-            Some(pending) => pending.combine(update),
+            Some(pending) => {
+                println!("Pending update: {:?}", pending);
+                pending.combine(update)
+            }
             None => update,
         };
+        println!(
+            "Sending update after combining with pending: {:?}",
+            update_to_send
+        );
 
         match self.tx.try_send(update_to_send) {
             Ok(()) => Ok(ObserveSuccess::Sent),
@@ -130,6 +138,13 @@ impl<U> Observable<U> {
         U: Combine + Clone,
     {
         let state = self.state().clone();
+        let id = &self as *const _ as usize;
+        println!("{id} add_observer");
+        println!(
+            "{id} Sending initial state: {:?} {}",
+            state,
+            self.observers.len()
+        );
         if observer.send(state).is_ok() {
             self.observers.push(observer);
         }
@@ -163,6 +178,8 @@ impl<U> Observable<U> {
     where
         U: Combine + Clone,
     {
+        let id = &self as *const _ as usize;
+        println!("{id} Updating state {:?} with {:?}", self.state(), update);
         // Update the state by combining with the update
         self.state = Some(
             self.state
@@ -170,10 +187,14 @@ impl<U> Observable<U> {
                 .expect("State must be initialized")
                 .combine(update.clone()),
         );
+        println!("{id} Resulting state {:?}", self.state());
+        println!("{id} Sending update: {:?}", update);
 
         // Send the update to all observables and filter out dropped ones
-        self.observers
-            .retain_mut(|observable| observable.send(update.clone()).is_ok());
+        self.observers.retain_mut(|observable| {
+            println!("{id} Sending update 1: {:?}", update);
+            observable.send(update.clone()).is_ok()
+        });
     }
 
     // Get the current state (for testing or debugging)
