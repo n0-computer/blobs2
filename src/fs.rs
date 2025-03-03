@@ -66,7 +66,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, trace, warn};
+use tracing::{error, trace};
 
 use crate::{
     bitfield::is_validated,
@@ -276,10 +276,6 @@ impl Actor {
         &self.context.db
     }
 
-    fn options(&self) -> &Arc<Options> {
-        &self.context.options
-    }
-
     fn context(&self) -> Arc<TaskContext> {
         self.context.clone()
     }
@@ -333,7 +329,6 @@ impl Actor {
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(observe_task(cmd, ctx));
             }
-            _ => {}
         }
     }
 
@@ -757,13 +752,7 @@ mod tests {
     use testresult::TestResult;
 
     use super::*;
-    use crate::{
-        util::{
-            observer::{Aggregator, Combine},
-            Tag,
-        },
-        HashAndFormat, IROH_BLOCK_SIZE,
-    };
+    use crate::{util::Tag, HashAndFormat, IROH_BLOCK_SIZE};
 
     fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
@@ -780,7 +769,7 @@ mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let (store, _debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
         let sizes = [
             // 0,
             1,
@@ -798,7 +787,7 @@ mod tests {
             let obs = store.observe(hash);
             let task = tokio::spawn(async move {
                 let mut agg = obs.aggregated();
-                while let Some(delta) = agg.next().await {
+                while let Some(_delta) = agg.next().await {
                     let state = agg.state();
                     println!("{:?} complete={}", state, state.is_complete());
                     if state.is_complete() {
@@ -907,7 +896,7 @@ mod tests {
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
         }
 
-        for (hash, bao_tree) in bao_by_hash {
+        for (_hash, _bao_tree) in bao_by_hash {
             // let mut reader = Cursor::new(bao_tree);
             // let size = reader.read_u64_le().await?;
             // let tree = BaoTree::new(size, IROH_BLOCK_SIZE);

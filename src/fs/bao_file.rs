@@ -46,42 +46,6 @@ use crate::{
     Hash, IROH_BLOCK_SIZE,
 };
 
-/// Data files are stored in 3 files. The data file, the outboard file,
-/// and a sizes file. The sizes file contains the size that the remote side told us
-/// when writing each data block.
-///
-/// For complete data files, the sizes file is not needed, since you can just
-/// use the size of the data file.
-///
-/// For files below the chunk size, the outboard file is not needed, since
-/// there is only one leaf, and the outboard file is empty.
-struct DataPaths {
-    /// The data file. Size is determined by the chunk with the highest offset
-    /// that has been written.
-    ///
-    /// Gaps will be filled with zeros.
-    data: PathBuf,
-    /// The outboard file. This is *without* the size header, since that is not
-    /// known for partial files.
-    ///
-    /// The size of the outboard file is therefore a multiple of a hash pair
-    /// (64 bytes).
-    ///
-    /// The naming convention is to use obao for pre order traversal and oboa
-    /// for post order traversal. The log2 of the chunk group size is appended,
-    /// so for the default chunk group size in iroh of 4, the file extension
-    /// is .obao4.
-    outboard: PathBuf,
-    /// The sizes file. This is a file with 8 byte sizes for each chunk group.
-    /// The naming convention is to prepend the log2 of the chunk group size,
-    /// so for the default chunk group size in iroh of 4, the file extension
-    /// is .sizes4.
-    ///
-    /// The traversal order is not relevant for the sizes file, since it is
-    /// about the data chunks, not the hash pairs.
-    sizes: PathBuf,
-}
-
 /// Storage for complete blobs. There is no longer any uncertainty about the
 /// size, so we don't need a sizes file.
 ///
@@ -179,7 +143,7 @@ impl PartialFileStorage {
         self,
         _hash: &crate::Hash,
         ctx: &TaskContext,
-    ) -> anyhow::Result<(CompleteStorage, EntryState<Bytes>)> {
+    ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
         let size = self.bitfield.state().size;
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
@@ -387,39 +351,47 @@ impl BaoFileStorage {
         ctx: &TaskContext,
         hash: &Hash,
         permit: mpsc::Permit<meta::Command>,
-    ) -> anyhow::Result<Self> {
-        match self {
+    ) -> io::Result<Self> {
+        Ok(match self {
             BaoFileStorage::PartialMem(mut ms) => {
                 // check if we need to switch to file mode, otherwise write to memory
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
                     ms.write_batch(size, batch, ranges)?;
-                    Ok(if ms.bitfield.state().is_complete() {
+                    if ms.bitfield.state().is_complete() {
                         let (state, update) = ms.into_complete(hash, ctx)?;
                         send_update(ctx, permit, hash, update);
                         state.into()
                     } else {
                         ms.into()
-                    })
+                    }
                 } else {
                     // *first* switch to file mode, *then* write the batch.
                     //
                     // otherwise we might allocate a lot of memory if we get
                     // a write at the end of a very large file.
+                    //
+                    // opt: we should check if we become complete to avoid going from mem to partial to complete
                     let mut fs = ms.persist(&ctx.options.path, hash)?;
                     fs.write_batch(size, batch, ranges)?;
-                    let size = if fs.bitfield.state().is_validated() {
-                        Some(fs.bitfield.state().size)
+                    if fs.bitfield.state().is_complete() {
+                        let (state, update) = fs.into_complete(hash, ctx)?;
+                        send_update(ctx, permit, hash, update);
+                        state.into()
                     } else {
-                        None
-                    };
-                    send_update(ctx, permit, hash, EntryState::Partial { size });
-                    Ok(fs.into())
+                        let size = if fs.bitfield.state().is_validated() {
+                            Some(fs.bitfield.state().size)
+                        } else {
+                            None
+                        };
+                        send_update(ctx, permit, hash, EntryState::Partial { size });
+                        fs.into()
+                    }
                 }
             }
             BaoFileStorage::Partial(mut fs) => {
                 let validated_before = fs.bitfield.state().is_validated();
                 fs.write_batch(size, batch, ranges)?;
-                Ok(if fs.bitfield.state().is_complete() {
+                if fs.bitfield.state().is_complete() {
                     let (cs, update) = fs.into_complete(hash, ctx)?;
                     send_update(ctx, permit, hash, update);
                     cs.into()
@@ -436,14 +408,14 @@ impl BaoFileStorage {
                         );
                     }
                     fs.into()
-                })
+                }
             }
             BaoFileStorage::Complete(_) => {
                 // we are complete, so just ignore the write
                 // unless there is a bug, this would just write the exact same data
-                Ok(self)
+                self
             }
-        }
+        })
     }
 
     fn observer_dropped(&mut self) {
@@ -698,7 +670,7 @@ impl BaoFileHandle {
                     *guard = Some(new_state);
                     Ok(())
                 }
-                Err(e) => Err(e),
+                Err(e) => Err(e.into()),
             }
         } else {
             Err(io::Error::new(io::ErrorKind::Other, "handle poisoned").into())

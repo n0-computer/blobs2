@@ -19,10 +19,7 @@ use std::{
 
 use bao_tree::{
     blake3::Hash,
-    io::{
-        outboard::{self, PreOrderOutboard},
-        sync::WriteAt,
-    },
+    io::{outboard::PreOrderOutboard, sync::WriteAt},
     BaoTree,
 };
 use bytes::Bytes;
