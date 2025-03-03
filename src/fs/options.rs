@@ -117,4 +117,12 @@ impl Options {
             batch: BatchOptions::default(),
         }
     }
+
+    pub fn is_inlined_data(&self, size: u64) -> bool {
+        size <= self.inline.max_data_inlined
+    }
+
+    pub fn is_inlined_outboard(&self, size: u64) -> bool {
+        size <= self.inline.max_outboard_inlined
+    }
 }

@@ -28,7 +28,6 @@ use tokio::{
 use tracing::error;
 
 use crate::{
-    bao_file::CompleteStorage,
     bitfield::Bitfield,
     proto::*,
     util::{
@@ -189,13 +188,13 @@ impl Actor {
         let size = import_data.data.len() as u64;
         let entry = self.state.data.entry(hash).or_default();
         let mut entry = entry.write().unwrap();
-        let Entry::Incomplete(incomplete) = entry.deref_mut() else {
+        let Entry::Partial(incomplete) = entry.deref_mut() else {
             import_data.out.send(ImportProgress::Done { hash });
             return;
         };
         incomplete.update(Bitfield::complete(size));
         import_data.out.send(ImportProgress::Done { hash });
-        *entry = CompleteEntry::new(import_data.data, import_data.outboard.data.into()).into();
+        *entry = CompleteStorage::new(import_data.data, import_data.outboard.data.into()).into();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -274,7 +273,7 @@ async fn import_bao_task(
                     let outboard = std::mem::take(&mut entry.outboard);
                     let data: Bytes = <Vec<u8>>::try_from(data).unwrap().into();
                     let outboard: Bytes = <Vec<u8>>::try_from(outboard).unwrap().into();
-                    *guard = CompleteEntry::new(data, outboard).into();
+                    *guard = CompleteStorage::new(data, outboard).into();
                 }
             }
         }
@@ -454,55 +453,55 @@ struct State {
 
 #[derive(Debug, derive_more::From)]
 enum Entry {
-    Incomplete(IncompleteMemStorage),
-    Complete(CompleteEntry),
+    Partial(PartialMemStorage),
+    Complete(CompleteStorage),
 }
 
 impl Default for Entry {
     fn default() -> Self {
-        Self::Incomplete(Default::default())
+        Self::Partial(Default::default())
     }
 }
 
 impl Entry {
     fn ranges(&self) -> &ChunkRangesRef {
         match self {
-            Self::Incomplete(entry) => &entry.bitfield.state().ranges,
+            Self::Partial(entry) => &entry.bitfield.state().ranges,
             Self::Complete(_) => &ChunkRangesRef::single(&ChunkNum(0)),
         }
     }
 
     fn add_observer(&mut self, out: Observer<Bitfield>) {
         match self {
-            Self::Incomplete(entry) => entry.add_observer(out),
+            Self::Partial(entry) => entry.add_observer(out),
             Self::Complete(entry) => entry.add_observer(out),
         }
     }
 
     fn data(&self) -> &[u8] {
         match self {
-            Self::Incomplete(entry) => entry.data.as_ref(),
+            Self::Partial(entry) => entry.data.as_ref(),
             Self::Complete(entry) => &entry.data,
         }
     }
 
     fn outboard(&self) -> &[u8] {
         match self {
-            Self::Incomplete(entry) => entry.outboard.as_ref(),
+            Self::Partial(entry) => entry.outboard.as_ref(),
             Self::Complete(entry) => &entry.outboard,
         }
     }
 
     fn size(&self) -> u64 {
         match self {
-            Self::Incomplete(entry) => entry.size(),
+            Self::Partial(entry) => entry.size(),
             Self::Complete(entry) => entry.size(),
         }
     }
 
-    fn incomplete_mut(&mut self) -> Option<&mut IncompleteMemStorage> {
+    fn incomplete_mut(&mut self) -> Option<&mut PartialMemStorage> {
         match self {
-            Self::Incomplete(entry) => Some(entry),
+            Self::Partial(entry) => Some(entry),
             Self::Complete(_) => None,
         }
     }
@@ -511,18 +510,14 @@ impl Entry {
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.
 #[derive(Debug, Default)]
-pub(crate) struct IncompleteMemStorage {
+pub(crate) struct PartialMemStorage {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
     pub(crate) bitfield: Observable<Bitfield>,
 }
 
-impl IncompleteMemStorage {
-    pub fn into_complete(&self) -> CompleteStorage {
-        todo!()
-    }
-
+impl PartialMemStorage {
     pub fn add_observer(&mut self, out: Observer<Bitfield>) {
         self.bitfield.add_observer(out);
     }
@@ -572,12 +567,12 @@ impl IncompleteMemStorage {
 }
 
 #[derive(Debug)]
-pub(crate) struct CompleteEntry {
+pub(crate) struct CompleteStorage {
     pub(crate) data: Bytes,
     pub(crate) outboard: Bytes,
 }
 
-impl CompleteEntry {
+impl CompleteStorage {
     pub fn create(data: Bytes) -> (blake3::Hash, Self) {
         let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
         let hash = outboard.root();

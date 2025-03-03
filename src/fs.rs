@@ -69,12 +69,12 @@ use tokio::{
 use tracing::{error, trace, warn};
 
 use crate::{
-    bao_file::{BaoFileConfig, BaoFileHandle, BaoFileHandleWeak, BaoFileStorage, HandleChange},
     bitfield::is_validated,
     util::{MemOrFile, SenderProgressExt},
     Hash,
 };
-
+mod bao_file;
+use bao_file::{BaoFileHandle, BaoFileHandleWeak, BaoFileStorage};
 mod entry_state;
 mod import;
 mod meta;
@@ -109,8 +109,6 @@ pub enum InternalCommand {
 pub(crate) struct TaskContext {
     // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
     pub options: Arc<Options>,
-    // Bao file configuration.
-    pub config: Arc<BaoFileConfig>,
     // Metadata database, basically a mpsc sender with some extra functionality.
     pub db: meta::Db,
     // Handle to send internal commands
@@ -189,16 +187,8 @@ impl HashContext {
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.context("failed to get entry")?;
                 match res {
-                    Some(state) => open_bao_file(
-                        &hash.into(),
-                        state,
-                        self.ctx.options.clone(),
-                        self.ctx.config.clone(),
-                    ),
-                    None => Ok(BaoFileHandle::new_incomplete_mem(
-                        self.ctx.config.clone(),
-                        hash.into(),
-                    )),
+                    Some(state) => open_bao_file(&hash.into(), state, self.ctx.options.clone()),
+                    None => Ok(BaoFileHandle::new_incomplete_mem(hash.into())),
                 }
             })
             .await
@@ -209,7 +199,6 @@ fn open_bao_file(
     hash: &Hash,
     state: EntryState<Bytes>,
     options: Arc<Options>,
-    config: Arc<BaoFileConfig>,
 ) -> anyhow::Result<BaoFileHandle> {
     Ok(match state {
         EntryState::Complete {
@@ -241,9 +230,9 @@ fn open_bao_file(
                     MemOrFile::File((file, size))
                 }
             };
-            BaoFileHandle::new_complete(config, *hash, data, outboard)
+            BaoFileHandle::new_complete(*hash, data, outboard)
         }
-        EntryState::Partial { .. } => BaoFileHandle::new_incomplete_file(config, *hash)?,
+        EntryState::Partial { .. } => BaoFileHandle::new_incomplete_file(&options.path, *hash)?,
     })
 }
 
@@ -420,15 +409,8 @@ impl Actor {
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
         let db_actor = meta::Actor::new(db_path, db_recv)?;
-        // the bao file config is just things from the options packed together and
-        // wrapped in an arc.
-        let config = Arc::new(BaoFileConfig::new(
-            Arc::new(options.path.data_path.clone()),
-            options.inline.max_data_inlined as usize,
-        ));
         let slot_context = Arc::new(TaskContext {
             options,
-            config,
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
             epoch: AtomicU64::new(0),
@@ -585,13 +567,7 @@ async fn import_bao_impl(
     while let Some(item) = data.recv().await {
         // if the batch is not empty, the last item is a leaf and the current item is a parent, write the batch
         if !batch.is_empty() && batch[batch.len() - 1].is_leaf() && item.is_parent() {
-            let res = handle.write_batch(size, &batch, &ranges, &ctx.ctx)?;
-            // create the metadata entry for the new file, if needed
-            if let HandleChange::MemToFile = res {
-                let hash = handle.hash();
-                let state = EntryState::Partial { size: None };
-                ctx.update(hash, state).await.ok();
-            }
+            handle.write_batch(size, &batch, &ranges, &ctx.ctx).await?;
             batch.clear();
             ranges = ChunkRanges::empty();
         }
@@ -600,7 +576,7 @@ async fn import_bao_impl(
             if is_validated(size, &leaf_range) {
                 anyhow::ensure!(
                     size.get() == leaf.offset + leaf.data.len() as u64,
-                    "invalid leaf"
+                    "invalid size"
                 );
             }
             ranges |= leaf_range;
@@ -608,7 +584,7 @@ async fn import_bao_impl(
         batch.push(item);
     }
     if !batch.is_empty() {
-        handle.write_batch(size, &batch, &ranges, &ctx.ctx)?;
+        handle.write_batch(size, &batch, &ranges, &ctx.ctx).await?;
     }
     Ok(())
 }

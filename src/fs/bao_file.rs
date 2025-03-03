@@ -28,12 +28,17 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
+use tokio::sync::mpsc;
 
-use super::mem::SizeInfo;
+use super::{
+    entry_state::{DataLocation, EntryState, OutboardLocation},
+    meta::{self, Update},
+    options::PathOptions,
+};
 use crate::{
     bitfield::Bitfield,
-    fs::TaskContext,
-    mem::IncompleteMemStorage,
+    fs::{meta::raw_outboard_size, TaskContext},
+    mem::{PartialMemStorage, SizeInfo},
     util::{
         observer::{Observable, Observer},
         MemOrFile, SparseMemFile,
@@ -162,16 +167,54 @@ fn max_offset(batch: &[BaoContentItem]) -> u64 {
 
 /// A file storage for an incomplete bao file.
 #[derive(Debug)]
-pub struct FileStorage {
+pub struct PartialFileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
     bitfield: Observable<Bitfield>,
 }
 
-impl FileStorage {
-    fn into_complete(&self) -> CompleteStorage {
-        todo!()
+impl PartialFileStorage {
+    fn into_complete(
+        self,
+        _hash: &crate::Hash,
+        ctx: &TaskContext,
+    ) -> anyhow::Result<(CompleteStorage, EntryState<Bytes>)> {
+        let size = self.bitfield.state().size;
+        let outboard_size = raw_outboard_size(size);
+        let (data, data_location) = if ctx.options.is_inlined_data(size) {
+            let data = read_to_end(&self.data, 0, size as usize)?;
+            (MemOrFile::Mem(data.clone()), DataLocation::Inline(data))
+        } else {
+            (
+                MemOrFile::File((self.data, size)),
+                DataLocation::Owned(size),
+            )
+        };
+        let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
+            if outboard_size == 0 {
+                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded)
+            } else {
+                let outboard = read_to_end(&self.outboard, 0, outboard_size as usize)?;
+                (
+                    MemOrFile::Mem(outboard.clone()),
+                    OutboardLocation::Inline(outboard),
+                )
+            }
+        } else {
+            (
+                MemOrFile::File((self.outboard, outboard_size)),
+                OutboardLocation::Owned,
+            )
+        };
+        // todo: notify the store that the state has changed to complete
+        Ok((
+            CompleteStorage { data, outboard },
+            EntryState::Complete {
+                data_location,
+                outboard_location,
+            },
+        ))
     }
 
     fn add_observer(&mut self, observer: Observer<Bitfield>) {
@@ -250,9 +293,9 @@ pub(crate) enum BaoFileStorage {
     ///
     /// Incomplete mem entries are *not* persisted at all. So if the store
     /// crashes they will be gone.
-    IncompleteMem(IncompleteMemStorage),
+    PartialMem(PartialMemStorage),
     /// The entry is incomplete and on disk.
-    Incomplete(FileStorage),
+    Partial(PartialFileStorage),
     /// The entry is complete. Outboard and data can come from different sources
     /// (memory or file).
     ///
@@ -266,6 +309,75 @@ impl Default for BaoFileStorage {
     }
 }
 
+impl PartialMemStorage {
+    /// Converts this storage into a complete storage, using the given hash for
+    /// path names and the given options for decisions about inlining.
+    fn into_complete(
+        self,
+        hash: &Hash,
+        ctx: &TaskContext,
+    ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
+        let size = self.size();
+        let outboard_size = raw_outboard_size(size);
+        let (data, data_location) = if ctx.options.is_inlined_data(size) {
+            let data: Bytes = self.data.to_vec().into();
+            (MemOrFile::Mem(data.clone()), DataLocation::Inline(data))
+        } else {
+            let data_path = ctx.options.path.owned_data_path(hash);
+            let mut data_file = create_read_write(&data_path)?;
+            self.data.persist(&mut data_file)?;
+            (
+                MemOrFile::File((data_file, size)),
+                DataLocation::Owned(size),
+            )
+        };
+        let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
+            let outboard: Bytes = self.outboard.to_vec().into();
+            (
+                MemOrFile::Mem(outboard.clone()),
+                OutboardLocation::Inline(outboard),
+            )
+        } else {
+            let outboard_path = ctx.options.path.owned_outboard_path(hash);
+            let mut outboard_file = create_read_write(&outboard_path)?;
+            self.outboard.persist(&mut outboard_file)?;
+            let outboard_location = if outboard_size == 0 {
+                OutboardLocation::NotNeeded
+            } else {
+                OutboardLocation::Owned
+            };
+            (
+                MemOrFile::File((outboard_file, outboard_size)),
+                outboard_location,
+            )
+        };
+        Ok((
+            CompleteStorage { data, outboard },
+            EntryState::Complete {
+                data_location,
+                outboard_location,
+            },
+        ))
+    }
+}
+
+fn send_update(
+    ctx: &TaskContext,
+    permit: mpsc::Permit<meta::Command>,
+    hash: &Hash,
+    update: EntryState<Bytes>,
+) {
+    permit.send(
+        Update {
+            epoch: ctx.epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            hash: *hash,
+            state: update,
+            tx: None,
+        }
+        .into(),
+    );
+}
+
 impl BaoFileStorage {
     fn write_batch(
         self,
@@ -274,49 +386,62 @@ impl BaoFileStorage {
         ranges: &ChunkRanges,
         ctx: &TaskContext,
         hash: &Hash,
-    ) -> anyhow::Result<(Self, HandleChange)> {
+        permit: mpsc::Permit<meta::Command>,
+    ) -> anyhow::Result<Self> {
         match self {
-            BaoFileStorage::IncompleteMem(mut ms) => {
+            BaoFileStorage::PartialMem(mut ms) => {
                 // check if we need to switch to file mode, otherwise write to memory
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
                     ms.write_batch(size, batch, ranges)?;
                     Ok(if ms.bitfield.state().is_complete() {
-                        (ms.into(), HandleChange::None)
-                        // (ms.into_complete().into(), HandleChange::Complete)
-                    } else if ms.bitfield.state().is_validated() {
-                        (ms.into(), HandleChange::None)
-                        // (ms.into(), HandleChange::SizeValidated)
+                        let (state, update) = ms.into_complete(hash, ctx)?;
+                        send_update(ctx, permit, hash, update);
+                        state.into()
                     } else {
-                        (ms.into(), HandleChange::None)
+                        ms.into()
                     })
                 } else {
-                    // create the paths. This allocates 3 pathbufs, so we do it
-                    // only when we need to.
-                    let paths = ctx.config.paths(hash);
                     // *first* switch to file mode, *then* write the batch.
                     //
                     // otherwise we might allocate a lot of memory if we get
                     // a write at the end of a very large file.
-                    let mut fs = ms.persist(paths)?;
+                    let mut fs = ms.persist(&ctx.options.path, hash)?;
                     fs.write_batch(size, batch, ranges)?;
-                    Ok((fs.into(), HandleChange::MemToFile))
+                    let size = if fs.bitfield.state().is_validated() {
+                        Some(fs.bitfield.state().size)
+                    } else {
+                        None
+                    };
+                    send_update(ctx, permit, hash, EntryState::Partial { size });
+                    Ok(fs.into())
                 }
             }
-            BaoFileStorage::Incomplete(mut fs) => {
-                // already in file mode, just write the batch
+            BaoFileStorage::Partial(mut fs) => {
+                let validated_before = fs.bitfield.state().is_validated();
                 fs.write_batch(size, batch, ranges)?;
                 Ok(if fs.bitfield.state().is_complete() {
-                    (fs.into_complete().into(), HandleChange::Complete)
-                } else if fs.bitfield.state().is_validated() {
-                    (fs.into(), HandleChange::SizeValidated)
+                    let (cs, update) = fs.into_complete(hash, ctx)?;
+                    send_update(ctx, permit, hash, update);
+                    cs.into()
                 } else {
-                    (fs.into(), HandleChange::None)
+                    if !validated_before && fs.bitfield.state().is_validated() {
+                        // we are still partial, but now we know the size
+                        send_update(
+                            ctx,
+                            permit,
+                            hash,
+                            EntryState::Partial {
+                                size: Some(fs.bitfield.state().size),
+                            },
+                        );
+                    }
+                    fs.into()
                 })
             }
             BaoFileStorage::Complete(_) => {
                 // we are complete, so just ignore the write
                 // unless there is a bug, this would just write the exact same data
-                Ok((self, HandleChange::None))
+                Ok(self)
             }
         }
     }
@@ -324,30 +449,30 @@ impl BaoFileStorage {
     fn observer_dropped(&mut self) {
         match self {
             BaoFileStorage::Complete(_) => {}
-            BaoFileStorage::Incomplete(i) => i.bitfield.observer_dropped(),
-            BaoFileStorage::IncompleteMem(i) => i.bitfield.observer_dropped(),
+            BaoFileStorage::Partial(i) => i.bitfield.observer_dropped(),
+            BaoFileStorage::PartialMem(i) => i.bitfield.observer_dropped(),
         }
     }
 
     fn add_observer(&mut self, observer: Observer<Bitfield>) {
         match self {
             BaoFileStorage::Complete(c) => c.add_observer(observer),
-            BaoFileStorage::Incomplete(i) => i.add_observer(observer),
-            BaoFileStorage::IncompleteMem(i) => i.add_observer(observer),
+            BaoFileStorage::Partial(i) => i.add_observer(observer),
+            BaoFileStorage::PartialMem(i) => i.add_observer(observer),
         }
     }
 
     /// Create a new mutable mem storage.
     pub fn incomplete_mem() -> Self {
-        Self::IncompleteMem(Default::default())
+        Self::PartialMem(Default::default())
     }
 
     /// Call sync_all on all the files.
     fn sync_all(&self) -> io::Result<()> {
         match self {
             Self::Complete(_) => Ok(()),
-            Self::IncompleteMem(_) => Ok(()),
-            Self::Incomplete(file) => {
+            Self::PartialMem(_) => Ok(()),
+            Self::Partial(file) => {
                 file.data.sync_all()?;
                 file.outboard.sync_all()?;
                 file.sizes.sync_all()?;
@@ -359,8 +484,8 @@ impl BaoFileStorage {
     /// True if the storage is in memory.
     pub fn is_mem(&self) -> bool {
         match self {
-            Self::IncompleteMem(_) => true,
-            Self::Incomplete(_) => false,
+            Self::PartialMem(_) => true,
+            Self::Partial(_) => false,
             Self::Complete(c) => c.data.is_mem() && c.outboard.is_mem(),
         }
     }
@@ -386,39 +511,12 @@ impl BaoFileHandleWeak {
 #[derive(Debug)]
 pub struct BaoFileHandleInner {
     pub(crate) storage: RwLock<Option<BaoFileStorage>>,
-    config: Arc<BaoFileConfig>,
     hash: Hash,
 }
 
 /// A cheaply cloneable handle to a bao file, including the hash and the configuration.
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
-
-/// Configuration for the deferred batch writer. It will start writing to memory,
-/// and then switch to a file when the memory limit is reached.
-#[derive(derive_more::Debug, Clone)]
-pub struct BaoFileConfig {
-    /// Directory to store files in. Only used when memory limit is reached.
-    dir: Arc<PathBuf>,
-    /// Maximum data size (inclusive) before switching to file mode.
-    max_mem: usize,
-}
-
-impl BaoFileConfig {
-    /// Create a new deferred batch writer configuration.
-    pub fn new(dir: Arc<PathBuf>, max_mem: usize) -> Self {
-        Self { dir, max_mem }
-    }
-
-    /// Get the paths for a hash.
-    fn paths(&self, hash: &Hash) -> DataPaths {
-        DataPaths {
-            data: self.dir.join(format!("{}.data", hash.to_hex())),
-            outboard: self.dir.join(format!("{}.obao4", hash.to_hex())),
-            sizes: self.dir.join(format!("{}.sizes4", hash.to_hex())),
-        }
-    }
-}
 
 /// A reader for a bao file, reading just the data.
 #[derive(Debug)]
@@ -428,8 +526,8 @@ impl ReadAt for DataReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let guard = self.0.storage.read().unwrap();
         match guard.deref() {
-            Some(BaoFileStorage::IncompleteMem(x)) => x.data.read_at(offset, buf),
-            Some(BaoFileStorage::Incomplete(x)) => x.data.read_at(offset, buf),
+            Some(BaoFileStorage::PartialMem(x)) => x.data.read_at(offset, buf),
+            Some(BaoFileStorage::Partial(x)) => x.data.read_at(offset, buf),
             Some(BaoFileStorage::Complete(x)) => x.data.read_at(offset, buf),
             None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
         }
@@ -445,18 +543,11 @@ impl ReadAt for OutboardReader {
         let guard = self.0.storage.read().unwrap();
         match guard.deref() {
             Some(BaoFileStorage::Complete(x)) => x.outboard.read_at(offset, buf),
-            Some(BaoFileStorage::IncompleteMem(x)) => x.outboard.read_at(offset, buf),
-            Some(BaoFileStorage::Incomplete(x)) => x.outboard.read_at(offset, buf),
+            Some(BaoFileStorage::PartialMem(x)) => x.outboard.read_at(offset, buf),
+            Some(BaoFileStorage::Partial(x)) => x.outboard.read_at(offset, buf),
             None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
         }
     }
-}
-
-pub enum HandleChange {
-    None,
-    MemToFile,
-    SizeValidated,
-    Complete,
 }
 
 impl BaoFileHandle {
@@ -467,35 +558,31 @@ impl BaoFileHandle {
     /// Create a new bao file handle.
     ///
     /// This will create a new file handle with an empty memory storage.
-    pub fn new_incomplete_mem(config: Arc<BaoFileConfig>, hash: Hash) -> Self {
+    pub fn new_incomplete_mem(hash: Hash) -> Self {
         let storage = BaoFileStorage::incomplete_mem();
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
-            config,
             hash,
         }))
     }
 
     /// Create a new bao file handle with a partial file.
-    pub fn new_incomplete_file(config: Arc<BaoFileConfig>, hash: Hash) -> io::Result<Self> {
-        let paths = config.paths(&hash);
-        let storage = FileStorage {
-            data: create_read_write(&paths.data)?,
-            outboard: create_read_write(&paths.outboard)?,
-            sizes: create_read_write(&paths.sizes)?,
+    pub fn new_incomplete_file(options: &PathOptions, hash: Hash) -> io::Result<Self> {
+        let storage = PartialFileStorage {
+            data: create_read_write(&options.owned_data_path(&hash))?,
+            outboard: create_read_write(options.owned_outboard_path(&hash))?,
+            sizes: create_read_write(options.owned_sizes_path(&hash))?,
             bitfield: Default::default(), // todo
         }
         .into();
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
-            config,
             hash,
         })))
     }
 
     /// Create a new complete bao file handle.
     pub fn new_complete(
-        config: Arc<BaoFileConfig>,
         hash: Hash,
         data: MemOrFile<Bytes, (File, u64)>,
         outboard: MemOrFile<Bytes, (File, u64)>,
@@ -503,7 +590,6 @@ impl BaoFileHandle {
         let storage = CompleteStorage { data, outboard }.into();
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
-            config,
             hash,
         }))
     }
@@ -517,8 +603,8 @@ impl BaoFileHandle {
         let mut guard = self.storage.write().unwrap();
         let res = match guard.deref_mut() {
             Some(BaoFileStorage::Complete(_)) => None,
-            Some(BaoFileStorage::IncompleteMem(entry)) => Some(&mut entry.bitfield),
-            Some(BaoFileStorage::Incomplete(entry)) => Some(&mut entry.bitfield),
+            Some(BaoFileStorage::PartialMem(entry)) => Some(&mut entry.bitfield),
+            Some(BaoFileStorage::Partial(entry)) => Some(&mut entry.bitfield),
             None => None,
         };
         if let Some(bitfield) = res {
@@ -568,8 +654,8 @@ impl BaoFileHandle {
     pub fn current_size(&self) -> io::Result<u64> {
         match self.storage.read().unwrap().deref() {
             Some(BaoFileStorage::Complete(mem)) => Ok(mem.data_size()),
-            Some(BaoFileStorage::IncompleteMem(mem)) => Ok(mem.size()),
-            Some(BaoFileStorage::Incomplete(file)) => file.current_size(),
+            Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.size()),
+            Some(BaoFileStorage::Partial(file)) => file.current_size(),
             None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
         }
     }
@@ -596,20 +682,21 @@ impl BaoFileHandle {
         BaoFileHandleWeak(Arc::downgrade(&self.0))
     }
 
-    /// This is the synchronous impl for writing a batch.
-    pub fn write_batch(
+    /// Write a batch and notify the db
+    pub async fn write_batch(
         &self,
         size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
         ctx: &TaskContext,
-    ) -> anyhow::Result<HandleChange> {
+    ) -> anyhow::Result<()> {
+        let permit = ctx.db.sender.reserve().await?;
         let mut guard = self.storage.write().unwrap();
         if let Some(state) = guard.take() {
-            match state.write_batch(size, batch, ranges, ctx, &self.hash) {
-                Ok((new_state, change)) => {
+            match state.write_batch(size, batch, ranges, ctx, &self.hash, permit) {
+                Ok(new_state) => {
                     *guard = Some(new_state);
-                    Ok(change)
+                    Ok(())
                 }
                 Err(e) => Err(e),
             }
@@ -635,19 +722,19 @@ impl SizeInfo {
     }
 }
 
-impl IncompleteMemStorage {
+impl PartialMemStorage {
     /// Persist the batch to disk, creating a FileBatch.
-    fn persist(self, paths: DataPaths) -> io::Result<FileStorage> {
-        let mut data = create_read_write(&paths.data)?;
-        let mut outboard = create_read_write(&paths.outboard)?;
-        let mut sizes = create_read_write(&paths.sizes)?;
+    fn persist(self, options: &PathOptions, hash: &Hash) -> io::Result<PartialFileStorage> {
+        let mut data = create_read_write(&options.owned_data_path(hash))?;
+        let mut outboard = create_read_write(options.owned_outboard_path(hash))?;
+        let mut sizes = create_read_write(options.owned_sizes_path(hash))?;
         self.data.persist(&mut data)?;
         self.outboard.persist(&mut outboard)?;
         self.size.persist(&mut sizes)?;
         data.sync_all()?;
         outboard.sync_all()?;
         sizes.sync_all()?;
-        Ok(FileStorage {
+        Ok(PartialFileStorage {
             data,
             outboard,
             sizes,

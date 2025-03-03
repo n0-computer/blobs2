@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::{
     bitfield::Bitfield,
-    mem::CompleteEntry,
+    mem::CompleteStorage,
     proto::*,
     util::{observer::Observable, SenderProgressExt},
     Store, IROH_BLOCK_SIZE,
@@ -27,14 +27,14 @@ use crate::{
 struct Actor {
     commands: mpsc::Receiver<Command>,
     unit_tasks: JoinSet<()>,
-    data: HashMap<Hash, CompleteEntry>,
+    data: HashMap<Hash, CompleteStorage>,
     observers: Observable<Bitfield>,
 }
 
 impl Actor {
     fn new(
         commands: tokio::sync::mpsc::Receiver<Command>,
-        data: HashMap<Hash, CompleteEntry>,
+        data: HashMap<Hash, CompleteStorage>,
     ) -> Self {
         Self {
             data,
@@ -154,7 +154,7 @@ impl Store {
         let mut entries = HashMap::new();
         for item in items {
             let data = Bytes::copy_from_slice(item.as_ref());
-            let (hash, entry) = CompleteEntry::create(data);
+            let (hash, entry) = CompleteStorage::create(data);
             entries.insert(hash, entry);
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(1);

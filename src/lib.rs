@@ -1,6 +1,5 @@
 use bao_tree::BlockSize;
 mod api;
-mod bao_file;
 mod bitfield;
 mod fs;
 mod hash;
