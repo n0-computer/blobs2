@@ -1,5 +1,6 @@
-use std::{borrow::Borrow, fmt, time::SystemTime};
+use std::{borrow::Borrow, fmt, fs::{File, OpenOptions}, io::{self, Read, Write}, path::Path, time::SystemTime};
 
+use bao_tree::blake3;
 use bytes::Bytes;
 use derive_more::{From, Into};
 
@@ -7,8 +8,10 @@ mod mem_or_file;
 mod sparse_mem_file;
 pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
+use serde::{de::DeserializeOwned, Serialize};
 pub use sparse_mem_file::SparseMemFile;
 use tokio::sync::mpsc;
+use tracing::info;
 pub mod observer;
 
 /// A tag
@@ -196,4 +199,89 @@ impl<T: RangeSetEntry + Clone> RangeSetExt<T> for RangeSetRef<T> {
             None
         }
     }
+}
+
+pub fn write_checksummed<P: AsRef<Path>, T: Serialize>(path: P, data: &T) -> io::Result<()> {
+    // Build Vec with space for hash
+    let mut buffer = Vec::with_capacity(32 + 128);
+    buffer.extend_from_slice(&[0u8; 32]);
+    
+    // Serialize directly into buffer
+    postcard::to_io(data, &mut buffer)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    
+    // Compute hash over data (skip first 32 bytes)
+    let data_slice = &buffer[32..];
+    let hash = blake3::hash(data_slice);
+    buffer[..32].copy_from_slice(hash.as_bytes());
+    
+    // Write all at once
+    let mut file = File::create(&path)?;
+    file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
+    path: P,
+) -> io::Result<T> {
+    let path = path.as_ref();
+    let mut file = OpenOptions::new().read(true).write(true).truncate(false).open(&path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    file.set_len(0)?;
+    file.sync_all()?;
+    info!("{} {}", path.display(), hex::encode(&buffer));
+
+    if buffer.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "File marked dirty"));
+    }
+
+    if buffer.len() < 32 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too short"));
+    }
+
+    let stored_hash = &buffer[..32];
+    let data = &buffer[32..];
+    
+    let computed_hash = blake3::hash(data);
+    if computed_hash.as_bytes() != stored_hash {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
+    }
+
+    let deserialized = postcard::from_bytes(data)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    
+    Ok(deserialized)
+}
+
+pub fn read_checksummed<T: DeserializeOwned>(
+    path: impl AsRef<Path>,
+) -> io::Result<T> {
+    let path = path.as_ref();
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    info!("{} {}", path.display(), hex::encode(&buffer));
+
+    if buffer.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "File marked dirty"));
+    }
+
+    if buffer.len() < 32 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too short"));
+    }
+
+    let stored_hash = &buffer[..32];
+    let data = &buffer[32..];
+    
+    let computed_hash = blake3::hash(data);
+    if computed_hash.as_bytes() != stored_hash {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
+    }
+
+    let deserialized = postcard::from_bytes(data)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    
+    Ok(deserialized)
 }

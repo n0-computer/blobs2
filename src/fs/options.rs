@@ -37,6 +37,10 @@ impl PathOptions {
         self.data_path.join(format!("{}.sizes4", hash.to_hex()))
     }
 
+    pub fn bitfield_path(&self, hash: &Hash) -> PathBuf {
+        self.data_path.join(format!("{}.bitfield", hash.to_hex()))
+    }
+
     pub fn temp_file_name(&self) -> PathBuf {
         self.temp_path.join(temp_name())
     }

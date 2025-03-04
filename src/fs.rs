@@ -189,7 +189,7 @@ impl HashContext {
                 let res = self.db().get(hash).await.context("failed to get entry")?;
                 match res {
                     Some(state) => open_bao_file(&hash.into(), state, self.ctx.options.clone()),
-                    None => Ok(BaoFileHandle::new_incomplete_mem(hash.into())),
+                    None => Ok(BaoFileHandle::new_partial_mem(hash.into(), self.ctx.options.clone())),
                 }
             })
             .await;
@@ -234,7 +234,7 @@ fn open_bao_file(
             };
             BaoFileHandle::new_complete(*hash, data, outboard)
         }
-        EntryState::Partial { .. } => BaoFileHandle::new_incomplete_file(&options.path, *hash)?,
+        EntryState::Partial { .. } => BaoFileHandle::new_partial_file(*hash, options.clone())?,
     })
 }
 
@@ -624,7 +624,6 @@ async fn observe_task(cmd: Observe, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.hash).await else {
         return;
     };
-    println!("observing {}", handle.id());
     let receiver_dropped = cmd.out.receiver_dropped();
     handle.add_observer(cmd.out);
     // this keeps the handle alive until the observer is dropped
@@ -724,26 +723,20 @@ async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Res
     Ok(())
 }
 
-impl Store {
+impl DbStore {
     /// Load or create a new store.
-    pub async fn load_redb(root: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn load(root: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = root.as_ref();
         let db_path = path.join("blobs.db");
         let options = Options::new(path);
-        Self::load_redb_with_opts(db_path, options).await
-    }
-
-    /// Load or create a new store with custom options.
-    pub async fn load_redb_with_opts(path: PathBuf, options: Options) -> anyhow::Result<Self> {
-        let (this, _debug) = Self::load_redb_with_opts_inner(path, options).await?;
-        Ok(this)
+        Self::load_with_opts(db_path, options).await
     }
 
     /// Load or create a new store with custom options, returning an additional sender for file store specific commands.
-    pub async fn load_redb_with_opts_inner(
+    pub async fn load_with_opts(
         path: PathBuf,
         options: Options,
-    ) -> anyhow::Result<(Self, DbStore)> {
+    ) -> anyhow::Result<DbStore> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
@@ -762,20 +755,26 @@ impl Store {
             ))
             .await??;
         handle.spawn(actor.run());
-        Ok((
-            Self::from_sender(commands_tx),
-            DbStore::from_sender(fs_commands_tx),
-        ))
+        Ok(DbStore::new(commands_tx, fs_commands_tx))
     }
 }
 
 pub struct DbStore {
+    sender: mpsc::Sender<Command>,
     db: mpsc::Sender<InternalCommand>,
 }
 
+impl Deref for DbStore {
+    type Target = Store;
+
+    fn deref(&self) -> &Self::Target {
+        Store::ref_from_sender(&self.sender)
+    }
+}
+
 impl DbStore {
-    fn from_sender(db: mpsc::Sender<InternalCommand>) -> Self {
-        Self { db }
+    fn new(sender: mpsc::Sender<Command>, db: mpsc::Sender<InternalCommand>) -> Self {
+        Self { sender, db }
     }
 
     pub async fn dump(&self) -> anyhow::Result<()> {
@@ -797,12 +796,11 @@ mod tests {
         BlockSize, ChunkRanges,
     };
     use n0_future::StreamExt;
-    use range_collections::range_set::RangeSetRange;
     use testresult::TestResult;
     use walkdir::WalkDir;
 
     use super::*;
-    use crate::{util::Tag, HashAndFormat, IROH_BLOCK_SIZE};
+    use crate::{bitfield::Bitfield, util::{read_checksummed, Tag}, HashAndFormat, IROH_BLOCK_SIZE};
 
     /// Create n0 flavoured bao. Note that this can be used to request ranges below a chunk group size,
     /// which can not be exported via bao because we don't store hashes below the chunk group level.
@@ -815,18 +813,9 @@ mod tests {
         Ok((outboard.root, encoded))
     }
 
-    fn create_n0_bao_full(
-        data: &[u8],
-        ranges: &ChunkRanges,
-    ) -> anyhow::Result<(blake3::Hash, ChunkRanges, Vec<u8>)> {
-        let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
-        let last_chunk = ChunkNum::chunks(data.len() as u64);
+    fn round_up_request(size: u64, ranges: &ChunkRanges) -> ChunkRanges {
+        let last_chunk = ChunkNum::chunks(size);
         let data_range = ChunkRanges::from(..last_chunk);
-        info!(
-            "ranges: {:?} {}",
-            ranges,
-            ChunkNum::full_chunks(data.len() as u64)
-        );
         let ranges = if !data_range.intersects(ranges) && !ranges.is_empty() {
             if last_chunk == 0 {
                 ChunkRanges::all()
@@ -836,13 +825,16 @@ mod tests {
         } else {
             ranges.clone()
         };
-        let ranges = round_up_to_chunks_groups(ranges, IROH_BLOCK_SIZE);
-        info!("ranges: {:?}", ranges);
-        let mut encoded = Vec::new();
-        let size = data.len() as u64;
-        encoded.extend_from_slice(&size.to_le_bytes());
-        bao_tree::io::sync::encode_ranges_validated(&data, &outboard, &ranges, &mut encoded)?;
-        Ok((outboard.root, ranges, encoded))
+        round_up_to_chunks_groups(ranges, IROH_BLOCK_SIZE)
+    }
+
+    fn create_n0_bao_full(
+        data: &[u8],
+        ranges: &ChunkRanges,
+    ) -> anyhow::Result<(blake3::Hash, ChunkRanges, Vec<u8>)> {
+        let ranges = round_up_request(data.len() as u64, ranges);
+        let (hash, encoded) = create_n0_bao(data, &ranges)?;
+        Ok((hash, ranges, encoded))
     }
 
     #[tokio::test]
@@ -851,7 +843,7 @@ mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let (store, _debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let store = DbStore::load_with_opts(db_dir, options).await?;
         let sizes = [
             // 0,
             1,
@@ -892,7 +884,7 @@ mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let (store, _debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let store = DbStore::load_with_opts(db_dir, options).await?;
         let sizes = [
             0,
             1,
@@ -936,7 +928,7 @@ mod tests {
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
         {
-            let store = Store::load_redb_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let data = vec![0u8; size];
                 let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
@@ -948,7 +940,7 @@ mod tests {
             store.shutdown().await?;
         }
         {
-            let store = Store::load_redb_with_opts(db_dir, options).await?;
+            let store = DbStore::load_with_opts(db_dir, options).await?;
             for size in sizes {
                 let expected = vec![0u8; size];
                 let hash = blake3::hash(&expected);
@@ -968,21 +960,20 @@ mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
-            0,             // always there
-            1,             // will become complete due to last chunk
-            1024,          // will become complete due to last chunk
-            1024 * 16 - 1, // will remain incomplete and in memory
-            1024 * 16,     // will remain incomplete and in memory
-            1024 * 16 + 1, // will remain incomplete as file, needs outboard
-            1024 * 1024,
-            1024 * 1024 * 8,
+            0,               // always there
+            1,               // will become complete due to last chunk
+            1024,            // will become complete due to last chunk
+            1024 * 16 - 1,   // will become complete due to rounding up of chunks
+            1024 * 16,       // will become complete due to rounding up of chunks
+            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
+            1024 * 1024,     // will remain incomplete as file, needs outboard
+            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
         let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
         {
-            let (store, internal) =
-                Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let data = vec![1u8; size];
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -991,13 +982,12 @@ mod tests {
                     panic!("failed to import size={size}: {cause}");
                 }
             }
-            internal.dump().await?;
+            store.dump().await?;
             store.shutdown().await?;
         }
-        dump_dir_full(testdir.path())?;
         {
-            let (store, internal) = Store::load_redb_with_opts_inner(db_dir, options).await?;
-            internal.dump().await?;
+            let store = DbStore::load_with_opts(db_dir, options).await?;
+            store.dump().await?;
             for size in sizes {
                 let data = vec![1u8; size];
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &just_size)?;
@@ -1007,6 +997,181 @@ mod tests {
                 };
                 assert_eq!(&expected, &actual);
             }
+            store.shutdown().await?;
+        }
+        dump_dir_full(testdir.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bao_persistence_two_stages() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            0,               // always there
+            1,               // will become complete due to last chunk
+            1024,            // will become complete due to last chunk
+            1024 * 16 - 1,   // will become complete due to rounding up of chunks
+            1024 * 16,       // will become complete due to rounding up of chunks
+            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
+            1024 * 1024,     // will remain incomplete as file, needs outboard
+            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        // stage 1, import just the last full chunk group to get a validated size
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
+                let data = Bytes::from(encoded);
+                if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
+                    panic!("failed to import size={size}: {cause}");
+                }
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        dump_dir_full(testdir.path())?;
+        // stage 2, import the rest
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let remaining = ChunkRanges::all() - round_up_request(size as u64, &just_size);
+                if remaining.is_empty() {
+                    continue;
+                }
+                let data = vec![1u8; size];
+                let (hash, ranges, encoded) = create_n0_bao_full(&data, &remaining)?;
+                let data = Bytes::from(encoded);
+                if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
+                    panic!("failed to import size={size}: {cause}");
+                }
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        // check if the data is complete
+        {
+            let store = DbStore::load_with_opts(db_dir, options).await?;
+            store.dump().await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, ranges, expected) = create_n0_bao_full(&data, &ChunkRanges::all())?;
+                let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
+                    Ok(actual) => actual,
+                    Err(cause) => panic!("failed to export size={size}: {cause}"),
+                };
+                assert_eq!(&expected, &actual);
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        dump_dir_full(testdir.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bao_persistence_observe() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            0,               // always there
+            1,               // will become complete due to last chunk
+            1024,            // will become complete due to last chunk
+            1024 * 16 - 1,   // will become complete due to rounding up of chunks
+            1024 * 16,       // will become complete due to rounding up of chunks
+            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
+            1024 * 1024,     // will remain incomplete as file, needs outboard
+            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        // stage 1, import just the last full chunk group to get a validated size
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
+                let data = Bytes::from(encoded);
+                if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
+                    panic!("failed to import size={size}: {cause}");
+                }
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        dump_dir_full(testdir.path())?;
+        // stage 2, import the rest
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let expected_ranges = round_up_request(size as u64, &just_size);
+                let data = vec![1u8; size];
+                let hash = blake3::hash(&data);
+                let mut stream = store.observe(hash).aggregated();
+                let Some(_) = stream.next().await else {
+                    panic!("no update");
+                };
+                assert_eq!(stream.state().ranges, expected_ranges);
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bao_persistence_recover() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            0,               // always there
+            1,               // will become complete due to last chunk
+            1024,            // will become complete due to last chunk
+            1024 * 16 - 1,   // will become complete due to rounding up of chunks
+            1024 * 16,       // will become complete due to rounding up of chunks
+            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
+            1024 * 1024,     // will remain incomplete as file, needs outboard
+            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        // stage 1, import just the last full chunk group to get a validated size
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
+                let data = Bytes::from(encoded);
+                if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
+                    panic!("failed to import size={size}: {cause}");
+                }
+            }
+            store.dump().await?;
+            store.shutdown().await?;
+        }
+        delete_rec(testdir.path(), "bitfield")?;
+        dump_dir_full(testdir.path())?;
+        // stage 2, import the rest
+        {
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let expected_ranges = round_up_request(size as u64, &just_size);
+                let data = vec![1u8; size];
+                let hash = blake3::hash(&data);
+                let mut stream = store.observe(hash).aggregated();
+                let Some(_) = stream.next().await else {
+                    panic!("no update");
+                };
+                println!("expected={:?} actual={:?}", expected_ranges, stream.state().ranges);
+                // assert_eq!(stream.state().ranges, expected_ranges, "size={}", size);
+            }
+            store.dump().await?;
             store.shutdown().await?;
         }
         Ok(())
@@ -1029,20 +1194,18 @@ mod tests {
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
         {
-            let (store, internal) =
-                Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let data = vec![1u8; size];
                 let data = Bytes::from(data);
                 store.import_bytes(data.clone()).await?;
             }
-            internal.dump().await?;
+            store.dump().await?;
             store.shutdown().await?;
         }
         {
-            let (store, internal) =
-                Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
-            internal.dump().await?;
+            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            store.dump().await?;
             for size in sizes {
                 let expected = vec![1u8; size];
                 let hash = blake3::hash(&expected);
@@ -1066,7 +1229,7 @@ mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let (store, debug) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+        let store = DbStore::load_with_opts(db_dir, options).await?;
         let haf = HashAndFormat::raw(Hash::from([0u8; 32]));
         store.set_tag(Tag::from("test"), haf).await?;
         store.set_tag(Tag::from("boo"), haf).await?;
@@ -1110,7 +1273,7 @@ mod tests {
                 .unwrap();
             bao_by_hash.insert(*hash, bao);
         }
-        debug.dump().await?;
+        store.dump().await?;
 
         for size in sizes {
             let data = vec![1u8; size];
@@ -1133,9 +1296,39 @@ mod tests {
         Ok(())
     }
 
+    pub fn delete_rec(root_dir: impl AsRef<Path>, extension: &str) -> Result<(), std::io::Error> {
+        // Remove leading dot if present, so we have just the extension
+        let ext = extension.trim_start_matches('.').to_lowercase();
+    
+        for entry in WalkDir::new(root_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            
+            if path.is_file() {
+                if let Some(file_ext) = path.extension() {
+                    if file_ext.to_string_lossy().to_lowercase() == ext {
+                        println!("Deleting: {}", path.display());
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     pub fn dump_dir(path: impl AsRef<Path>) -> io::Result<()> {
-        for entry in WalkDir::new(path) {
-            let entry = entry?;
+        let mut entries: Vec<_> = WalkDir::new(&path)
+            .into_iter()
+            .filter_map(Result::ok) // Skip errors
+            .collect();
+
+        // Sort by path (name at each depth)
+        entries.sort_by(|a, b| a.path().cmp(b.path()));
+
+        for entry in entries {
             let depth = entry.depth();
             let indent = "  ".repeat(depth); // Two spaces per level
             let name = entry.file_name().to_string_lossy();
@@ -1151,8 +1344,15 @@ mod tests {
     }
 
     pub fn dump_dir_full(path: impl AsRef<Path>) -> io::Result<()> {
-        for entry in WalkDir::new(path) {
-            let entry = entry?;
+        let mut entries: Vec<_> = WalkDir::new(&path)
+            .into_iter()
+            .filter_map(Result::ok) // Skip errors
+            .collect();
+
+        // Sort by path (name at each depth)
+        entries.sort_by(|a, b| a.path().cmp(b.path()));
+
+        for entry in entries {
             let depth = entry.depth();
             let indent = "  ".repeat(depth);
             let name = entry.file_name().to_string_lossy();
@@ -1163,30 +1363,46 @@ mod tests {
                 let size = entry.metadata()?.len();
                 println!("{}{} ({} bytes)", indent, name, size);
 
-                // Determine chunk size based on extension
+                // Dump depending on file type
                 let path = entry.path();
-                let chunk_size = if name.ends_with(".data") {
-                    1024
+                if name.ends_with(".data") {
+                    print!("{}  ", indent);
+                    dump_file(path, 1024 * 16)?;    
                 } else if name.ends_with(".obao4") {
-                    64
+                    print!("{}  ", indent);
+                    dump_file(path, 64)?;
                 } else if name.ends_with(".sizes4") {
-                    8
+                    print!("{}  ", indent);
+                    dump_file(path, 8)?;
+                } else if name.ends_with(".bitfield") {
+                    match read_checksummed::<Bitfield>(path) {
+                        Ok(bitfield) => {
+                            println!("{}  bitfield: {:?}", indent, bitfield);
+                        }
+                        Err(cause) => {
+                            println!("{}  bitfield: error: {cause}", indent);
+                        }
+                    }
                 } else {
                     continue; // Skip content dump for other files
                 };
-
-                // Dump file content
-                print!("{}  ", indent); // Indent content line
-                dump_file(path, chunk_size)?;
+                
             }
         }
         Ok(())
     }
 
     pub fn dump_file<P: AsRef<Path>>(path: P, chunk_size: u64) -> io::Result<()> {
+        let bits = file_bits(path, chunk_size)?;
+        println!("{}", print_bitfield_ansi(bits));
+        Ok(())
+    }
+
+    pub fn file_bits(path: impl AsRef<Path>, chunk_size: u64) -> io::Result<Vec<bool>> {
         let file = fs::File::open(&path)?;
-        let file_size = file.metadata()?.len(); // u64
-        let mut buffer = vec![0u8; chunk_size as usize]; // Buffer size still usize for memory
+        let file_size = file.metadata()?.len();
+        let mut buffer = vec![0u8; chunk_size as usize];
+        let mut bits = Vec::new();
 
         let mut offset = 0u64;
         while offset < file_size {
@@ -1197,11 +1413,47 @@ mod tests {
             file.read_exact_at(offset, &mut chunk)?;
 
             let has_non_zero = chunk.iter().any(|&byte| byte != 0);
-            print!("{}", if has_non_zero { "■" } else { "_" });
+            bits.push(has_non_zero);
 
             offset += current_chunk_size;
         }
-        println!();
-        Ok(())
+
+        Ok(bits)
+    }
+
+    fn print_bitfield(bits: impl IntoIterator<Item = bool>) -> String {
+        bits.into_iter()
+            .map(|bit| if bit { '#' } else { '_' })
+            .collect()
+    }
+
+    fn print_bitfield_ansi(bits: impl IntoIterator<Item = bool>) -> String {
+        let mut result = String::new();
+        let mut iter = bits.into_iter();
+        
+        while let Some(b1) = iter.next() {
+            let b2 = iter.next();
+            
+            // ANSI color codes
+            let white_fg = "\x1b[97m";  // bright white foreground
+            let reset = "\x1b[0m";      // reset all attributes
+            let gray_bg = "\x1b[100m";  // bright black (gray) background
+            let black_bg = "\x1b[40m";  // black background
+            
+            let colored_char = match (b1, b2) {
+                (true, Some(true)) => format!("{}{}{}", white_fg, '█', reset),         // 11 - solid white on default background
+                (true, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, '▌', reset),  // 10 - left half white on gray background
+                (false, Some(true)) => format!("{}{}{}{}", gray_bg, white_fg, '▐', reset),  // 01 - right half white on gray background
+                (false, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, ' ', reset),  // 00 - space with gray background
+                (true, None) => format!("{}{}{}{}", black_bg, white_fg, '▌', reset),   // 1 (pad 0) - left half white on black background
+                (false, None) => format!("{}{}{}{}", black_bg, white_fg, ' ', reset),  // 0 (pad 0) - space with black background
+            };
+            
+            result.push_str(&colored_char);
+        }
+        
+        // Ensure we end with a reset code to prevent color bleeding
+        result.push_str("\x1b[0m");
+        result
     }
 }

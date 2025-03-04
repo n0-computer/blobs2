@@ -9,22 +9,21 @@ use std::{
 };
 
 use bao_tree::{
-    io::{
+    blake3, io::{
         fsm::BaoContentItem,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
-    },
-    BaoTree, ChunkRanges,
+    }, BaoTree, ChunkRanges
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use tokio::sync::mpsc;
-use tracing::{info, trace};
+use tracing::{error, info, trace, warn};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
     meta::{self, Update},
-    options::PathOptions,
+    options::{Options, PathOptions},
 };
 use crate::{
     bitfield::Bitfield,
@@ -32,8 +31,7 @@ use crate::{
     hash::DD,
     mem::{PartialMemStorage, SizeInfo},
     util::{
-        observer::{Observable, Observer},
-        FixedSize, MemOrFile, SparseMemFile,
+        observer::{Observable, Observer}, read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile
     },
     Hash, IROH_BLOCK_SIZE,
 };
@@ -138,6 +136,47 @@ pub struct PartialFileStorage {
 }
 
 impl PartialFileStorage {
+
+    fn sync_all(&self, bitfield_path: &Path) -> io::Result<()> {
+        //self.data.sync_all().ok();
+        //self.outboard.sync_all().ok();
+        //self.sizes.sync_all().ok();
+        write_checksummed(bitfield_path, self.bitfield.state()).ok();
+        Ok(())
+    }
+
+    fn load(hash: &Hash, options: &PathOptions) -> io::Result<Self> {
+        let bitfield_path = options.bitfield_path(&hash);
+        let data = create_read_write(&options.owned_data_path(&hash))?;
+        let outboard = create_read_write(options.owned_outboard_path(&hash))?;
+        let sizes = create_read_write(options.owned_sizes_path(&hash))?;
+        let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
+            Ok(bitfield) => bitfield,
+            Err(cause) => {
+                warn!("failed to read bitfield for {} at {}: {:?}", hash.to_hex(), bitfield_path.display(), cause);
+                trace!("reconstructing bitfield from outboard");
+                let size = read_size(&sizes).ok().unwrap_or_default();
+                let outboard = PreOrderOutboard {
+                    data: &outboard,
+                    tree: BaoTree::new(size, IROH_BLOCK_SIZE),
+                    root: blake3::Hash::from(*hash),
+                };
+                let mut ranges = ChunkRanges::all();
+                for range in bao_tree::io::sync::valid_ranges(outboard, &data, &ChunkRanges::all()) {
+                    if let Ok(range) = range {
+                        ranges |= ChunkRanges::from(range);
+                    }
+                }
+                trace!("reconstructed range is {:?}", ranges);
+                Bitfield::new(ranges, size)
+            }
+        };
+        let bitfield = Observable::new(bitfield);
+        Ok(Self {
+            data, outboard, sizes, bitfield,
+        })
+    }
+
     fn into_complete(
         self,
         _hash: &crate::Hash,
@@ -183,16 +222,7 @@ impl PartialFileStorage {
     }
 
     fn current_size(&self) -> io::Result<u64> {
-        let len = self.sizes.metadata()?.len();
-        if len < 8 {
-            Ok(0)
-        } else {
-            // todo: use the last full u64 in case the sizes file is not a multiple of 8
-            // bytes. Not sure how that would happen, but we should handle it.
-            let mut buf = [0u8; 8];
-            self.sizes.read_exact_at(len - 8, &mut buf)?;
-            Ok(u64::from_le_bytes(buf))
-        }
+        read_size(&self.sizes)
     }
 
     fn write_batch(
@@ -234,6 +264,18 @@ impl PartialFileStorage {
         let update = Bitfield::new(added, size.get());
         self.bitfield.update(update);
         Ok(())
+    }
+}
+
+fn read_size(size_file: &File) -> io::Result<u64> {
+    let len = size_file.metadata()?.len();
+    if len < 8 {
+        Ok(0)
+    } else {
+        let len = len & !7;
+        let mut buf = [0u8; 8];
+        size_file.read_exact_at(len - 8, &mut buf)?;
+        Ok(u64::from_le_bytes(buf))
     }
 }
 
@@ -433,7 +475,7 @@ impl BaoFileStorage {
     }
 
     /// Create a new mutable mem storage.
-    pub fn incomplete_mem() -> Self {
+    pub fn partial_mem() -> Self {
         Self::PartialMem(Default::default())
     }
 
@@ -482,11 +524,25 @@ impl BaoFileHandleWeak {
 pub struct BaoFileHandleInner {
     pub(crate) storage: RwLock<Option<BaoFileStorage>>,
     hash: Hash,
+    options: Option<Arc<Options>>,
 }
 
 /// A cheaply cloneable handle to a bao file, including the hash and the configuration.
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
+
+impl Drop for BaoFileHandleInner {
+    fn drop(&mut self) {
+        if let Ok(Some(storage)) = self.storage.get_mut() {
+            if let BaoFileStorage::Partial(fs) = &storage {
+                let options = self.options.as_ref().unwrap();
+                let path = options.path.bitfield_path(&self.hash);
+                info!("writing bitfield for hash {} to {}", self.hash.to_hex(), path.display());
+                fs.sync_all(&path).ok();
+            }
+        }
+    }
+}
 
 /// A reader for a bao file, reading just the data.
 #[derive(Debug)]
@@ -528,26 +584,22 @@ impl BaoFileHandle {
     /// Create a new bao file handle.
     ///
     /// This will create a new file handle with an empty memory storage.
-    pub fn new_incomplete_mem(hash: Hash) -> Self {
-        let storage = BaoFileStorage::incomplete_mem();
+    pub fn new_partial_mem(hash: Hash, options: Arc<Options>) -> Self {
+        let storage = BaoFileStorage::partial_mem();
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
             hash,
+            options: Some(options),
         }))
     }
 
     /// Create a new bao file handle with a partial file.
-    pub fn new_incomplete_file(options: &PathOptions, hash: Hash) -> io::Result<Self> {
-        let storage = PartialFileStorage {
-            data: create_read_write(&options.owned_data_path(&hash))?,
-            outboard: create_read_write(options.owned_outboard_path(&hash))?,
-            sizes: create_read_write(options.owned_sizes_path(&hash))?,
-            bitfield: Default::default(), // todo
-        }
-        .into();
+    pub fn new_partial_file(hash: Hash, options: Arc<Options>) -> io::Result<Self> {
+        let storage = PartialFileStorage::load(&hash, &options.path)?.into();
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
             hash,
+            options: Some(options),
         })))
     }
 
@@ -561,6 +613,7 @@ impl BaoFileHandle {
         Self(Arc::new(BaoFileHandleInner {
             storage: RwLock::new(Some(storage)),
             hash,
+            options: None,
         }))
     }
 

@@ -1,6 +1,8 @@
 use std::num::NonZeroU64;
 
 use bao_tree::{ChunkNum, ChunkRanges};
+use serde::{Deserialize, Deserializer, Serialize};
+use smallvec::SmallVec;
 
 use crate::util::{
     observer::{Combine, CombineInPlace},
@@ -29,7 +31,40 @@ pub struct Bitfield {
     pub size: u64,
 }
 
+impl Serialize for Bitfield {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut numbers = SmallVec::<[_;4]>::new();
+        numbers.push(self.size);
+        numbers.extend(self.ranges.boundaries().iter().map(|x| x.0));
+        numbers.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bitfield {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut numbers: SmallVec<[u64; 4]> = SmallVec::deserialize(deserializer)?;
+        
+        // Need at least 1 u64 for size
+        if numbers.is_empty() {
+            return Err(serde::de::Error::custom("Bitfield needs at least size"));
+        }
+
+        // Split: first is size, rest are ranges
+        let size = numbers.remove(0);
+        let mut ranges = SmallVec::<[_; 2]>::new();
+        for num in numbers {
+            ranges.push(ChunkNum(num));
+        }
+        let Some(ranges) = ChunkRanges::new(ranges) else {
+            return Err(serde::de::Error::custom("Boundaries are not sorted"));
+        };
+        Ok(Bitfield { ranges, size })
+    }
+}
+
+
 impl Bitfield {
+
     pub fn new(mut ranges: ChunkRanges, size: u64) -> Self {
         // for zero size, we have to trust the caller
         if let Some(size) = NonZeroU64::new(size) {

@@ -10,8 +10,10 @@ mod test;
 mod util;
 
 pub use hash::{BlobFormat, Hash, HashAndFormat};
+use ref_cast::RefCast;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ref_cast::RefCast)]
+#[repr(transparent)]
 pub struct Store {
     sender: tokio::sync::mpsc::Sender<proto::Command>,
 }
@@ -19,6 +21,10 @@ pub struct Store {
 impl Store {
     pub fn from_sender(sender: tokio::sync::mpsc::Sender<proto::Command>) -> Self {
         Self { sender }
+    }
+
+    pub fn ref_from_sender(sender: &tokio::sync::mpsc::Sender<proto::Command>) -> &Self {
+        Store::ref_cast(sender)
     }
 }
 

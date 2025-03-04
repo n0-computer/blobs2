@@ -41,19 +41,13 @@ impl<U> Observer<U> {
     where
         U: Combine,
     {
-        println!("Sending update 2: {:?}", update);
         // If we have a pending update, combine it with the new update
         let update_to_send = match self.pending_update.take() {
             Some(pending) => {
-                println!("Pending update: {:?}", pending);
                 pending.combine(update)
             }
             None => update,
         };
-        println!(
-            "Sending update after combining with pending: {:?}",
-            update_to_send
-        );
 
         match self.tx.try_send(update_to_send) {
             Ok(()) => Ok(ObserveSuccess::Sent),
@@ -139,12 +133,6 @@ impl<U> Observable<U> {
     {
         let state = self.state().clone();
         let id = &self as *const _ as usize;
-        println!("{id} add_observer");
-        println!(
-            "{id} Sending initial state: {:?} {}",
-            state,
-            self.observers.len()
-        );
         if observer.send(state).is_ok() {
             self.observers.push(observer);
         }
