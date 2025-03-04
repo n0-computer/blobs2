@@ -179,7 +179,6 @@ impl<U> Observable<U> {
         U: Combine + Clone,
     {
         let id = &self as *const _ as usize;
-        println!("{id} Updating state {:?} with {:?}", self.state(), update);
         // Update the state by combining with the update
         self.state = Some(
             self.state
@@ -187,12 +186,9 @@ impl<U> Observable<U> {
                 .expect("State must be initialized")
                 .combine(update.clone()),
         );
-        println!("{id} Resulting state {:?}", self.state());
-        println!("{id} Sending update: {:?}", update);
 
         // Send the update to all observables and filter out dropped ones
         self.observers.retain_mut(|observable| {
-            println!("{id} Sending update 1: {:?}", update);
             observable.send(update.clone()).is_ok()
         });
     }

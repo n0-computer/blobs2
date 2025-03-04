@@ -2,6 +2,7 @@
 //!
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
+use core::fmt;
 use std::{io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
 pub use bao_tree::io::mixed::EncodedItem;
@@ -12,9 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    bitfield::Bitfield,
-    util::{observer::Observer, Tag},
-    BlobFormat, HashAndFormat,
+    bitfield::Bitfield, hash::DD, util::{observer::Observer, Tag}, BlobFormat, HashAndFormat
 };
 
 /// Import bao encoded data for the given hash with the iroh block size.
@@ -22,7 +21,6 @@ use crate::{
 /// The result is just a single item, indicating if a write error occurred.
 /// To observe the incoming data more granularly, use the `Observe` command
 /// concurrently.
-#[derive(Debug)]
 pub struct ImportBao {
     pub hash: Hash,
     pub size: NonZeroU64,
@@ -30,9 +28,24 @@ pub struct ImportBao {
     pub out: oneshot::Sender<anyhow::Result<()>>,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for ImportBao {
+
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportBao")
+            .field("hash", &DD::from(self.hash))
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct Shutdown {
     pub tx: oneshot::Sender<()>,
+}
+
+impl fmt::Debug for Shutdown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Shutdown").finish_non_exhaustive()
+    }
 }
 
 /// Observe the bitfield of the given hash.
@@ -43,20 +56,35 @@ pub struct Observe {
 }
 
 /// Import the given bytes.
-#[derive(Debug)]
 pub struct ImportBytes {
     pub data: Bytes,
     pub out: mpsc::Sender<ImportProgress>,
 }
 
+impl fmt::Debug for ImportBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportBytes")
+            .field("data", &self.data.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Export the given sizes in bao format, with the iroh block size.
 ///
 /// The returned stream should be verified by the store.
-#[derive(Debug)]
 pub struct ExportBao {
     pub hash: Hash,
     pub ranges: ChunkRanges,
     pub out: mpsc::Sender<EncodedItem>,
+}
+
+impl fmt::Debug for ExportBao {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExportBao")
+            .field("hash", &DD::from(self.hash))
+            .field("ranges", &self.ranges)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Export a file to a target path.

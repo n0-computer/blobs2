@@ -11,10 +11,7 @@
 //! The various ..._task fns return an `Option<ImportEntry>`. If import fails for whatever reason, the error goes
 //! to the requester, and the task returns None.
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, BufReader, Read, Seek, Write},
-    path::PathBuf,
-    sync::Arc,
+    fmt, fs::{self, File, OpenOptions}, io::{self, BufReader, Read, Seek, Write}, path::PathBuf, sync::Arc
 };
 
 use bao_tree::{
@@ -48,6 +45,15 @@ pub enum ImportSource {
 }
 
 impl ImportSource {
+
+    pub fn fmt_short(&self) -> String {
+        match self {
+            Self::TempFile(path, _, _) => format!("TempFile({})", path.display()),
+            Self::External(path, _, _) => format!("External({})", path.display()),
+            Self::Memory(data) => format!("Memory({})", data.len()),
+        }
+    }
+
     fn is_mem(&self) -> bool {
         matches!(self, Self::Memory(_))
     }
@@ -78,12 +84,22 @@ impl ImportSource {
 ///
 /// The store can assume that the outboard, if on disk, is in a location where
 /// it can be moved to the final location (basically it needs to be on the same device).
-#[derive(Debug)]
 pub struct ImportEntry {
     pub hash: Hash,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
     pub out: mpsc::Sender<ImportProgress>,
+}
+
+impl fmt::Debug for ImportEntry {
+    
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportEntry")
+            .field("hash", &self.hash)
+            .field("source", &self.source.fmt_short())
+            .field("outboard", &self.outboard.fmt_short())
+            .finish()
+    }
 }
 
 impl ImportEntry {

@@ -1,4 +1,6 @@
 //! Protocol for the metadata database.
+use std::fmt;
+
 use bytes::Bytes;
 use n0_future::io;
 use nested_enum_utils::enum_conversions;
@@ -6,6 +8,7 @@ use redb::{AccessGuard, StorageError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
+use crate::hash::DD;
 pub use crate::proto::SyncDb;
 use crate::{fs::entry_state::EntryState, proto::Shutdown, util::Tag, Hash, HashAndFormat};
 
@@ -13,10 +16,17 @@ use crate::{fs::entry_state::EntryState, proto::Shutdown, util::Tag, Hash, HashA
 ///
 /// This will read from the blobs table and enrich the result with the content
 /// of the inline data and inline outboard tables if necessary.
-#[derive(Debug)]
 pub struct Get {
     pub hash: Hash,
     pub tx: oneshot::Sender<GetResult>,
+}
+
+impl fmt::Debug for Get {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Get")
+            .field("hash", &DD::from(self.hash))
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -33,13 +43,23 @@ pub struct Dump {
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
-#[derive(Debug)]
 pub struct Update {
     pub epoch: u64,
     pub hash: Hash,
     pub state: EntryState<Bytes>,
     /// do I need this? Optional?
     pub tx: Option<oneshot::Sender<ActorResult<()>>>,
+}
+
+impl fmt::Debug for Update {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Update")
+            .field("epoch", &self.epoch)
+            .field("hash", &self.hash)
+            .field("state", &DD::from(self.state.fmt_short()))
+            .field("tx", &self.tx.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -89,7 +109,7 @@ pub enum ReadOnlyCommand {
 #[derive(Debug)]
 #[enum_conversions(Command)]
 pub enum ReadWriteCommand {
-    Merge(Update),
+    Update(Update),
     Delete(Delete),
     SetTag(SetTag),
     CreateTag(CreateTag),

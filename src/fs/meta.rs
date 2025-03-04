@@ -228,6 +228,7 @@ impl Actor {
         let Update {
             hash, state, tx, ..
         } = cmd;
+        info!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
         let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
             EntryState::Complete {
@@ -334,7 +335,7 @@ impl Actor {
 
     fn handle_readwrite(tables: &mut Tables, cmd: ReadWriteCommand) -> ActorResult<()> {
         match cmd {
-            ReadWriteCommand::Merge(cmd) => Self::update(tables, cmd),
+            ReadWriteCommand::Update(cmd) => Self::update(tables, cmd),
             ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd),
             ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd),
             ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd),
@@ -367,19 +368,21 @@ impl Actor {
             let Some(cmd) = self.cmds.recv().await else {
                 break None;
             };
-            trace!("{cmd:?}");
             match cmd {
                 Command::TopLevel(cmd) => {
+                    trace!("{cmd:?}");
                     if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd)? {
                         break Some(shutdown);
                     }
                 }
                 Command::ReadOnly(cmd) => {
+                    trace!("{cmd:?}");
                     let tx = db.begin_read()?;
                     let tables = ReadOnlyTables::new(&tx)?;
                     Self::handle_readonly(&tables, cmd)?;
                 }
                 Command::ReadWrite(cmd) => {
+                    trace!("{cmd:?}");
                     let mut delete_set = DeleteSet::default();
                     let tx = db.begin_write()?;
                     let mut tables = Tables::new(&tx, &mut delete_set)?;

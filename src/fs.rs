@@ -183,7 +183,7 @@ impl HashContext {
 
     pub async fn get_or_create(&self, hash: impl Into<Hash>) -> anyhow::Result<BaoFileHandle> {
         let hash = hash.into();
-        self.slot
+        let res = self.slot
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.context("failed to get entry")?;
                 match res {
@@ -191,7 +191,9 @@ impl HashContext {
                     None => Ok(BaoFileHandle::new_incomplete_mem(hash.into())),
                 }
             })
-            .await
+            .await;
+        trace!("{res:?}");
+        res
     }
 }
 
@@ -282,18 +284,24 @@ impl Actor {
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::SyncDb(cmd) => {
+                trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
             Command::Shutdown(cmd) => {
+                trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
             Command::CreateTag(cmd) => {
+                trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
             Command::SetTag(cmd) => {
+                trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
-            Command::Tags(Tags { tx }) => {
+            Command::Tags(cmd) => {
+                trace!("{cmd:?}");
+                let Tags { tx } = cmd;
                 self.db()
                     .send(
                         meta::Tags {
@@ -306,28 +314,35 @@ impl Actor {
                     .ok();
             }
             Command::ImportBytes(cmd) => {
+                trace!("{cmd:?}");
                 self.tasks.spawn(import_bytes_task(cmd, self.context()));
             }
             Command::ImportByteStream(cmd) => {
+                trace!("{cmd:?}");
                 self.tasks
                     .spawn(import_byte_stream_task(cmd, self.context()));
             }
             Command::ImportPath(cmd) => {
+                trace!("{cmd:?}");
                 self.tasks.spawn(import_path_task(cmd, self.context()));
             }
             Command::ExportPath(cmd) => {
+                trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(export_path_task(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
+                trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(export_bao_task(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
+                trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(import_bao_task(cmd, ctx));
             }
             Command::Observe(cmd) => {
+                trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(observe_task(cmd, ctx));
             }
@@ -367,7 +382,6 @@ impl Actor {
                     let Some(cmd) = cmd else {
                         break;
                     };
-                    trace!("{cmd:?}");
                     self.handle_command(cmd).await;
                 }
                 Some(cmd) = self.fs_cmd_rx.recv() => {
@@ -551,6 +565,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
 }
 
 async fn import_bao_task(cmd: ImportBao, ctx: HashContext) {
+    trace!("{cmd:?}");
     let ImportBao {
         size,
         data,
@@ -561,6 +576,7 @@ async fn import_bao_task(cmd: ImportBao, ctx: HashContext) {
         Ok(handle) => import_bao_impl(size, data, handle, ctx).await,
         Err(cause) => Err(cause),
     };
+    trace!("{res:?}");
     out.send(res).ok();
 }
 
@@ -576,7 +592,6 @@ async fn import_bao_impl(
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
-    println!("importing bao {}", handle.id());
     let mut batch = Vec::<BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
     while let Some(item) = data.recv().await {
@@ -641,6 +656,7 @@ async fn export_bao_task(cmd: ExportBao, ctx: HashContext) {
 
 async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Result<()> {
     let ExportBao { ranges, out, hash } = cmd;
+    trace!("exporting bao: {hash} {ranges:?} size={}", handle.current_size()?);
     anyhow::ensure!(handle.hash() == Hash::from(hash), "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
@@ -768,17 +784,34 @@ impl DbStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use core::panic;
+    use std::{collections::HashMap, io::Read, u64};
 
     use bao_tree::{blake3, io::outboard::PreOrderMemOutboard, ChunkRanges};
     use n0_future::StreamExt;
     use testresult::TestResult;
+    use walkdir::WalkDir;
 
     use super::*;
     use crate::{util::Tag, HashAndFormat, IROH_BLOCK_SIZE};
 
+    /// Create n0 flavoured bao. Note that this can be used to request ranges below a chunk group size,
+    /// which can not be exported via bao because we don't store hashes below the chunk group level.
     fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
+        let mut encoded = Vec::new();
+        let size = data.len() as u64;
+        encoded.extend_from_slice(&size.to_le_bytes());
+        bao_tree::io::sync::encode_ranges_validated(&data, &outboard, ranges, &mut encoded)?;
+        Ok((outboard.root, encoded))
+    }
+
+    fn create_n0_bao_full(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
+        let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
+        let data_range = ChunkRanges::from(..ChunkNum::chunks(data.len() as u64));
+        if !data_range.intersects(ranges) && !ranges.is_empty() {
+            println!("full");
+        }
         let mut encoded = Vec::new();
         let size = data.len() as u64;
         encoded.extend_from_slice(&size.to_le_bytes());
@@ -861,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persistence_smoke() -> TestResult<()> {
+    async fn import_bao_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
@@ -880,8 +913,9 @@ mod tests {
             let store = Store::load_redb_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let data = vec![0u8; size];
-                let data = Bytes::from(data);
-                store.import_bytes(data.clone()).await?;
+                let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
+                let data = Bytes::from(encoded);
+                store.import_bao_bytes(hash, ChunkRanges::all(), data).await?;
             }
             store.shutdown().await?;
         }
@@ -894,8 +928,104 @@ mod tests {
                     .export_bao(hash, ChunkRanges::all())
                     .data_to_vec()
                     .await?;
-                info!("len={}", actual.len());
                 assert_eq!(&expected, &actual);
+            }
+            store.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bao_persistence_just_size() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            // 0, // always there
+            // 1, // will become complete due to last chunk
+            // 1024, // will become complete due to last chunk
+            // 1024 * 16 - 1, // will remain incomplete and in memory
+            // 1024 * 16, // will remain incomplete and in memory
+            // 1024 * 16 + 1, // will remain incomplete as file, needs outboard
+            1024 * 1024,
+            // 1024 * 1024 * 8,
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        {
+            let (store, internal) = Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, encoded) = create_n0_bao_full(&data, &just_size)?;
+                let data = Bytes::from(encoded);
+                if let Err(cause) = store.import_bao_bytes(hash, just_size.clone(), data).await {
+                    panic!("failed to import size={size}: {cause}");
+                }
+            }
+            internal.dump().await?;
+            store.shutdown().await?;
+        }
+        dump_dir_full(testdir.path())?;
+        {
+            let (store, internal) = Store::load_redb_with_opts_inner(db_dir, options).await?;
+            internal.dump().await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let (hash, expected) = create_n0_bao_full(&data, &just_size)?;
+                let actual = match store
+                    .export_bao(hash, just_size.clone())
+                    .bao_to_vec()
+                    .await {
+                    Ok(actual) => actual,
+                    Err(cause) => panic!("failed to export size={size}: {cause}"),
+                };
+                assert_eq!(&expected, &actual);
+            }
+            store.shutdown().await?;
+        }
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn import_bytes_persistence_full() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            0,
+            1,
+            1024,
+            1024 * 16 - 1,
+            1024 * 16,
+            1024 * 16 + 1,
+            1024 * 1024,
+            1024 * 1024 * 8,
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        {
+            let (store, internal) = Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![1u8; size];
+                let data = Bytes::from(data);
+                store.import_bytes(data.clone()).await?;
+            }
+            internal.dump().await?;
+            store.shutdown().await?;
+        }
+        {
+            let (store, internal) = Store::load_redb_with_opts_inner(db_dir.clone(), options.clone()).await?;
+            internal.dump().await?;
+            for size in sizes {
+                let expected = vec![1u8; size];
+                let hash = blake3::hash(&expected);
+                let Ok(actual) = store
+                    .export_bao(hash, ChunkRanges::all())
+                    .data_to_vec()
+                    .await else {
+                    panic!("failed to export size={size}");
+                };
+                assert_eq!(&expected, &actual, "size={}", size);
             }
             store.shutdown().await?;
         }
@@ -974,4 +1104,77 @@ mod tests {
         }
         Ok(())
     }
+
+    pub fn dump_dir(path: impl AsRef<Path>) -> io::Result<()> {
+        for entry in WalkDir::new(path) {
+            let entry = entry?;
+            let depth = entry.depth();
+            let indent = "  ".repeat(depth); // Two spaces per level
+            let name = entry.file_name().to_string_lossy();
+            let size = entry.metadata()?.len(); // Size in bytes
+    
+            if entry.file_type().is_file() {
+                println!("{}{} ({} bytes)", indent, name, size);
+            } else if entry.file_type().is_dir() {
+                println!("{}{}/", indent, name);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn dump_dir_full(path: impl AsRef<Path>) -> io::Result<()> {
+        for entry in WalkDir::new(path) {
+            let entry = entry?;
+            let depth = entry.depth();
+            let indent = "  ".repeat(depth);
+            let name = entry.file_name().to_string_lossy();
+    
+            if entry.file_type().is_dir() {
+                println!("{}{}/", indent, name);
+            } else if entry.file_type().is_file() {
+                let size = entry.metadata()?.len();
+                println!("{}{} ({} bytes)", indent, name, size);
+    
+                // Determine chunk size based on extension
+                let path = entry.path();
+                let chunk_size = if name.ends_with(".data") {
+                    1024
+                } else if name.ends_with(".obao4") {
+                    64
+                } else if name.ends_with(".sizes4") {
+                    8
+                } else {
+                    continue; // Skip content dump for other files
+                };
+    
+                // Dump file content
+                print!("{}  ", indent); // Indent content line
+                dump_file(path, chunk_size)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn dump_file<P: AsRef<Path>>(path: P, chunk_size: u64) -> io::Result<()> {
+        let file = fs::File::open(&path)?;
+        let file_size = file.metadata()?.len(); // u64
+        let mut buffer = vec![0u8; chunk_size as usize]; // Buffer size still usize for memory
+    
+        let mut offset = 0u64;
+        while offset < file_size {
+            let remaining = file_size - offset;
+            let current_chunk_size = chunk_size.min(remaining);
+            
+            let mut chunk = &mut buffer[..current_chunk_size as usize];
+            file.read_exact_at(offset, &mut chunk)?;
+    
+            let has_non_zero = chunk.iter().any(|&byte| byte != 0);
+            print!("{}", if has_non_zero { "■" } else { "_" });
+    
+            offset += current_chunk_size;
+        }
+        println!();
+        Ok(())
+    }
+    
 }

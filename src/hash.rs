@@ -16,7 +16,14 @@ impl fmt::Debug for Hash {
     }
 }
 
-struct DD<T: fmt::Display>(T);
+
+pub(crate) struct DD<T: fmt::Display>(T);
+
+impl<T: fmt::Display> From<T> for DD<T> {
+    fn from(value: T) -> Self {
+        DD(value)
+    }
+}
 
 impl<T: fmt::Display> fmt::Debug for DD<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

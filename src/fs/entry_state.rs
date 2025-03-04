@@ -1,7 +1,10 @@
-use std::path::PathBuf;
+use std::{fmt::Debug, path::PathBuf};
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+
+use crate::hash::DD;
 
 use super::meta::{ActorError, ActorResult};
 
@@ -19,6 +22,19 @@ pub(crate) enum DataLocation<I = (), E = ()> {
     Owned(E),
     /// Data is in several external locations. This should be a non-empty list.
     External(Vec<PathBuf>, E),
+}
+
+impl<I: AsRef<[u8]>, E: Debug> DataLocation<I, E> {
+    fn fmt_short(&self) -> String {
+        match self {
+            DataLocation::Inline(d) => format!("Inline({})", d.as_ref().len()),
+            DataLocation::Owned(e) => format!("Owned({e:?})"),
+            DataLocation::External(paths, e) => {
+                let paths = paths.iter().map(|p| p.display()).collect::<Vec<_>>();
+                format!("External({paths:?}, {e:?})")
+            }
+        }
+    }
 }
 
 impl<X> DataLocation<X, u64> {
@@ -97,7 +113,30 @@ pub(crate) enum OutboardLocation<I = ()> {
     NotNeeded,
 }
 
+impl<I: AsRef<[u8]>> OutboardLocation<I> {
+
+    fn fmt_short(&self) -> String {
+        match self {
+            OutboardLocation::Inline(d) => format!("Inline({})", d.as_ref().len()),
+            OutboardLocation::Owned => "Owned".to_string(),
+            OutboardLocation::NotNeeded => "NotNeeded".to_string(),
+        }
+    }
+}
+
 impl<I> OutboardLocation<I> {
+
+    pub fn inline(data: I) -> Self
+    where
+        I: AsRef<[u8]>,
+    {
+        if data.as_ref().is_empty() {
+            OutboardLocation::NotNeeded
+        } else {
+            OutboardLocation::Inline(data)
+        }
+    }
+
     pub fn discard_extra_data(self) -> OutboardLocation<()> {
         match self {
             Self::Inline(_) => OutboardLocation::Inline(()),
@@ -119,7 +158,7 @@ impl<I> OutboardLocation<I> {
 ///
 /// The exact info to store here is TBD, so usually you should use the accessor methods.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum EntryState<I = ()> {
+pub enum EntryState<I = ()> {
     /// For a complete entry we always know the size. It does not make much sense
     /// to write to a complete entry, so they are much easier to share.
     Complete {
@@ -146,6 +185,21 @@ pub(crate) enum EntryState<I = ()> {
 impl Default for EntryState {
     fn default() -> Self {
         Self::Partial { size: None }
+    }
+}
+
+impl<I: AsRef<[u8]>> EntryState<I> {
+    pub fn fmt_short(&self) -> String {
+        match self {
+            Self::Complete {
+                data_location,
+                outboard_location,
+            } => format!(
+                "Complete {{ data: {}, outboard: {} }}",
+                data_location.fmt_short(), outboard_location.fmt_short()
+            ),
+            Self::Partial { size } => format!("Partial {{ size: {:?} }}", size),
+        }
     }
 }
 

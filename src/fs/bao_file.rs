@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     fs::{File, OpenOptions},
     io,
@@ -18,6 +19,7 @@ use bao_tree::{
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use tokio::sync::mpsc;
+use tracing::{info, trace};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -25,14 +27,10 @@ use super::{
     options::PathOptions,
 };
 use crate::{
-    bitfield::Bitfield,
-    fs::{meta::raw_outboard_size, TaskContext},
-    mem::{PartialMemStorage, SizeInfo},
-    util::{
+    bitfield::Bitfield, fs::{meta::raw_outboard_size, TaskContext}, hash::DD, mem::{PartialMemStorage, SizeInfo}, util::{
         observer::{Observable, Observer},
         FixedSize, MemOrFile, SparseMemFile,
-    },
-    Hash, IROH_BLOCK_SIZE,
+    }, Hash, IROH_BLOCK_SIZE
 };
 
 /// Storage for complete blobs. There is no longer any uncertainty about the
@@ -44,12 +42,21 @@ use crate::{
 ///
 /// For the memory variant, it does reading in a zero copy way, since storage
 /// is already a `Bytes`.
-#[derive(Default, derive_more::Debug)]
+#[derive(Default)]
 pub struct CompleteStorage {
     /// data part, which can be in memory or on disk.
     pub data: MemOrFile<Bytes, FixedSize<File>>,
     /// outboard part, which can be in memory or on disk.
     pub outboard: MemOrFile<Bytes, File>,
+}
+
+impl fmt::Debug for CompleteStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteStorage")
+            .field("data", &DD::from(self.data.fmt_short()))
+            .field("outboard", &DD::from(self.outboard.fmt_short()))
+            .finish()
+    }
 }
 
 impl CompleteStorage {
@@ -147,6 +154,7 @@ impl PartialFileStorage {
                 (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded)
             } else {
                 let outboard = read_to_end(&self.outboard, 0, outboard_size as usize)?;
+                trace!("read outboard from file: {:?}", outboard.len());
                 (
                     MemOrFile::Mem(outboard.clone()),
                     OutboardLocation::Inline(outboard),
@@ -275,11 +283,12 @@ impl PartialMemStorage {
             )
         };
         let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
-            let outboard: Bytes = self.outboard.to_vec().into();
-            (
-                MemOrFile::Mem(outboard.clone()),
-                OutboardLocation::Inline(outboard),
-            )
+            if outboard_size > 0 {
+                let outboard: Bytes = self.outboard.to_vec().into();            
+                (MemOrFile::Mem(outboard.clone()), OutboardLocation::Inline(outboard))
+            } else {
+                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded) 
+            }
         } else {
             let outboard_path = ctx.options.path.owned_outboard_path(hash);
             let mut outboard_file = create_read_write(&outboard_path)?;
@@ -330,17 +339,22 @@ impl BaoFileStorage {
     ) -> io::Result<Self> {
         Ok(match self {
             BaoFileStorage::PartialMem(mut ms) => {
+                trace!("writing to mem storage");
                 // check if we need to switch to file mode, otherwise write to memory
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
+                    trace!("staying in mem mode");
                     ms.write_batch(size, batch, ranges)?;
                     if ms.bitfield.state().is_complete() {
+                        trace!("becoming complete");
                         let (state, update) = ms.into_complete(hash, ctx)?;
                         send_update(ctx, permit, hash, update);
                         state.into()
                     } else {
+                        trace!("not yet complete");
                         ms.into()
                     }
                 } else {
+                    trace!("switching to file mode");
                     // *first* switch to file mode, *then* write the batch.
                     //
                     // otherwise we might allocate a lot of memory if we get
@@ -638,6 +652,7 @@ impl BaoFileHandle {
         ranges: &ChunkRanges,
         ctx: &TaskContext,
     ) -> anyhow::Result<()> {
+        trace!("write_batch size={} ranges={:?} batch={}", size, ranges, batch.len());
         let permit = ctx.db.sender.reserve().await?;
         let mut guard = self.storage.write().unwrap();
         if let Some(state) = guard.take() {

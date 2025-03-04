@@ -38,3 +38,4 @@ test-strategy = "0.4.0"
 testresult = "0.4.1"
 tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
 tracing-test = "0.2.5"
+walkdir = "2.5.0"
