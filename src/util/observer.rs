@@ -188,9 +188,8 @@ impl<U> Observable<U> {
         );
 
         // Send the update to all observables and filter out dropped ones
-        self.observers.retain_mut(|observable| {
-            observable.send(update.clone()).is_ok()
-        });
+        self.observers
+            .retain_mut(|observable| observable.send(update.clone()).is_ok());
     }
 
     // Get the current state (for testing or debugging)

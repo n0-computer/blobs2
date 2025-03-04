@@ -16,7 +16,6 @@ impl fmt::Debug for Hash {
     }
 }
 
-
 pub(crate) struct DD<T: fmt::Display>(T);
 
 impl<T: fmt::Display> From<T> for DD<T> {

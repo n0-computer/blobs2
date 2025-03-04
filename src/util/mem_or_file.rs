@@ -1,5 +1,7 @@
 use std::{
-    fmt::Debug, fs::File, io::{self, Read, Seek}
+    fmt::Debug,
+    fs::File,
+    io::{self, Read, Seek},
 };
 
 use bao_tree::io::sync::{ReadAt, Size};
@@ -47,7 +49,6 @@ pub enum MemOrFile<M, F> {
 }
 
 impl<M: AsRef<[u8]>, F: Debug> MemOrFile<M, F> {
-
     pub fn fmt_short(&self) -> String {
         match self {
             Self::Mem(mem) => format!("Mem({})", mem.as_ref().len()),

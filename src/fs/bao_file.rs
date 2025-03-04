@@ -27,10 +27,15 @@ use super::{
     options::PathOptions,
 };
 use crate::{
-    bitfield::Bitfield, fs::{meta::raw_outboard_size, TaskContext}, hash::DD, mem::{PartialMemStorage, SizeInfo}, util::{
+    bitfield::Bitfield,
+    fs::{meta::raw_outboard_size, TaskContext},
+    hash::DD,
+    mem::{PartialMemStorage, SizeInfo},
+    util::{
         observer::{Observable, Observer},
         FixedSize, MemOrFile, SparseMemFile,
-    }, Hash, IROH_BLOCK_SIZE
+    },
+    Hash, IROH_BLOCK_SIZE,
 };
 
 /// Storage for complete blobs. There is no longer any uncertainty about the
@@ -284,10 +289,13 @@ impl PartialMemStorage {
         };
         let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
             if outboard_size > 0 {
-                let outboard: Bytes = self.outboard.to_vec().into();            
-                (MemOrFile::Mem(outboard.clone()), OutboardLocation::Inline(outboard))
+                let outboard: Bytes = self.outboard.to_vec().into();
+                (
+                    MemOrFile::Mem(outboard.clone()),
+                    OutboardLocation::Inline(outboard),
+                )
             } else {
-                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded) 
+                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded)
             }
         } else {
             let outboard_path = ctx.options.path.owned_outboard_path(hash);
@@ -652,7 +660,12 @@ impl BaoFileHandle {
         ranges: &ChunkRanges,
         ctx: &TaskContext,
     ) -> anyhow::Result<()> {
-        trace!("write_batch size={} ranges={:?} batch={}", size, ranges, batch.len());
+        trace!(
+            "write_batch size={} ranges={:?} batch={}",
+            size,
+            ranges,
+            batch.len()
+        );
         let permit = ctx.db.sender.reserve().await?;
         let mut guard = self.storage.write().unwrap();
         if let Some(state) = guard.take() {

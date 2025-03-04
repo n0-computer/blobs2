@@ -114,7 +114,6 @@ pub(crate) enum OutboardLocation<I = ()> {
 }
 
 impl<I: AsRef<[u8]>> OutboardLocation<I> {
-
     fn fmt_short(&self) -> String {
         match self {
             OutboardLocation::Inline(d) => format!("Inline({})", d.as_ref().len()),
@@ -125,7 +124,6 @@ impl<I: AsRef<[u8]>> OutboardLocation<I> {
 }
 
 impl<I> OutboardLocation<I> {
-
     pub fn inline(data: I) -> Self
     where
         I: AsRef<[u8]>,
@@ -196,7 +194,8 @@ impl<I: AsRef<[u8]>> EntryState<I> {
                 outboard_location,
             } => format!(
                 "Complete {{ data: {}, outboard: {} }}",
-                data_location.fmt_short(), outboard_location.fmt_short()
+                data_location.fmt_short(),
+                outboard_location.fmt_short()
             ),
             Self::Partial { size } => format!("Partial {{ size: {:?} }}", size),
         }

@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    bitfield::Bitfield, hash::DD, util::{observer::Observer, Tag}, BlobFormat, HashAndFormat
+    bitfield::Bitfield,
+    hash::DD,
+    util::{observer::Observer, Tag},
+    BlobFormat, HashAndFormat,
 };
 
 /// Import bao encoded data for the given hash with the iroh block size.
@@ -29,7 +32,6 @@ pub struct ImportBao {
 }
 
 impl fmt::Debug for ImportBao {
-
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImportBao")
             .field("hash", &DD::from(self.hash))

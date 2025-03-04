@@ -11,7 +11,11 @@
 //! The various ..._task fns return an `Option<ImportEntry>`. If import fails for whatever reason, the error goes
 //! to the requester, and the task returns None.
 use std::{
-    fmt, fs::{self, File, OpenOptions}, io::{self, BufReader, Read, Seek, Write}, path::PathBuf, sync::Arc
+    fmt,
+    fs::{self, File, OpenOptions},
+    io::{self, BufReader, Read, Seek, Write},
+    path::PathBuf,
+    sync::Arc,
 };
 
 use bao_tree::{
@@ -45,7 +49,6 @@ pub enum ImportSource {
 }
 
 impl ImportSource {
-
     pub fn fmt_short(&self) -> String {
         match self {
             Self::TempFile(path, _, _) => format!("TempFile({})", path.display()),
@@ -92,7 +95,6 @@ pub struct ImportEntry {
 }
 
 impl fmt::Debug for ImportEntry {
-    
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImportEntry")
             .field("hash", &self.hash)
