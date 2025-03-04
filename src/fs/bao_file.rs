@@ -1,20 +1,9 @@
-//! An implementation of a bao file, meaning some data blob with associated
-//! outboard.
-//!
-//! Compared to just a pair of (data, outboard), this implementation also works
-//! when both the data and the outboard is incomplete, and not even the size
-//! is fully known.
-//!
-//! There is a full in memory implementation, and an implementation that uses
-//! the file system for the data, outboard, and sizes file. There is also a
-//! combined implementation that starts in memory and switches to file when
-//! the memory limit is reached.
 use std::{
     fs::{File, OpenOptions},
     io,
     num::NonZeroU64,
     ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, RwLock, Weak},
 };
 
@@ -41,7 +30,7 @@ use crate::{
     mem::{PartialMemStorage, SizeInfo},
     util::{
         observer::{Observable, Observer},
-        MemOrFile, SparseMemFile,
+        FixedSize, MemOrFile, SparseMemFile,
     },
     Hash, IROH_BLOCK_SIZE,
 };
@@ -58,11 +47,9 @@ use crate::{
 #[derive(Default, derive_more::Debug)]
 pub struct CompleteStorage {
     /// data part, which can be in memory or on disk.
-    #[debug("{:?}", data.as_ref().map_mem(|x| x.len()))]
-    pub data: MemOrFile<Bytes, (File, u64)>,
+    pub data: MemOrFile<Bytes, FixedSize<File>>,
     /// outboard part, which can be in memory or on disk.
-    #[debug("{:?}", outboard.as_ref().map_mem(|x| x.len()))]
-    pub outboard: MemOrFile<Bytes, (File, u64)>,
+    pub outboard: MemOrFile<Bytes, File>,
 }
 
 impl CompleteStorage {
@@ -72,10 +59,10 @@ impl CompleteStorage {
     }
 
     /// The size of the data file.
-    pub fn data_size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         match &self.data {
             MemOrFile::Mem(mem) => mem.len() as u64,
-            MemOrFile::File((_file, size)) => *size,
+            MemOrFile::File(file) => file.size,
         }
     }
 }
@@ -151,7 +138,7 @@ impl PartialFileStorage {
             (MemOrFile::Mem(data.clone()), DataLocation::Inline(data))
         } else {
             (
-                MemOrFile::File((self.data, size)),
+                MemOrFile::File(FixedSize::new(self.data, size)),
                 DataLocation::Owned(size),
             )
         };
@@ -166,10 +153,7 @@ impl PartialFileStorage {
                 )
             }
         } else {
-            (
-                MemOrFile::File((self.outboard, outboard_size)),
-                OutboardLocation::Owned,
-            )
+            (MemOrFile::File(self.outboard), OutboardLocation::Owned)
         };
         // todo: notify the store that the state has changed to complete
         Ok((
@@ -183,11 +167,6 @@ impl PartialFileStorage {
 
     fn add_observer(&mut self, observer: Observer<Bitfield>) {
         self.bitfield.add_observer(observer);
-    }
-
-    /// Split into data, outboard and sizes files.
-    pub fn into_parts(self) -> (File, File, File) {
-        (self.data, self.outboard, self.sizes)
     }
 
     fn current_size(&self) -> io::Result<u64> {
@@ -281,7 +260,7 @@ impl PartialMemStorage {
         hash: &Hash,
         ctx: &TaskContext,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
-        let size = self.size();
+        let size = self.current_size();
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
             let data: Bytes = self.data.to_vec().into();
@@ -291,7 +270,7 @@ impl PartialMemStorage {
             let mut data_file = create_read_write(&data_path)?;
             self.data.persist(&mut data_file)?;
             (
-                MemOrFile::File((data_file, size)),
+                MemOrFile::File(FixedSize::new(data_file, size)),
                 DataLocation::Owned(size),
             )
         };
@@ -310,10 +289,7 @@ impl PartialMemStorage {
             } else {
                 OutboardLocation::Owned
             };
-            (
-                MemOrFile::File((outboard_file, outboard_size)),
-                outboard_location,
-            )
+            (MemOrFile::File(outboard_file), outboard_location)
         };
         Ok((
             CompleteStorage { data, outboard },
@@ -556,8 +532,8 @@ impl BaoFileHandle {
     /// Create a new complete bao file handle.
     pub fn new_complete(
         hash: Hash,
-        data: MemOrFile<Bytes, (File, u64)>,
-        outboard: MemOrFile<Bytes, (File, u64)>,
+        data: MemOrFile<Bytes, FixedSize<File>>,
+        outboard: MemOrFile<Bytes, File>,
     ) -> Self {
         let storage = CompleteStorage { data, outboard }.into();
         Self(Arc::new(BaoFileHandleInner {
@@ -569,8 +545,8 @@ impl BaoFileHandle {
     /// Complete the handle
     pub fn complete(
         &self,
-        data: MemOrFile<Bytes, (File, u64)>,
-        outboard: MemOrFile<Bytes, (File, u64)>,
+        data: MemOrFile<Bytes, FixedSize<File>>,
+        outboard: MemOrFile<Bytes, File>,
     ) {
         let mut guard = self.storage.write().unwrap();
         let res = match guard.deref_mut() {
@@ -625,8 +601,8 @@ impl BaoFileHandle {
     /// The most precise known total size of the data file.
     pub fn current_size(&self) -> io::Result<u64> {
         match self.storage.read().unwrap().deref() {
-            Some(BaoFileStorage::Complete(mem)) => Ok(mem.data_size()),
-            Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.size()),
+            Some(BaoFileStorage::Complete(mem)) => Ok(mem.size()),
+            Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.current_size()),
             Some(BaoFileStorage::Partial(file)) => file.current_size(),
             None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
         }
@@ -719,373 +695,3 @@ impl PartialMemStorage {
         (self.data, self.outboard, self.size)
     }
 }
-
-// /// This is finally the thing for which we can implement BaoPairMut.
-// ///
-// /// It is a BaoFileHandle wrapped in an Option, so that we can take it out
-// /// in the future.
-// #[derive(Debug)]
-// pub struct BaoFileWriter(Option<BaoFileHandle>);
-
-// impl BaoBatchWriter for BaoFileWriter {
-//     async fn write_batch(&mut self, size: u64, batch: Vec<BaoContentItem>) -> std::io::Result<()> {
-//         let Some(handle) = self.0.take() else {
-//             return Err(io::Error::new(io::ErrorKind::Other, "deferred batch busy"));
-//         };
-//         let (handle, change) = tokio::task::spawn_blocking(move || {
-//             let change = handle.write_batch(size, &batch);
-//             (handle, change)
-//         })
-//         .await
-//         .expect("spawn_blocking failed");
-//         match change? {
-//             HandleChange::None => {}
-//             HandleChange::MemToFile => {
-//                 if let Some(cb) = handle.config.on_file_create.as_ref() {
-//                     cb(&handle.hash)?;
-//                 }
-//             }
-//         }
-//         self.0 = Some(handle);
-//         Ok(())
-//     }
-
-//     async fn sync(&mut self) -> io::Result<()> {
-//         let Some(handle) = self.0.take() else {
-//             return Err(io::Error::new(io::ErrorKind::Other, "deferred batch busy"));
-//         };
-//         let (handle, res) = tokio::task::spawn_blocking(move || {
-//             let res = handle.storage.write().unwrap().sync_all();
-//             (handle, res)
-//         })
-//         .await
-//         .expect("spawn_blocking failed");
-//         self.0 = Some(handle);
-//         res
-//     }
-// }
-
-// #[cfg(test)]
-// pub mod test_support {
-//     use std::{future::Future, io::Cursor, ops::Range};
-
-//     use bao_tree::{
-//         io::{
-//             fsm::{ResponseDecoder, ResponseDecoderNext},
-//             outboard::PostOrderMemOutboard,
-//             round_up_to_chunks,
-//             sync::encode_ranges_validated,
-//         },
-//         BlockSize, ChunkRanges,
-//     };
-//     use futures_lite::{Stream, StreamExt};
-//     use iroh_io::AsyncStreamReader;
-//     use rand::RngCore;
-//     use range_collections::RangeSet2;
-
-//     use super::*;
-//     use crate::util::limited_range;
-
-//     pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4);
-
-//     /// Decode a response into a batch file writer.
-//     pub async fn decode_response_into_batch<R, W>(
-//         root: Hash,
-//         block_size: BlockSize,
-//         ranges: ChunkRanges,
-//         mut encoded: R,
-//         mut target: W,
-//     ) -> io::Result<()>
-//     where
-//         R: AsyncStreamReader,
-//         W: BaoBatchWriter,
-//     {
-//         let size = encoded.read::<8>().await?;
-//         let size = u64::from_le_bytes(size);
-//         let mut reading =
-//             ResponseDecoder::new(root.into(), ranges, BaoTree::new(size, block_size), encoded);
-//         let mut stack = Vec::new();
-//         loop {
-//             let item = match reading.next().await {
-//                 ResponseDecoderNext::Done(_reader) => break,
-//                 ResponseDecoderNext::More((next, item)) => {
-//                     reading = next;
-//                     item?
-//                 }
-//             };
-//             match item {
-//                 BaoContentItem::Parent(_) => {
-//                     stack.push(item);
-//                 }
-//                 BaoContentItem::Leaf(_) => {
-//                     // write a batch every time we see a leaf
-//                     // the last item will be a leaf.
-//                     stack.push(item);
-//                     target.write_batch(size, std::mem::take(&mut stack)).await?;
-//                 }
-//             }
-//         }
-//         assert!(stack.is_empty(), "last item should be a leaf");
-//         Ok(())
-//     }
-
-//     pub fn random_test_data(size: usize) -> Vec<u8> {
-//         let mut rand = rand::thread_rng();
-//         let mut res = vec![0u8; size];
-//         rand.fill_bytes(&mut res);
-//         res
-//     }
-
-//     /// Take some data and encode it
-//     pub fn simulate_remote(data: &[u8]) -> (Hash, Cursor<Bytes>) {
-//         let outboard = bao_tree::io::outboard::PostOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
-//         let size = data.len() as u64;
-//         let mut encoded = size.to_le_bytes().to_vec();
-//         bao_tree::io::sync::encode_ranges_validated(
-//             data,
-//             &outboard,
-//             &ChunkRanges::all(),
-//             &mut encoded,
-//         )
-//         .unwrap();
-//         let hash = outboard.root;
-//         (hash.into(), Cursor::new(encoded.into()))
-//     }
-
-//     pub fn to_ranges(ranges: &[Range<u64>]) -> RangeSet2<u64> {
-//         let mut range_set = RangeSet2::empty();
-//         for range in ranges.as_ref().iter().cloned() {
-//             range_set |= RangeSet2::from(range);
-//         }
-//         range_set
-//     }
-
-//     /// Simulate the send side, when asked to send bao encoded data for the given ranges.
-//     pub fn make_wire_data(
-//         data: &[u8],
-//         ranges: impl AsRef<[Range<u64>]>,
-//     ) -> (Hash, ChunkRanges, Vec<u8>) {
-//         // compute a range set from the given ranges
-//         let range_set = to_ranges(ranges.as_ref());
-//         // round up to chunks
-//         let chunk_ranges = round_up_to_chunks(&range_set);
-//         // compute the outboard
-//         let outboard = PostOrderMemOutboard::create(data, IROH_BLOCK_SIZE).flip();
-//         let size = data.len() as u64;
-//         let mut encoded = size.to_le_bytes().to_vec();
-//         encode_ranges_validated(data, &outboard, &chunk_ranges, &mut encoded).unwrap();
-//         (outboard.root.into(), chunk_ranges, encoded)
-//     }
-
-//     pub async fn validate(handle: &BaoFileHandle, original: &[u8], ranges: &[Range<u64>]) {
-//         let mut r = handle.data_reader();
-//         for range in ranges {
-//             let start = range.start;
-//             let len = (range.end - range.start).try_into().unwrap();
-//             let data = &original[limited_range(start, len, original.len())];
-//             let read = r.read_at(start, len).await.unwrap();
-//             assert_eq!(data.len(), read.as_ref().len());
-//             assert_eq!(data, read.as_ref());
-//         }
-//     }
-
-//     /// Helper to simulate a slow request.
-//     pub fn trickle(
-//         data: &[u8],
-//         mtu: usize,
-//         delay: std::time::Duration,
-//     ) -> impl Stream<Item = Bytes> {
-//         let parts = data
-//             .chunks(mtu)
-//             .map(Bytes::copy_from_slice)
-//             .collect::<Vec<_>>();
-//         futures_lite::stream::iter(parts).then(move |part| async move {
-//             tokio::time::sleep(delay).await;
-//             part
-//         })
-//     }
-
-//     pub async fn local<F>(f: F) -> F::Output
-//     where
-//         F: Future,
-//     {
-//         tokio::task::LocalSet::new().run_until(f).await
-//     }
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use std::io::Write;
-
-//     use bao_tree::{blake3, ChunkNum, ChunkRanges};
-//     use futures_lite::StreamExt;
-//     use iroh_io::TokioStreamReader;
-//     use tests::test_support::{
-//         decode_response_into_batch, local, make_wire_data, random_test_data, trickle, validate,
-//     };
-//     use tokio::task::JoinSet;
-
-//     use super::*;
-//     use crate::util::local_pool::LocalPool;
-
-//     #[tokio::test]
-//     async fn partial_downloads() {
-//         local(async move {
-//             let n = 1024 * 64u64;
-//             let test_data = random_test_data(n as usize);
-//             let temp_dir = tempfile::tempdir().unwrap();
-//             let hash = blake3::hash(&test_data);
-//             let handle = BaoFileHandle::incomplete_mem(
-//                 Arc::new(BaoFileConfig::new(
-//                     Arc::new(temp_dir.as_ref().to_owned()),
-//                     1024 * 16,
-//                     None,
-//                 )),
-//                 hash.into(),
-//             );
-//             let mut tasks = JoinSet::new();
-//             for i in 1..3 {
-//                 let file = handle.writer();
-//                 let range = (i * (n / 4))..((i + 1) * (n / 4));
-//                 println!("range: {:?}", range);
-//                 let (hash, chunk_ranges, wire_data) = make_wire_data(&test_data, &[range]);
-//                 let trickle = trickle(&wire_data, 1200, std::time::Duration::from_millis(10))
-//                     .map(io::Result::Ok)
-//                     .boxed();
-//                 let trickle = TokioStreamReader::new(tokio_util::io::StreamReader::new(trickle));
-//                 let _task = tasks.spawn_local(async move {
-//                     decode_response_into_batch(hash, IROH_BLOCK_SIZE, chunk_ranges, trickle, file)
-//                         .await
-//                 });
-//             }
-//             while let Some(res) = tasks.join_next().await {
-//                 res.unwrap().unwrap();
-//             }
-//             println!(
-//                 "len {:?} {:?}",
-//                 handle,
-//                 handle.data_reader().size().await.unwrap()
-//             );
-//             #[allow(clippy::single_range_in_vec_init)]
-//             let ranges = [1024 * 16..1024 * 48];
-//             validate(&handle, &test_data, &ranges).await;
-
-//             // let ranges =
-//             // let full_chunks = bao_tree::io::full_chunk_groups();
-//             let mut encoded = Vec::new();
-//             let ob = handle.outboard().unwrap();
-//             encoded
-//                 .write_all(ob.tree.size().to_le_bytes().as_slice())
-//                 .unwrap();
-//             bao_tree::io::fsm::encode_ranges_validated(
-//                 handle.data_reader(),
-//                 ob,
-//                 &ChunkRanges::from(ChunkNum(16)..ChunkNum(48)),
-//                 encoded,
-//             )
-//             .await
-//             .unwrap();
-//         })
-//         .await;
-//     }
-
-//     #[tokio::test]
-//     async fn concurrent_downloads() {
-//         let n = 1024 * 32u64;
-//         let test_data = random_test_data(n as usize);
-//         let temp_dir = tempfile::tempdir().unwrap();
-//         let hash = blake3::hash(&test_data);
-//         let handle = BaoFileHandle::incomplete_mem(
-//             Arc::new(BaoFileConfig::new(
-//                 Arc::new(temp_dir.as_ref().to_owned()),
-//                 1024 * 16,
-//                 None,
-//             )),
-//             hash.into(),
-//         );
-//         let local = LocalPool::default();
-//         let mut tasks = Vec::new();
-//         for i in 0..4 {
-//             let file = handle.writer();
-//             let range = (i * (n / 4))..((i + 1) * (n / 4));
-//             println!("range: {:?}", range);
-//             let (hash, chunk_ranges, wire_data) = make_wire_data(&test_data, &[range]);
-//             let trickle = trickle(&wire_data, 1200, std::time::Duration::from_millis(10))
-//                 .map(io::Result::Ok)
-//                 .boxed();
-//             let trickle = TokioStreamReader::new(tokio_util::io::StreamReader::new(trickle));
-//             let task = local.spawn(move || async move {
-//                 decode_response_into_batch(hash, IROH_BLOCK_SIZE, chunk_ranges, trickle, file).await
-//             });
-//             tasks.push(task);
-//         }
-//         for task in tasks {
-//             task.await.unwrap().unwrap();
-//         }
-//         println!(
-//             "len {:?} {:?}",
-//             handle,
-//             handle.data_reader().size().await.unwrap()
-//         );
-//         #[allow(clippy::single_range_in_vec_init)]
-//         let ranges = [0..n];
-//         validate(&handle, &test_data, &ranges).await;
-
-//         let mut encoded = Vec::new();
-//         let ob = handle.outboard().unwrap();
-//         encoded
-//             .write_all(ob.tree.size().to_le_bytes().as_slice())
-//             .unwrap();
-//         bao_tree::io::fsm::encode_ranges_validated(
-//             handle.data_reader(),
-//             ob,
-//             &ChunkRanges::all(),
-//             encoded,
-//         )
-//         .await
-//         .unwrap();
-//     }
-
-//     #[tokio::test]
-//     async fn stay_in_mem() {
-//         let test_data = random_test_data(1024 * 17);
-//         #[allow(clippy::single_range_in_vec_init)]
-//         let ranges = [0..test_data.len().try_into().unwrap()];
-//         let (hash, chunk_ranges, wire_data) = make_wire_data(&test_data, &ranges);
-//         println!("file len is {:?}", chunk_ranges);
-//         let temp_dir = tempfile::tempdir().unwrap();
-//         let handle = BaoFileHandle::incomplete_mem(
-//             Arc::new(BaoFileConfig::new(
-//                 Arc::new(temp_dir.as_ref().to_owned()),
-//                 1024 * 16,
-//                 None,
-//             )),
-//             hash,
-//         );
-//         decode_response_into_batch(
-//             hash,
-//             IROH_BLOCK_SIZE,
-//             chunk_ranges,
-//             wire_data.as_slice(),
-//             handle.writer(),
-//         )
-//         .await
-//         .unwrap();
-//         validate(&handle, &test_data, &ranges).await;
-
-//         let mut encoded = Vec::new();
-//         let ob = handle.outboard().unwrap();
-//         encoded
-//             .write_all(ob.tree.size().to_le_bytes().as_slice())
-//             .unwrap();
-//         bao_tree::io::fsm::encode_ranges_validated(
-//             handle.data_reader(),
-//             ob,
-//             &ChunkRanges::all(),
-//             encoded,
-//         )
-//         .await
-//         .unwrap();
-//         println!("{:?}", handle);
-//     }
-// }

@@ -30,6 +30,11 @@ pub struct ImportBao {
     pub out: oneshot::Sender<anyhow::Result<()>>,
 }
 
+#[derive(Debug)]
+pub struct Shutdown {
+    pub tx: oneshot::Sender<()>,
+}
+
 /// Observe the bitfield of the given hash.
 #[derive(Debug)]
 pub struct Observe {
@@ -124,6 +129,7 @@ pub enum Command {
     SetTag(SetTag),
     CreateTag(CreateTag),
     SyncDb(SyncDb),
+    Shutdown(Shutdown),
 }
 
 #[derive(Debug)]

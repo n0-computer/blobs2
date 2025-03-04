@@ -1,5 +1,10 @@
 //! The metadata database
-use std::{io, path::PathBuf, time::SystemTime};
+use std::{
+    io,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    time::SystemTime,
+};
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
@@ -9,13 +14,13 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
-use tracing::trace;
+use tracing::{info, trace};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
     util::PeekableReceiver,
 };
-use crate::{util::Tag, Hash, IROH_BLOCK_SIZE};
+use crate::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
 
 /// Error type for message handler functions of the redb actor.
 ///
@@ -343,19 +348,31 @@ impl Actor {
         Ok(())
     }
 
-    fn handle_toplevel(db: &mut Database, cmd: TopLevelCommand) -> ActorResult<()> {
-        match cmd {
-            TopLevelCommand::SyncDb(cmd) => Self::sync_db(db, cmd),
-        }
+    fn handle_toplevel(db: &mut Database, cmd: TopLevelCommand) -> ActorResult<Option<Shutdown>> {
+        Ok(match cmd {
+            TopLevelCommand::SyncDb(cmd) => {
+                Self::sync_db(db, cmd)?;
+                None
+            }
+            TopLevelCommand::Shutdown(cmd) => {
+                // nothing to do here, since the database will be dropped
+                Some(cmd)
+            }
+        })
     }
 
     pub async fn run(mut self) -> ActorResult<()> {
-        let mut db = self.db;
-        while let Some(cmd) = self.cmds.recv().await {
+        let mut db = DbWrapper::from(self.db);
+        let shutdown = loop {
+            let Some(cmd) = self.cmds.recv().await else {
+                break None;
+            };
             trace!("{cmd:?}");
             match cmd {
                 Command::TopLevel(cmd) => {
-                    Self::handle_toplevel(&mut db, cmd)?;
+                    if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd)? {
+                        break Some(shutdown);
+                    }
                 }
                 Command::ReadOnly(cmd) => {
                     let tx = db.begin_read()?;
@@ -371,8 +388,45 @@ impl Actor {
                     tx.commit()?;
                 }
             }
+        };
+        if let Some(shutdown) = shutdown {
+            drop(db);
+            shutdown.tx.send(()).ok();
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct DbWrapper(Option<Database>);
+
+impl Deref for DbWrapper {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("database not open")
+    }
+}
+
+impl DerefMut for DbWrapper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("database not open")
+    }
+}
+
+impl From<Database> for DbWrapper {
+    fn from(db: Database) -> Self {
+        Self(Some(db))
+    }
+}
+
+impl Drop for DbWrapper {
+    fn drop(&mut self) {
+        if let Some(db) = self.0.take() {
+            info!("closing database");
+            drop(db);
+            info!("database closed");
+        }
     }
 }
 

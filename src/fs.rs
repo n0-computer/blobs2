@@ -66,11 +66,11 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use crate::{
     bitfield::is_validated,
-    util::{MemOrFile, SenderProgressExt},
+    util::{FixedSize, MemOrFile, SenderProgressExt},
     Hash,
 };
 mod bao_file;
@@ -130,7 +130,7 @@ struct Actor {
     // handles
     handles: HashMap<Hash, Slot>,
     // our private tokio runtime. It has to live somewhere.
-    rt: Option<tokio::runtime::Runtime>,
+    rt: RtWrapper,
 }
 
 /// Wraps a slot and the task context.
@@ -210,14 +210,14 @@ fn open_bao_file(
                 DataLocation::Owned(size) => {
                     let path = options.path.owned_data_path(&hash);
                     let file = fs::File::open(&path)?;
-                    MemOrFile::File((file, size))
+                    MemOrFile::File(FixedSize::new(file, size))
                 }
                 DataLocation::External(paths, size) => {
                     let Some(path) = paths.into_iter().next() else {
                         anyhow::bail!("no external data path");
                     };
                     let file = fs::File::open(&path)?;
-                    MemOrFile::File((file, size))
+                    MemOrFile::File(FixedSize::new(file, size))
                 }
             };
             let outboard = match outboard_location {
@@ -226,8 +226,7 @@ fn open_bao_file(
                 OutboardLocation::Owned => {
                     let path = options.path.owned_outboard_path(hash);
                     let file = fs::File::open(&path)?;
-                    let size = file.metadata()?.len();
-                    MemOrFile::File((file, size))
+                    MemOrFile::File(file)
                 }
             };
             BaoFileHandle::new_complete(*hash, data, outboard)
@@ -283,6 +282,9 @@ impl Actor {
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::SyncDb(cmd) => {
+                self.db().send(cmd.into()).await.ok();
+            }
+            Command::Shutdown(cmd) => {
                 self.db().send(cmd.into()).await.ok();
             }
             Command::CreateTag(cmd) => {
@@ -381,7 +383,7 @@ impl Actor {
 
     async fn new(
         db_path: PathBuf,
-        rt: tokio::runtime::Runtime,
+        rt: RtWrapper,
         cmd_rx: mpsc::Receiver<Command>,
         fs_commands_rx: mpsc::Receiver<InternalCommand>,
         fs_commands_tx: mpsc::Sender<InternalCommand>,
@@ -417,15 +419,34 @@ impl Actor {
             fs_cmd_rx: fs_commands_rx,
             tasks: JoinSet::new(),
             handles: Default::default(),
-            rt: Some(rt),
+            rt,
         })
     }
 }
 
-impl Drop for Actor {
+#[derive(Debug)]
+struct RtWrapper(Option<tokio::runtime::Runtime>);
+
+impl From<tokio::runtime::Runtime> for RtWrapper {
+    fn from(rt: tokio::runtime::Runtime) -> Self {
+        Self(Some(rt))
+    }
+}
+
+impl Deref for RtWrapper {
+    type Target = tokio::runtime::Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl Drop for RtWrapper {
     fn drop(&mut self) {
-        if let Some(rt) = self.rt.take() {
-            rt.shutdown_background();
+        if let Some(rt) = self.0.take() {
+            tokio::task::block_in_place(|| {
+                drop(rt);
+            });
         }
     }
 }
@@ -500,14 +521,14 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             DataLocation::Owned(size) => {
                 let path = ctx.options().path.owned_data_path(&hash);
                 let file = fs::File::open(&path)?;
-                MemOrFile::File((file, *size))
+                MemOrFile::File(FixedSize::new(file, *size))
             }
             DataLocation::External(paths, size) => {
                 let Some(path) = paths.into_iter().next() else {
                     anyhow::bail!("no external data path");
                 };
                 let file = fs::File::open(&path)?;
-                MemOrFile::File((file, *size))
+                MemOrFile::File(FixedSize::new(file, *size))
             }
         };
         let outboard = match &outboard_location {
@@ -516,8 +537,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             OutboardLocation::Owned => {
                 let path = ctx.options().path.owned_outboard_path(&hash);
                 let file = fs::File::open(&path)?;
-                let size = file.metadata()?.len();
-                MemOrFile::File((file, size))
+                MemOrFile::File(file)
             }
         };
         handle.complete(data, outboard);
@@ -593,6 +613,8 @@ async fn observe_task(cmd: Observe, ctx: HashContext) {
     handle.add_observer(cmd.out);
     // this keeps the handle alive until the observer is dropped
     receiver_dropped.await;
+    // give the handle a chance to clean up the dropped observer
+    handle.observer_dropped();
 }
 
 async fn export_bao_task(cmd: ExportBao, ctx: HashContext) {
@@ -651,9 +673,9 @@ async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Res
         };
         match &complete.data {
             MemOrFile::Mem(data) => MemOrFile::Mem(data.clone()),
-            MemOrFile::File((file, size)) => {
+            MemOrFile::File(file) => {
                 let file = file.try_clone()?;
-                MemOrFile::File((file, *size))
+                MemOrFile::File(file)
             }
         }
     };
@@ -662,7 +684,8 @@ async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Res
         MemOrFile::Mem(data) => {
             target.write_all(&data)?;
         }
-        MemOrFile::File((file, size)) => {
+        MemOrFile::File(file) => {
+            let size = file.size;
             let mut offset = 0;
             let mut buf = vec![0u8; 1024 * 1024];
             while offset < size {
@@ -711,7 +734,7 @@ impl Store {
         let actor = handle
             .spawn(Actor::new(
                 path.join("blobs.db"),
-                rt,
+                rt.into(),
                 commands_rx,
                 fs_commands_rx,
                 fs_commands_tx.clone(),
@@ -833,6 +856,48 @@ mod tests {
                     break;
                 }
             }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persistence_smoke() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [
+            0,
+            1,
+            1024,
+            1024 * 16 - 1,
+            1024 * 16,
+            1024 * 16 + 1,
+            1024 * 1024,
+            1024 * 1024 * 8,
+        ];
+        let db_dir = testdir.path().join("db");
+        let options = Options::new(&db_dir);
+        {
+            let store = Store::load_redb_with_opts(db_dir.clone(), options.clone()).await?;
+            for size in sizes {
+                let data = vec![0u8; size];
+                let data = Bytes::from(data);
+                store.import_bytes(data.clone()).await?;
+            }
+            store.shutdown().await?;
+        }
+        {
+            let store = Store::load_redb_with_opts(db_dir, options).await?;
+            for size in sizes {
+                let expected = vec![0u8; size];
+                let hash = blake3::hash(&expected);
+                let actual = store
+                    .export_bao(hash, ChunkRanges::all())
+                    .data_to_vec()
+                    .await?;
+                info!("len={}", actual.len());
+                assert_eq!(&expected, &actual);
+            }
+            store.shutdown().await?;
         }
         Ok(())
     }

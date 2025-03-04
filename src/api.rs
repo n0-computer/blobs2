@@ -74,7 +74,7 @@ impl Store {
     ///
     /// Once a blob is complete, there will be no more updates.
     pub fn observe(&self, hash: Hash) -> ObserveResult {
-        if hash.as_bytes() == &crate::bitfield::EMPTY_HASH {
+        if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.try_send(Bitfield::complete(0)).ok();
             return ObserveResult { receiver: rx };
@@ -118,7 +118,7 @@ impl Store {
         let size = u64::from_le_bytes(stream.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
             // todo: drain stream here?
-            if hash == crate::bitfield::EMPTY_HASH {
+            if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
                 return Ok(());
             } else {
                 return Err(anyhow::anyhow!("invalid size for hash"));
@@ -183,6 +183,13 @@ impl Store {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.sender.send(SyncDb { tx }.into()).await?;
         rx.await??;
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender.send(Shutdown { tx }.into()).await?;
+        rx.await?;
         Ok(())
     }
 }

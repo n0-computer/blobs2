@@ -6,6 +6,36 @@ use std::{
 use bao_tree::io::sync::{ReadAt, Size};
 use bytes::Bytes;
 
+#[derive(Debug)]
+pub struct FixedSize<T> {
+    file: T,
+    pub size: u64,
+}
+
+impl<T> FixedSize<T> {
+    pub fn new(file: T, size: u64) -> Self {
+        Self { file, size }
+    }
+}
+
+impl FixedSize<File> {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self::new(self.file.try_clone()?, self.size))
+    }
+}
+
+impl<T: ReadAt> ReadAt for FixedSize<T> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.file.read_at(offset, buf)
+    }
+}
+
+impl<T> Size for FixedSize<T> {
+    fn size(&self) -> io::Result<Option<u64>> {
+        Ok(Some(self.size))
+    }
+}
+
 /// This is a general purpose Either, just like Result, except that the two cases
 /// are Mem for something that is in memory, and File for something that is somewhere
 /// external and only available via io.
@@ -17,17 +47,11 @@ pub enum MemOrFile<M, F> {
     File(F),
 }
 
-/// Helper methods for a common way to use MemOrFile, where the memory part is something
-/// like a slice, and the file part is a tuple consisiting of path or file and size.
-impl<M, F> MemOrFile<M, (F, u64)>
-where
-    M: AsRef<[u8]>,
-{
-    /// Get the size of the MemOrFile
+impl<T> MemOrFile<Bytes, FixedSize<T>> {
     pub fn size(&self) -> u64 {
         match self {
-            MemOrFile::Mem(mem) => mem.as_ref().len() as u64,
-            MemOrFile::File((_, size)) => *size,
+            MemOrFile::Mem(mem) => mem.len() as u64,
+            MemOrFile::File(file) => file.size,
         }
     }
 }
@@ -50,7 +74,7 @@ impl<A: Seek, B: Seek> Seek for MemOrFile<A, B> {
     }
 }
 
-impl ReadAt for MemOrFile<Bytes, File> {
+impl<A: AsRef<[u8]>, B: ReadAt> ReadAt for MemOrFile<A, B> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             MemOrFile::Mem(mem) => mem.as_ref().read_at(offset, buf),
@@ -59,19 +83,10 @@ impl ReadAt for MemOrFile<Bytes, File> {
     }
 }
 
-impl ReadAt for MemOrFile<Bytes, (File, u64)> {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            MemOrFile::Mem(mem) => mem.as_ref().read_at(offset, buf),
-            MemOrFile::File((file, _)) => file.read_at(offset, buf),
-        }
-    }
-}
-
-impl Size for MemOrFile<Bytes, File> {
+impl<A: Size, B: Size> Size for MemOrFile<A, B> {
     fn size(&self) -> io::Result<Option<u64>> {
         match self {
-            MemOrFile::Mem(mem) => Ok(Some(mem.len() as u64)),
+            MemOrFile::Mem(mem) => mem.size(),
             MemOrFile::File(file) => file.size(),
         }
     }

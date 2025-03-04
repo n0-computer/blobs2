@@ -5,7 +5,8 @@ use derive_more::{From, Into};
 
 mod mem_or_file;
 mod sparse_mem_file;
-pub use mem_or_file::MemOrFile;
+pub use mem_or_file::{FixedSize, MemOrFile};
+use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 pub use sparse_mem_file::SparseMemFile;
 use tokio::sync::mpsc;
 pub mod observer;
@@ -176,5 +177,23 @@ impl<R: std::io::Read, F: Fn(u64) -> std::io::Result<()>> std::io::Read for Prog
         self.offset += read as u64;
         (self.cb)(self.offset)?;
         Ok(read)
+    }
+}
+
+pub trait RangeSetExt<T> {
+    fn upper_bound(&self) -> Option<T>;
+}
+
+impl<T: RangeSetEntry + Clone> RangeSetExt<T> for RangeSetRef<T> {
+    /// The upper (exclusive) bound of the bitfield
+    fn upper_bound(&self) -> Option<T> {
+        let boundaries = self.boundaries();
+        if boundaries.is_empty() {
+            Some(RangeSetEntry::min_value())
+        } else if boundaries.len() % 2 == 0 {
+            Some(boundaries[boundaries.len() - 1].clone())
+        } else {
+            None
+        }
     }
 }

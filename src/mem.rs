@@ -101,7 +101,7 @@ struct Actor {
 }
 
 impl Actor {
-    fn handle_command(&mut self, cmd: Command) {
+    fn handle_command(&mut self, cmd: Command) -> Option<Shutdown> {
         match cmd {
             Command::ImportBao(ImportBao {
                 hash,
@@ -165,7 +165,11 @@ impl Actor {
             Command::SyncDb(SyncDb { tx }) => {
                 tx.send(Ok(())).ok();
             }
+            Command::Shutdown(cmd) => {
+                return Some(cmd);
+            }
         }
+        None
     }
 
     fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
@@ -204,15 +208,17 @@ impl Actor {
     }
 
     pub async fn run(mut self) {
-        loop {
+        let shutdown = loop {
             tokio::select! {
                 cmd = self.commands.recv() => {
                     let Some(cmd) = cmd else {
                         // last sender has been dropped.
                         // exit immediately.
-                        break;
+                        break None;
                     };
-                    self.handle_command(cmd);
+                    if let Some(cmd) = self.handle_command(cmd) {
+                        break Some(cmd);
+                    }
                 }
                 Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
                     self.finish_import(res);
@@ -221,6 +227,9 @@ impl Actor {
                     self.log_unit_task(res);
                 }
             }
+        };
+        if let Some(shutdown) = shutdown {
+            let _ = shutdown.tx.send(());
         }
     }
 }
@@ -494,7 +503,7 @@ impl Entry {
 
     fn size(&self) -> u64 {
         match self {
-            Self::Partial(entry) => entry.size(),
+            Self::Partial(entry) => entry.current_size(),
             Self::Complete(entry) => entry.size(),
         }
     }
@@ -530,7 +539,7 @@ impl PartialMemStorage {
         self.bitfield.update(update);
     }
 
-    pub fn size(&self) -> u64 {
+    pub fn current_size(&self) -> u64 {
         self.bitfield.state().size
     }
 

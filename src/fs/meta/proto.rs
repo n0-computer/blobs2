@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
 pub use crate::proto::SyncDb;
-use crate::{fs::entry_state::EntryState, util::Tag, Hash, HashAndFormat};
+use crate::{fs::entry_state::EntryState, proto::Shutdown, util::Tag, Hash, HashAndFormat};
 
 /// Get the entry state for a hash.
 ///
@@ -99,6 +99,7 @@ pub enum ReadWriteCommand {
 #[enum_conversions(Command)]
 pub enum TopLevelCommand {
     SyncDb(SyncDb),
+    Shutdown(Shutdown),
 }
 
 #[derive(Debug)]
