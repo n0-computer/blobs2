@@ -4,9 +4,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::hash::DD;
-
 use super::meta::{ActorError, ActorResult};
+use crate::hash::DD;
 
 /// Location of the data.
 ///

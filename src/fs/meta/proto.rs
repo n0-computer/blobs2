@@ -8,9 +8,10 @@ use redb::{AccessGuard, StorageError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
-use crate::hash::DD;
 pub use crate::proto::SyncDb;
-use crate::{fs::entry_state::EntryState, proto::Shutdown, util::Tag, Hash, HashAndFormat};
+use crate::{
+    fs::entry_state::EntryState, hash::DD, proto::Shutdown, util::Tag, Hash, HashAndFormat,
+};
 
 /// Get the entry state for a hash.
 ///
