@@ -114,7 +114,6 @@ impl std::fmt::Debug for ImportByteStream {
     }
 }
 
-#[derive(Debug)]
 pub struct ImportPath {
     pub path: PathBuf,
     pub mode: ImportMode,
@@ -122,28 +121,62 @@ pub struct ImportPath {
     pub out: mpsc::Sender<ImportProgress>,
 }
 
-#[derive(derive_more::Debug)]
+impl fmt::Debug for ImportPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportPath")
+            .field("path", &self.path)
+            .field("mode", &self.mode)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct Tags {
-    #[debug(skip)]
     pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
 }
 
-#[derive(derive_more::Debug)]
+impl fmt::Debug for Tags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tags").finish_non_exhaustive()
+    }
+}
+
 pub struct SetTag {
     pub tag: Tag,
     pub value: Option<HashAndFormat>,
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for SetTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetTag")
+            .field("tag", &self.tag)
+            .field("value", &self.value)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct CreateTag {
     pub hash: HashAndFormat,
     pub tx: oneshot::Sender<anyhow::Result<Tag>>,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for CreateTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateTag")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct SyncDb {
     pub tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
+impl fmt::Debug for SyncDb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SyncDb").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, derive_more::From)]
