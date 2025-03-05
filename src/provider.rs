@@ -182,15 +182,35 @@ async fn handle_stream(store: Store, reader: RecvStream, writer: SendStream) -> 
 /// Handle a single get request.
 ///
 /// Requires the request, a database, and a writer.
-pub async fn handle_get(store: Store, request: GetRequest, writer: SendStream) -> Result<()> {
+pub async fn handle_get(store: Store, request: GetRequest, mut writer: SendStream) -> Result<()> {
     let hash = request.hash;
     debug!(%hash, "received request");
 
-    if let Some((0, ranges)) = request.ranges.as_single() {
-        let ranges = ranges.to_chunk_ranges();
-        send_blob(store, hash, ranges, writer).await?;
-    } else {
-        todo!();
+    let mut hash_seq = None;
+    for (offset, ranges) in request.ranges.iter_non_empty() {
+        if offset == 0 {
+            send_blob(&store, hash, ranges.to_chunk_ranges(), &mut writer).await?;
+        } else {
+            let hash_seq = match &hash_seq {
+                Some(b) => b,
+                None => {
+                    hash_seq = Some(store.export_bytes(hash).await?);
+                    hash_seq.as_ref().unwrap()
+                }
+            };
+            let size = hash_seq.len();
+            if size % 32 != 0 {
+                anyhow::bail!("hash sequence size is not a multiple of 32");
+            }
+            let n = size / 32;
+            let o = usize::try_from(offset - 1).context("offset too large")?;
+            if o >= n {
+                break;
+            }
+            let range = o * 32..(o + 1) * 32;
+            let hash = Hash::from_bytes(hash_seq[range].try_into().unwrap());
+            send_blob(&store, hash, ranges.to_chunk_ranges(), &mut writer).await?;
+        }
     }
 
     Ok(())
@@ -224,13 +244,15 @@ pub enum SentStatus {
 
 /// Send a blob to the client.
 pub async fn send_blob(
-    store: Store,
+    store: &Store,
     hash: Hash,
     ranges: ChunkRanges,
-    mut writer: SendStream,
+    writer: &mut SendStream,
 ) -> io::Result<()> {
-    let res = store.export_bao(hash.into(), ranges);
-    res.write_quinn(&mut writer).await
+    store
+        .export_bao(hash.into(), ranges)
+        .write_quinn(writer)
+        .await
 }
 
 fn encode_error_to_anyhow(err: EncodeError, hash: &Hash) -> anyhow::Error {

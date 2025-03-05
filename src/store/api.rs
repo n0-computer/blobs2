@@ -3,6 +3,7 @@ use std::{
     future::Future,
     io,
     num::NonZeroU64,
+    ops::{Bound, RangeBounds},
     path::Path,
     pin::Pin,
     task::{Context, Poll},
@@ -13,13 +14,14 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        EncodeError,
+        round_up_to_chunks, EncodeError,
     },
-    BaoTree, ChunkRanges,
+    BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
+use range_collections::RangeSet2;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
@@ -89,6 +91,43 @@ impl Store {
             .try_send(ExportBao { hash, ranges, tx }.into())
             .ok();
         ExportBaoResult { rx }
+    }
+
+    pub async fn export_range(
+        &self,
+        hash: Hash,
+        range: impl RangeBounds<u64>,
+    ) -> anyhow::Result<Bytes> {
+        todo!("this does not properly deal with ranges outside of the blob");
+        let lb = match range.start_bound() {
+            Bound::Included(x) => *x,
+            Bound::Excluded(x) => x + 1,
+            Bound::Unbounded => 0,
+        };
+        let ub = match range.end_bound() {
+            Bound::Included(x) => Some(x + 1),
+            Bound::Excluded(x) => Some(*x),
+            Bound::Unbounded => None,
+        };
+        let len = ub.map(|ub| ub - lb).map(usize::try_from).transpose()?;
+        let lbc = ChunkNum::full_chunks(lb);
+        let ubc = ub.map(ChunkNum::chunks);
+        let chunks = match ubc {
+            Some(ubc) => ChunkRanges::from(lbc..ubc),
+            None => ChunkRanges::from(lbc..),
+        };
+        let start = (lb - lbc.to_bytes()) as usize;
+        let data = self.export_bao(hash, chunks).data_to_bytes().await?;
+        anyhow::ensure!(data.len() >= start, "range out of bounds");
+        let bytes = match len {
+            Some(len) => {
+                let end = start + len;
+                anyhow::ensure!(data.len() >= end, "range out of bounds");
+                data.slice(start..end)
+            }
+            None => data.slice(start..),
+        };
+        Ok(bytes)
     }
 
     /// Helper to just export the entire blob into a Bytes

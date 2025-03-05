@@ -819,7 +819,7 @@ impl DbStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use core::panic;
     use std::{collections::HashMap, io::Read, u64};
 
@@ -840,7 +840,7 @@ mod tests {
     };
 
     /// Interesting sizes for testing.
-    const INTERESTING_SIZES: [usize; 8] = [
+    pub const INTERESTING_SIZES: [usize; 8] = [
         0,               // annoying corner case - always present, handled by the api
         1,               // less than 1 chunk, data inline, outboard not needed
         1024,            // exactly 1 chunk, data inline, outboard not needed
@@ -939,7 +939,7 @@ mod tests {
     /// We don't really care about the content, since we assume blake3 works.
     /// The only thing it should not be is all zeros, since that is what you
     /// will get for a gap.
-    fn test_data(n: usize) -> Bytes {
+    pub fn test_data(n: usize) -> Bytes {
         vec![1u8; n].into()
     }
 

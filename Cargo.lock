@@ -276,6 +276,7 @@ dependencies = [
  "data-encoding",
  "derive_more 2.0.1",
  "futures-lite",
+ "genawaiter",
  "hex",
  "iroh",
  "iroh-io",

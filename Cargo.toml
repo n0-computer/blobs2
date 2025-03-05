@@ -30,6 +30,7 @@ ref-cast = "1.0.24"
 arrayvec = "0.7.6"
 iroh = "0.33.0"
 self_cell = "1.1.0"
+genawaiter = { version = "0.99.1", features = ["futures03"] }
 
 [dev-dependencies]
 hex = "0.4.3"

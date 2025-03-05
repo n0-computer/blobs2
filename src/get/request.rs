@@ -1,9 +1,17 @@
 //! Utilities for complex get requests.
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
-use bao_tree::{ChunkNum, ChunkRanges};
+use bao_tree::{io::BaoContentItem, ChunkNum, ChunkRanges};
 use bytes::Bytes;
+use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::Connection;
+use n0_future::{Stream, StreamExt};
+use nested_enum_utils::enum_conversions;
 use rand::Rng;
 
 use super::{fsm, Stats};
@@ -12,6 +20,107 @@ use crate::{
     protocol::{GetRequest, RangeSpecSeq},
     Hash, HashAndFormat,
 };
+
+pub struct GetBlobResult {
+    rx: n0_future::stream::Boxed<GetBlobItem>,
+}
+
+impl GetBlobResult {
+    pub async fn bytes(self) -> anyhow::Result<Bytes> {
+        let (bytes, stats) = self.bytes_and_stats().await?;
+        Ok(bytes)
+    }
+
+    pub async fn bytes_and_stats(mut self) -> anyhow::Result<(Bytes, Stats)> {
+        let mut parts = Vec::new();
+        let stats = loop {
+            let Some(item) = self.next().await else {
+                return Err(anyhow::anyhow!("unexpected end"));
+            };
+            match item {
+                GetBlobItem::Item(item) => {
+                    if let BaoContentItem::Leaf(leaf) = item {
+                        parts.push(leaf.data);
+                    }
+                }
+                GetBlobItem::Done(stats) => {
+                    break stats;
+                }
+                GetBlobItem::Error(cause) => {
+                    return Err(cause);
+                }
+                _ => {}
+            }
+        };
+        let bytes = if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            let mut bytes = Vec::new();
+            for part in parts {
+                bytes.extend_from_slice(&part);
+            }
+            bytes.into()
+        };
+        Ok((bytes, stats))
+    }
+}
+
+impl Stream for GetBlobResult {
+    type Item = GetBlobItem;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        self.rx.poll_next(cx)
+    }
+}
+
+#[derive(Debug)]
+#[enum_conversions()]
+pub enum GetBlobItem {
+    Item(BaoContentItem),
+    Done(Stats),
+    Error(anyhow::Error),
+}
+
+pub fn get_blob(connection: Connection, hash: Hash) -> GetBlobResult {
+    let gen = Gen::new(|co| async move {
+        if let Err(cause) = get_blob_inner(&connection, &hash, &co).await {
+            co.yield_(GetBlobItem::Error(cause)).await;
+        }
+    });
+    GetBlobResult { rx: Box::pin(gen) }
+}
+
+async fn get_blob_inner(
+    connection: &Connection,
+    hash: &Hash,
+    co: &Co<GetBlobItem>,
+) -> anyhow::Result<()> {
+    let request = GetRequest::single(*hash);
+    let request = fsm::start(connection.clone(), request);
+    let connected = request.next().await?;
+    let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
+        unreachable!("expected start root");
+    };
+    let header = start.next();
+    let (mut curr, _size) = header.next().await?;
+    let end = loop {
+        match curr.next().await {
+            fsm::BlobContentNext::More((next, res)) => {
+                co.yield_(res?.into()).await;
+                curr = next;
+            }
+            fsm::BlobContentNext::Done(end) => {
+                break end;
+            }
+        }
+    };
+    let fsm::EndBlobNext::Closing(closing) = end.next() else {
+        unreachable!("expected closing");
+    };
+    let stats = closing.next().await?;
+    co.yield_(stats.into()).await;
+    Ok(())
+}
 
 /// Get the claimed size of a blob from a peer.
 ///
