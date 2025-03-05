@@ -309,10 +309,10 @@ pub trait SliceInfoExt: AsRef<[u8]> {
     fn addr(&self) -> usize;
 
     // a short symbol string for the address
-    fn addr_short(&self) -> ArrayString<10> {
+    fn addr_short(&self) -> ArrayString<12> {
         let addr = self.addr().to_le_bytes();
         let hash = crate::Hash::new(&addr);
-        hash.fmt_short()
+        symbol_string(&addr)
     }
 
     fn hash_short(&self) -> ArrayString<10> {
@@ -354,4 +354,15 @@ pub fn symbol_string(data: &[u8]) -> ArrayString<12> {
     }
 
     result
+}
+
+pub struct ValueOrPoisioned<T>(pub Option<T>);
+
+impl<T: fmt::Debug> fmt::Debug for ValueOrPoisioned<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Some(x) => x.fmt(f),
+            None => f.debug_tuple("Poisoned").finish(),
+        }
+    }
 }

@@ -44,7 +44,7 @@
 //! to obtain an unqiue handle for the hash.
 use std::{
     collections::HashMap,
-    fs,
+    fmt, fs,
     io::Write,
     num::NonZeroU64,
     ops::Deref,
@@ -70,7 +70,7 @@ use tracing::{error, info, instrument, trace};
 
 use crate::{
     bitfield::is_validated,
-    util::{FixedSize, MemOrFile, SenderProgressExt},
+    util::{FixedSize, MemOrFile, SenderProgressExt, ValueOrPoisioned},
     Hash,
 };
 mod bao_file;
@@ -458,12 +458,17 @@ impl Actor {
     }
 }
 
-#[derive(Debug)]
 struct RtWrapper(Option<tokio::runtime::Runtime>);
 
 impl From<tokio::runtime::Runtime> for RtWrapper {
     fn from(rt: tokio::runtime::Runtime) -> Self {
         Self(Some(rt))
+    }
+}
+
+impl fmt::Debug for RtWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ValueOrPoisioned(self.0.as_ref()).fmt(f)
     }
 }
 
@@ -478,9 +483,11 @@ impl Deref for RtWrapper {
 impl Drop for RtWrapper {
     fn drop(&mut self) {
         if let Some(rt) = self.0.take() {
+            trace!("dropping tokio runtime");
             tokio::task::block_in_place(|| {
                 drop(rt);
             });
+            trace!("dropped tokio runtime");
         }
     }
 }
@@ -682,7 +689,7 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
     );
-    anyhow::ensure!(handle.hash() == Hash::from(hash), "hash mismatch");
+    debug_assert!(handle.hash() == Hash::from(hash), "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
     traverse_ranges_validated(data, outboard, &ranges, &out).await;
@@ -822,7 +829,7 @@ mod tests {
     use super::*;
     use crate::{
         bitfield::Bitfield,
-        util::{observer::Aggregator, read_checksummed, Tag},
+        util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
         HashAndFormat, IROH_BLOCK_SIZE,
     };
 
@@ -980,6 +987,41 @@ mod tests {
             // check that the data is there
             assert_eq!(&expected, &actual);
         }
+        Ok(())
+    }
+
+    // import data via import_bytes, check that we can observe it and that it is complete
+    #[tokio::test]
+    // #[ignore = "flaky. I need a reliable way to keep the handle alive"]
+    async fn test_roundtrip_bytes_small() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = DbStore::load(db_dir).await?;
+        for size in INTERESTING_SIZES
+            .into_iter()
+            .filter(|x| *x != 0 && *x <= IROH_BLOCK_SIZE.bytes())
+        {
+            let expected = test_data(size);
+            let expected_hash = blake3::hash(&expected);
+            let obs = store.observe(expected_hash).aggregated();
+            let actual_hash = store.import_bytes(expected.clone()).await?;
+            assert_eq!(expected_hash, actual_hash);
+            let actual = store.export_bytes(expected_hash).await?;
+            // check that the data is there
+            assert_eq!(&expected, &actual);
+            assert_eq!(
+                &expected.addr(),
+                &actual.addr(),
+                "address mismatch for size {}",
+                size
+            );
+            // we must at some point see completion, otherwise the test will hang
+            // keep the handle alive by observing until the end, otherwise the handle
+            // will change and the bytes won't be the same instance anymore
+            await_completion(obs).await;
+        }
+        store.shutdown().await?;
         Ok(())
     }
 

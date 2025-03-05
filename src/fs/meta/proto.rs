@@ -123,10 +123,19 @@ pub enum TopLevelCommand {
     Shutdown(Shutdown),
 }
 
-#[derive(Debug)]
 #[enum_conversions()]
 pub enum Command {
     ReadOnly(ReadOnlyCommand),
     ReadWrite(ReadWriteCommand),
     TopLevel(TopLevelCommand),
+}
+
+impl fmt::Debug for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadOnly(cmd) => cmd.fmt(f),
+            Self::ReadWrite(cmd) => cmd.fmt(f),
+            Self::TopLevel(cmd) => cmd.fmt(f),
+        }
+    }
 }

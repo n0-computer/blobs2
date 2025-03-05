@@ -3,7 +3,7 @@
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
 use core::fmt;
-use std::{io, num::NonZeroU64, path::PathBuf, pin::Pin};
+use std::{fmt::Debug, io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
 use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
@@ -66,10 +66,17 @@ impl fmt::Debug for Shutdown {
 }
 
 /// Observe the bitfield of the given hash.
-#[derive(Debug)]
 pub struct Observe {
     pub hash: Hash,
     pub out: Observer<Bitfield>,
+}
+
+impl fmt::Debug for Observe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Observe")
+            .field("hash", &DD::from(self.hash))
+            .finish_non_exhaustive()
+    }
 }
 
 impl HashSpecific for Observe {

@@ -36,6 +36,7 @@ use crate::{
     util::{
         observer::{Observable, Observer},
         read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
+        ValueOrPoisioned,
     },
     Hash, IROH_BLOCK_SIZE,
 };
@@ -292,7 +293,7 @@ fn read_size(size_file: &File) -> io::Result<u64> {
 }
 
 /// The storage for a bao file. This can be either in memory or on disk.
-#[derive(Debug, derive_more::From)]
+#[derive(derive_more::From)]
 pub(crate) enum BaoFileStorage {
     /// The entry is incomplete and in memory.
     ///
@@ -311,6 +312,16 @@ pub(crate) enum BaoFileStorage {
     ///
     /// Writing to this is a no-op, since it is already complete.
     Complete(CompleteStorage),
+}
+
+impl fmt::Debug for BaoFileStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BaoFileStorage::PartialMem(x) => x.fmt(f),
+            BaoFileStorage::Partial(x) => x.fmt(f),
+            BaoFileStorage::Complete(x) => x.fmt(f),
+        }
+    }
 }
 
 impl Default for BaoFileStorage {
@@ -401,22 +412,17 @@ impl BaoFileStorage {
     ) -> io::Result<Self> {
         Ok(match self {
             BaoFileStorage::PartialMem(mut ms) => {
-                trace!("writing to mem storage");
                 // check if we need to switch to file mode, otherwise write to memory
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
-                    trace!("staying in mem mode");
                     ms.write_batch(size, batch, ranges)?;
                     if ms.bitfield.state().is_complete() {
-                        trace!("becoming complete");
                         let (state, update) = ms.into_complete(hash, ctx)?;
                         send_update(ctx, permit, hash, update);
                         state.into()
                     } else {
-                        trace!("not yet complete");
                         ms.into()
                     }
                 } else {
-                    trace!("switching to file mode");
                     // *first* switch to file mode, *then* write the batch.
                     //
                     // otherwise we might allocate a lot of memory if we get
@@ -532,11 +538,21 @@ impl BaoFileHandleWeak {
 }
 
 /// The inner part of a bao file handle.
-#[derive(Debug)]
 pub struct BaoFileHandleInner {
     pub(crate) storage: RwLock<Option<BaoFileStorage>>,
     hash: Hash,
     options: Option<Arc<Options>>,
+}
+
+impl fmt::Debug for BaoFileHandleInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let guard = self.storage.read().unwrap();
+        let storage = ValueOrPoisioned(guard.deref().as_ref());
+        f.debug_struct("BaoFileHandleInner")
+            .field("hash", &DD::from(self.hash))
+            .field("storage", &storage)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A cheaply cloneable handle to a bao file, including the hash and the configuration.

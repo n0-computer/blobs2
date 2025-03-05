@@ -10,6 +10,8 @@ use bao_tree::io::{
 };
 use bytes::Bytes;
 
+use super::SliceInfoExt;
+
 #[derive(Debug)]
 pub struct FixedSize<T> {
     file: T,
@@ -60,7 +62,7 @@ pub enum MemOrFile<M, F> {
 impl<M: AsRef<[u8]>, F: Debug> MemOrFile<M, F> {
     pub fn fmt_short(&self) -> String {
         match self {
-            Self::Mem(mem) => format!("Mem({})", mem.as_ref().len()),
+            Self::Mem(mem) => format!("Mem(size={},addr={})", mem.as_ref().len(), mem.addr_short()),
             Self::File(_) => "File".to_string(),
         }
     }

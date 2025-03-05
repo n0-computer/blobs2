@@ -94,9 +94,8 @@ impl Store {
     /// Helper to just export the entire blob into a Bytes
     pub async fn export_bytes(&self, hash: impl Into<Hash>) -> io::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
-            .data_to_vec()
+            .data_to_bytes()
             .await
-            .map(Bytes::from)
     }
 
     /// Observe the bitfield of the given hash.
@@ -341,6 +340,31 @@ impl ExportBaoResult {
             data.extend_from_slice(&item?);
         }
         Ok(data)
+    }
+
+    pub async fn data_to_bytes(mut self) -> io::Result<Bytes> {
+        let mut data = Vec::new();
+        while let Some(item) = self.rx.recv().await {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    data.push(leaf.data);
+                }
+                EncodedItem::Parent(_) => {}
+                EncodedItem::Size(_) => {}
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+            }
+        }
+        if data.len() == 1 {
+            Ok(data.pop().unwrap())
+        } else {
+            let mut data = data.into_iter().map(Bytes::from).collect::<Vec<_>>();
+            let mut out = Vec::new();
+            while let Some(item) = data.pop() {
+                out.extend_from_slice(&item);
+            }
+            Ok(out.into())
+        }
     }
 
     pub async fn data_to_vec(mut self) -> io::Result<Vec<u8>> {
