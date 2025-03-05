@@ -28,7 +28,8 @@ use bao_tree::{
     BaoTree,
 };
 use bytes::Bytes;
-use n0_future::StreamExt;
+use n0_future::{stream, Stream, StreamExt};
+use smallvec::SmallVec;
 use tokio::{sync::mpsc, task::yield_now};
 use tracing::{instrument, trace};
 
@@ -200,13 +201,32 @@ async fn import_byte_stream_impl(
     options: Arc<Options>,
 ) -> anyhow::Result<ImportEntry> {
     let ImportByteStream { data, tx: out } = cmd;
-    let mut stream = data.fuse();
+    let import_source = get_import_source(data, &out, &options).await?;
+    out.send(ImportProgress::Size { size: import_source.size() }).await?;
+    out.send(ImportProgress::CopyDone).await?;
+    compute_outboard(import_source, options, out).await
+}
+
+async fn get_import_source(
+    stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
+    out: &mpsc::Sender<ImportProgress>,
+    options: &Options,
+) -> anyhow::Result<ImportSource> {
+    let mut stream = stream.fuse();
+    let mut peek = SmallVec::<[_; 2]>::new();
+    let Some(first) = stream.next().await.transpose()? else {
+        return Ok(ImportSource::Memory(Bytes::new()));
+    };
+    let Some(second) = stream.next().await.transpose()? else {
+        return Ok(ImportSource::Memory(first.into()));
+    };
+    // todo: if both first and second are giant, we might want to write them to disk immediately
+    peek.push(Ok(first));
+    peek.push(Ok(second));
+    let mut stream = stream::iter(peek).chain(stream);
     let mut size = 0;
     let mut data = Vec::new();
     let mut disk = None;
-
-    // todo: for the case where the stream has just 1 element below the inline threshold,
-    // we should just return the bytes directly as a memory source
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         size += chunk.len() as u64;
@@ -229,7 +249,7 @@ async fn import_byte_stream_impl(
         // todo: don't send progress for every chunk if the chunks are small?
         out.send_progress(ImportProgress::CopyProgress { offset: size })?;
     }
-    let import_source = if let Some((mut file, temp_path)) = disk {
+    Ok(if let Some((mut file, temp_path)) = disk {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             file.write_all(&chunk)?;
@@ -240,10 +260,7 @@ async fn import_byte_stream_impl(
         ImportSource::TempFile(temp_path, file, size)
     } else {
         ImportSource::Memory(data.into())
-    };
-    out.send(ImportProgress::Size { size }).await?;
-    out.send(ImportProgress::CopyDone).await?;
-    compute_outboard(import_source, options, out).await
+    })
 }
 
 async fn compute_outboard(
