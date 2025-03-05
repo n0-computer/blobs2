@@ -46,22 +46,22 @@ impl Actor {
 
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::ImportBao(ImportBao { out, .. }) => {
+            Command::ImportBao(ImportBao { tx: out, .. }) => {
                 out.send(Err(anyhow::anyhow!("import not supported"))).ok();
             }
-            Command::ImportBytes(ImportBytes { out, .. }) => {
+            Command::ImportBytes(ImportBytes { tx: out, .. }) => {
                 out.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportByteStream(ImportByteStream { out, .. }) => {
+            Command::ImportByteStream(ImportByteStream { tx: out, .. }) => {
                 out.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportPath(ImportPath { out, .. }) => {
+            Command::ImportPath(ImportPath { tx: out, .. }) => {
                 out.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
@@ -74,7 +74,11 @@ impl Actor {
                     self.observers.add_observer(out);
                 }
             }
-            Command::ExportBao(ExportBao { hash, ranges, out }) => {
+            Command::ExportBao(ExportBao {
+                hash,
+                ranges,
+                tx: out,
+            }) => {
                 let entry = self
                     .data
                     .get(&hash)

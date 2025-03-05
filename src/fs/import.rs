@@ -18,19 +18,23 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::Context;
 use bao_tree::{
-    blake3::Hash,
-    io::{outboard::PreOrderOutboard, sync::WriteAt},
+    blake3::{self, Hash},
+    io::{
+        outboard::{PreOrderMemOutboard, PreOrderOutboard},
+        sync::WriteAt,
+    },
     BaoTree,
 };
 use bytes::Bytes;
 use n0_future::StreamExt;
 use tokio::{sync::mpsc, task::yield_now};
-use tracing::trace;
+use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
-    proto::{ImportByteStream, ImportBytes, ImportPath, ImportProgress},
+    proto::{HashSpecific, ImportByteStream, ImportBytes, ImportPath, ImportProgress},
     util::{MemOrFile, ProgressReader, SenderProgressExt},
     IROH_BLOCK_SIZE,
 };
@@ -91,7 +95,13 @@ pub struct ImportEntry {
     pub hash: Hash,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
-    pub out: mpsc::Sender<ImportProgress>,
+    pub tx: mpsc::Sender<ImportProgress>,
+}
+
+impl HashSpecific for ImportEntry {
+    fn hash(&self) -> crate::Hash {
+        self.hash.into()
+    }
 }
 
 impl fmt::Debug for ImportEntry {
@@ -112,16 +122,67 @@ impl ImportEntry {
 }
 
 /// Start a task to import from a [`Bytes`] in memory.
-pub async fn import_bytes_task(cmd: ImportBytes, context: Arc<TaskContext>) {
-    let cmd = ImportByteStream {
-        data: Box::pin(n0_future::stream::once(Ok(cmd.data))),
-        out: cmd.out,
-    };
-    import_byte_stream_task(cmd, context).await
+#[instrument(skip_all, fields(data = cmd.data.len()))]
+pub async fn import_bytes(cmd: ImportBytes, ctx: Arc<TaskContext>) {
+    let size = cmd.data.len() as u64;
+    if ctx.options.is_inlined_all(size) {
+        import_bytes_tiny_outer(cmd, ctx).await;
+    } else {
+        let cmd = ImportByteStream {
+            data: Box::pin(n0_future::stream::once(Ok(cmd.data))),
+            tx: cmd.tx,
+        };
+        import_byte_stream_outer(cmd, ctx).await;
+    }
 }
 
-pub async fn import_byte_stream_task(cmd: ImportByteStream, ctx: Arc<TaskContext>) {
-    let Ok(send) = cmd.out.clone().reserve_owned().await else {
+async fn import_bytes_tiny_outer(cmd: ImportBytes, ctx: Arc<TaskContext>) {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
+        return;
+    };
+    match import_bytes_tiny_impl(cmd).await {
+        Ok(entry) => {
+            ctx.internal_cmd_tx.send(entry.into()).await.ok();
+        }
+        Err(cause) => {
+            send.send(cause.into());
+        }
+    }
+}
+
+async fn import_bytes_tiny_impl(cmd: ImportBytes) -> anyhow::Result<ImportEntry> {
+    let size = cmd.data.len() as u64;
+    // send the required progress events
+    // ImportProgress::Done will be sent when finishing the import!
+    cmd.tx.send(ImportProgress::Size { size }).await?;
+    cmd.tx.send(ImportProgress::CopyDone).await?;
+    Ok(if raw_outboard_size(size) == 0 {
+        // the thing is so small that it does not even need an outboard
+        ImportEntry {
+            hash: blake3::hash(&cmd.data),
+            source: ImportSource::Memory(cmd.data),
+            outboard: MemOrFile::Mem(Bytes::new()),
+            tx: cmd.tx,
+        }
+    } else {
+        // we still know that computing the outboard will be super fast
+        let outboard = PreOrderMemOutboard::create(&cmd.data, IROH_BLOCK_SIZE);
+        ImportEntry {
+            hash: outboard.root.into(),
+            source: ImportSource::Memory(cmd.data),
+            outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
+            tx: cmd.tx,
+        }
+    })
+}
+
+#[instrument(skip_all)]
+pub async fn import_byte_stream(cmd: ImportByteStream, ctx: Arc<TaskContext>) {
+    import_byte_stream_outer(cmd, ctx).await;
+}
+
+pub async fn import_byte_stream_outer(cmd: ImportByteStream, ctx: Arc<TaskContext>) {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
     match import_byte_stream_impl(cmd, ctx.options.clone()).await {
@@ -138,11 +199,12 @@ async fn import_byte_stream_impl(
     cmd: ImportByteStream,
     options: Arc<Options>,
 ) -> anyhow::Result<ImportEntry> {
-    let ImportByteStream { data, out } = cmd;
+    let ImportByteStream { data, tx: out } = cmd;
     let mut stream = data.fuse();
     let mut size = 0;
     let mut data = Vec::new();
     let mut disk = None;
+
     // todo: for the case where the stream has just 1 element below the inline threshold,
     // we should just return the bytes directly as a memory source
     while let Some(chunk) = stream.next().await {
@@ -230,7 +292,7 @@ async fn compute_outboard(
         hash: hash.into(),
         source,
         outboard,
-        out,
+        tx: out,
     })
 }
 
@@ -254,8 +316,9 @@ pub(crate) fn init_outboard<R: Read + Seek, W: WriteAt>(
     Ok(())
 }
 
-pub async fn import_path_task(cmd: ImportPath, context: Arc<TaskContext>) {
-    let Ok(send) = cmd.out.clone().reserve_owned().await else {
+#[instrument(skip_all, fields(path = %cmd.path.display()))]
+pub async fn import_path(cmd: ImportPath, context: Arc<TaskContext>) {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
     match import_path_impl(cmd, context.options.clone()).await {
@@ -269,7 +332,7 @@ pub async fn import_path_task(cmd: ImportPath, context: Arc<TaskContext>) {
 }
 
 async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Result<ImportEntry> {
-    let ImportPath { path, out, .. } = cmd;
+    let ImportPath { path, tx: out, .. } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());
     }
@@ -357,15 +420,14 @@ mod tests {
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
         let (tx, rx) = mpsc::channel(1024 * 1024);
-        let cmd = ImportByteStream {
-            data: stream,
-            out: tx,
-        };
+        let cmd = ImportByteStream { data: stream, tx };
         let res = import_byte_stream_impl(cmd, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };
-        let ImportEntry { outboard, out, .. } = res;
+        let ImportEntry {
+            outboard, tx: out, ..
+        } = res;
         drop(out);
         let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
@@ -387,13 +449,15 @@ mod tests {
             path,
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
-            out: tx,
+            tx,
         };
         let res = import_path_impl(cmd, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };
-        let ImportEntry { outboard, out, .. } = res;
+        let ImportEntry {
+            outboard, tx: out, ..
+        } = res;
         drop(out);
         let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),

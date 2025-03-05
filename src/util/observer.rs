@@ -43,9 +43,7 @@ impl<U> Observer<U> {
     {
         // If we have a pending update, combine it with the new update
         let update_to_send = match self.pending_update.take() {
-            Some(pending) => {
-                pending.combine(update)
-            }
+            Some(pending) => pending.combine(update),
             None => update,
         };
 

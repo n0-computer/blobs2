@@ -25,7 +25,7 @@ use tokio::{
     sync::mpsc::{self, OwnedPermit},
     task::{JoinError, JoinSet},
 };
-use tracing::error;
+use tracing::{error, instrument};
 
 use crate::{
     bitfield::Bitfield,
@@ -106,8 +106,8 @@ impl Actor {
             Command::ImportBao(ImportBao {
                 hash,
                 size,
-                data,
-                out,
+                rx: data,
+                tx: out,
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
@@ -118,16 +118,20 @@ impl Actor {
                 let mut entry = entry.write().unwrap();
                 entry.add_observer(out);
             }
-            Command::ImportBytes(ImportBytes { data, out }) => {
-                self.import_tasks.spawn(import_bytes_task(data, out));
+            Command::ImportBytes(ImportBytes { data, tx: out }) => {
+                self.import_tasks.spawn(import_bytes(data, out));
             }
-            Command::ImportByteStream(ImportByteStream { data, out }) => {
-                self.import_tasks.spawn(import_byte_stream_task(data, out));
+            Command::ImportByteStream(ImportByteStream { data, tx: out }) => {
+                self.import_tasks.spawn(import_byte_stream(data, out));
             }
             Command::ImportPath(cmd) => {
-                self.import_tasks.spawn(import_path_task(cmd));
+                self.import_tasks.spawn(import_path(cmd));
             }
-            Command::ExportBao(ExportBao { hash, ranges, out }) => {
+            Command::ExportBao(ExportBao {
+                hash,
+                ranges,
+                tx: out,
+            }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry.clone(), ranges, out));
@@ -238,7 +242,7 @@ async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
     mut stream: mpsc::Receiver<BaoContentItem>,
-    out: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    tx: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
@@ -287,7 +291,7 @@ async fn import_bao_task(
             }
         }
     }
-    out.send(Ok(())).ok();
+    tx.send(Ok(())).ok();
 }
 
 async fn export_bao_task(
@@ -309,17 +313,17 @@ async fn export_bao_task(
     traverse_ranges_validated(data, outboard, &ranges, &sender).await
 }
 
-async fn import_bytes_task(
+async fn import_bytes(
     data: Bytes,
-    out: mpsc::Sender<ImportProgress>,
+    tx: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
-    out.send(ImportProgress::Size {
+    tx.send(ImportProgress::Size {
         size: data.len() as u64,
     })
     .await?;
-    out.send(ImportProgress::CopyDone).await?;
+    tx.send(ImportProgress::CopyDone).await?;
     let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
-    let out = out.reserve_owned().await?;
+    let out = tx.reserve_owned().await?;
     Ok(ImportEntry {
         data,
         outboard,
@@ -327,23 +331,24 @@ async fn import_bytes_task(
     })
 }
 
-async fn import_byte_stream_task(
+async fn import_byte_stream(
     mut data: BoxedByteStream,
-    out: mpsc::Sender<ImportProgress>,
+    tx: mpsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     while let Some(item) = data.next().await {
         let item = item?;
         res.extend_from_slice(&item);
-        out.send_progress(ImportProgress::CopyProgress {
+        tx.send_progress(ImportProgress::CopyProgress {
             offset: res.len() as u64,
         })?;
     }
-    import_bytes_task(res.into(), out).await
+    import_bytes(res.into(), tx).await
 }
 
-async fn import_path_task(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
-    let ImportPath { path, out, .. } = cmd;
+#[instrument(skip_all, fields(path = %cmd.path.display()))]
+async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
+    let ImportPath { path, tx, .. } = cmd;
     let mut res = Vec::new();
     let mut file = tokio::fs::File::open(path).await?;
     let mut buf = [0u8; 1024 * 64];
@@ -353,12 +358,12 @@ async fn import_path_task(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
             break;
         }
         res.extend_from_slice(&buf[..size]);
-        out.send(ImportProgress::CopyProgress {
+        tx.send(ImportProgress::CopyProgress {
             offset: res.len() as u64,
         })
         .await?;
     }
-    import_bytes_task(res.into(), out).await
+    import_bytes(res.into(), tx).await
 }
 
 async fn export_path_task(
@@ -633,7 +638,7 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let hash = store.import_bytes(vec![0u8; 1024 * 64].into()).await?;
+        let hash = store.import_bytes(vec![0u8; 1024 * 64]).await?;
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all());
         while let Some(item) = stream.next().await {

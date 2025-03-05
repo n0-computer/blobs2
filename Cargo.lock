@@ -137,6 +137,7 @@ name = "blobs2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "bao-tree",
  "bytes",
  "chrono",

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::meta::{ActorError, ActorResult};
-use crate::hash::DD;
+use crate::{hash::DD, util::SliceInfoExt};
 
 /// Location of the data.
 ///
@@ -26,7 +26,9 @@ pub(crate) enum DataLocation<I = (), E = ()> {
 impl<I: AsRef<[u8]>, E: Debug> DataLocation<I, E> {
     fn fmt_short(&self) -> String {
         match self {
-            DataLocation::Inline(d) => format!("Inline({})", d.as_ref().len()),
+            DataLocation::Inline(d) => {
+                format!("Inline({}, addr={})", d.as_ref().len(), d.addr_short())
+            }
             DataLocation::Owned(e) => format!("Owned({e:?})"),
             DataLocation::External(paths, e) => {
                 let paths = paths.iter().map(|p| p.display()).collect::<Vec<_>>();

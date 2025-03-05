@@ -3,7 +3,9 @@ use std::{
     time::Duration,
 };
 
-use super::temp_name;
+use bao_tree::io::outboard;
+
+use super::{meta::raw_outboard_size, temp_name};
 use crate::Hash;
 
 /// Options for directories used by the file store.
@@ -122,11 +124,19 @@ impl Options {
         }
     }
 
-    pub fn is_inlined_data(&self, size: u64) -> bool {
-        size <= self.inline.max_data_inlined
+    // check if the data will be inlined, based on the size of the data
+    pub fn is_inlined_data(&self, data_size: u64) -> bool {
+        data_size <= self.inline.max_data_inlined
     }
 
-    pub fn is_inlined_outboard(&self, size: u64) -> bool {
-        size <= self.inline.max_outboard_inlined
+    // check if the outboard will be inlined, based on the size of the *outboard*
+    pub fn is_inlined_outboard(&self, outboard_size: u64) -> bool {
+        outboard_size <= self.inline.max_outboard_inlined
+    }
+
+    // check if both the data and outboard will be inlined, based on the size of the data
+    pub fn is_inlined_all(&self, data_size: u64) -> bool {
+        let outboard_size = raw_outboard_size(data_size);
+        self.is_inlined_data(data_size) && self.is_inlined_outboard(outboard_size)
     }
 }

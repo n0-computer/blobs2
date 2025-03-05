@@ -2,6 +2,7 @@
 
 use std::{borrow::Borrow, fmt, str::FromStr};
 
+use arrayvec::ArrayString;
 use bao_tree::blake3;
 use postcard::experimental::max_size::MaxSize;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
@@ -60,8 +61,12 @@ impl Hash {
 
     /// Convert to a hex string limited to the first 5bytes for a friendly string
     /// representation of the hash.
-    pub fn fmt_short(&self) -> String {
-        data_encoding::HEXLOWER.encode(&self.as_bytes()[..5])
+    pub fn fmt_short(&self) -> ArrayString<10> {
+        let mut res = ArrayString::new();
+        data_encoding::HEXLOWER
+            .encode_write(&self.as_bytes()[..5], &mut res)
+            .unwrap();
+        res
     }
 }
 

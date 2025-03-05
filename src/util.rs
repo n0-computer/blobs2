@@ -1,5 +1,14 @@
-use std::{borrow::Borrow, fmt, fs::{File, OpenOptions}, io::{self, Read, Write}, path::Path, time::SystemTime};
+use std::{
+    borrow::Borrow,
+    fmt,
+    fs::{File, OpenOptions},
+    hash::Hash,
+    io::{self, Read, Write},
+    path::Path,
+    time::SystemTime,
+};
 
+use arrayvec::ArrayString;
 use bao_tree::blake3;
 use bytes::Bytes;
 use derive_more::{From, Into};
@@ -205,20 +214,19 @@ pub fn write_checksummed<P: AsRef<Path>, T: Serialize>(path: P, data: &T) -> io:
     // Build Vec with space for hash
     let mut buffer = Vec::with_capacity(32 + 128);
     buffer.extend_from_slice(&[0u8; 32]);
-    
+
     // Serialize directly into buffer
-    postcard::to_io(data, &mut buffer)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    
+    postcard::to_io(data, &mut buffer).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     // Compute hash over data (skip first 32 bytes)
     let data_slice = &buffer[32..];
     let hash = blake3::hash(data_slice);
     buffer[..32].copy_from_slice(hash.as_bytes());
-    
+
     // Write all at once
     let mut file = File::create(&path)?;
     file.write_all(&buffer)?;
-    
+
     Ok(())
 }
 
@@ -226,7 +234,11 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
     path: P,
 ) -> io::Result<T> {
     let path = path.as_ref();
-    let mut file = OpenOptions::new().read(true).write(true).truncate(false).open(&path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     file.set_len(0)?;
@@ -234,7 +246,10 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
     info!("{} {}", path.display(), hex::encode(&buffer));
 
     if buffer.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "File marked dirty"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File marked dirty",
+        ));
     }
 
     if buffer.len() < 32 {
@@ -243,21 +258,19 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
 
     let stored_hash = &buffer[..32];
     let data = &buffer[32..];
-    
+
     let computed_hash = blake3::hash(data);
     if computed_hash.as_bytes() != stored_hash {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
     }
 
-    let deserialized = postcard::from_bytes(data)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    
+    let deserialized =
+        postcard::from_bytes(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     Ok(deserialized)
 }
 
-pub fn read_checksummed<T: DeserializeOwned>(
-    path: impl AsRef<Path>,
-) -> io::Result<T> {
+pub fn read_checksummed<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Result<T> {
     let path = path.as_ref();
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
@@ -265,7 +278,10 @@ pub fn read_checksummed<T: DeserializeOwned>(
     info!("{} {}", path.display(), hex::encode(&buffer));
 
     if buffer.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "File marked dirty"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File marked dirty",
+        ));
     }
 
     if buffer.len() < 32 {
@@ -274,14 +290,67 @@ pub fn read_checksummed<T: DeserializeOwned>(
 
     let stored_hash = &buffer[..32];
     let data = &buffer[32..];
-    
+
     let computed_hash = blake3::hash(data);
     if computed_hash.as_bytes() != stored_hash {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
     }
 
-    let deserialized = postcard::from_bytes(data)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    
+    let deserialized =
+        postcard::from_bytes(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     Ok(deserialized)
+}
+
+/// Helper trait for bytes for debugging
+pub trait SliceInfoExt: AsRef<[u8]> {
+    // get the addr of the actual data, to check if data was copied
+    fn addr(&self) -> usize;
+
+    // a short symbol string for the address
+    fn addr_short(&self) -> ArrayString<10> {
+        let addr = self.addr().to_le_bytes();
+        let hash = crate::Hash::new(&addr);
+        hash.fmt_short()
+    }
+
+    fn hash_short(&self) -> ArrayString<10> {
+        crate::Hash::new(self.as_ref()).fmt_short()
+    }
+}
+
+impl<T: AsRef<[u8]>> SliceInfoExt for T {
+    fn addr(&self) -> usize {
+        self.as_ref() as *const [u8] as *const u8 as usize
+    }
+
+    fn hash_short(&self) -> ArrayString<10> {
+        crate::Hash::new(self.as_ref()).fmt_short()
+    }
+}
+
+pub fn symbol_string(data: &[u8]) -> ArrayString<12> {
+    const SYMBOLS: &[char] = &[
+        '★', '●', '▲', '■', '◆', '◉', '△', '□', '◇', '○', '✦', '✧', '⊕', '⊗', '♠', '♣', '♥', '♦',
+        '✓', '✗', '☀', '☁', '☂', '☃', '☄', '☆', '☇', '☈', '☉', '☊', '☋', '☌', '☍', '☎', '☏', '♩',
+        '♪', '♫', '♬', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅', '⚡', '⚪', '⚫', '⚽', '⚾', '⛄', '⛅', '⛈',
+        '⛓', '⛩', '✈', '⛵', '⛽', '⛺', '⛰', '♨', '⛸', '⛹', '⛻',
+    ];
+    const BASE: usize = SYMBOLS.len(); // 64
+
+    // Hash the input with BLAKE3
+    let hash = blake3::hash(data);
+    let bytes = hash.as_bytes(); // 32-byte hash
+
+    // Create an ArrayString with capacity 12 (bytes)
+    let mut result = ArrayString::<12>::new();
+
+    // Fill with 3 symbols
+    for i in 0..3 {
+        let byte = bytes[i] as usize;
+        let index = byte % BASE;
+        result.push(SYMBOLS[index]); // Each char can be up to 4 bytes
+    }
+
+    result
 }

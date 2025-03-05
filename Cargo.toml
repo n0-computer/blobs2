@@ -27,6 +27,7 @@ data-encoding = "2.8.0"
 chrono = "0.4.39"
 nested_enum_utils = "0.1.0"
 ref-cast = "1.0.24"
+arrayvec = "0.7.6"
 
 [dev-dependencies]
 hex = "0.4.3"

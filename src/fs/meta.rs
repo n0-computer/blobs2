@@ -14,7 +14,7 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -228,7 +228,7 @@ impl Actor {
         let Update {
             hash, state, tx, ..
         } = cmd;
-        info!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
+        trace!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
         let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
             EntryState::Complete {
@@ -426,9 +426,9 @@ impl From<Database> for DbWrapper {
 impl Drop for DbWrapper {
     fn drop(&mut self) {
         if let Some(db) = self.0.take() {
-            info!("closing database");
+            debug!("closing database");
             drop(db);
-            info!("database closed");
+            debug!("database closed");
         }
     }
 }

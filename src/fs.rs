@@ -66,7 +66,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, info, trace};
+use tracing::{error, info, instrument, trace};
 
 use crate::{
     bitfield::is_validated,
@@ -81,7 +81,7 @@ mod meta;
 mod options;
 mod util;
 use entry_state::EntryState;
-use import::{import_byte_stream_task, import_bytes_task, import_path_task, ImportEntry};
+use import::{import_byte_stream, import_bytes, import_path, ImportEntry};
 use options::Options;
 
 use super::{proto::*, Store};
@@ -115,6 +115,8 @@ pub(crate) struct TaskContext {
     pub internal_cmd_tx: mpsc::Sender<InternalCommand>,
     // Epoch counter to provide a total order for databse operations
     pub epoch: AtomicU64,
+    /// The file handle for the empty hash.
+    pub empty: BaoFileHandle,
 }
 
 #[derive(Debug)]
@@ -183,13 +185,19 @@ impl HashContext {
 
     pub async fn get_or_create(&self, hash: impl Into<Hash>) -> anyhow::Result<BaoFileHandle> {
         let hash = hash.into();
+        if hash == Hash::EMPTY {
+            return Ok(self.ctx.empty.clone());
+        }
         let res = self
             .slot
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.context("failed to get entry")?;
                 match res {
                     Some(state) => open_bao_file(&hash.into(), state, self.ctx.options.clone()),
-                    None => Ok(BaoFileHandle::new_partial_mem(hash.into(), self.ctx.options.clone())),
+                    None => Ok(BaoFileHandle::new_partial_mem(
+                        hash.into(),
+                        self.ctx.options.clone(),
+                    )),
                 }
             })
             .await;
@@ -316,42 +324,42 @@ impl Actor {
             }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks.spawn(import_bytes_task(cmd, self.context()));
+                self.tasks.spawn(import_bytes(cmd, self.context()));
             }
             Command::ImportByteStream(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks
-                    .spawn(import_byte_stream_task(cmd, self.context()));
+                self.tasks.spawn(import_byte_stream(cmd, self.context()));
             }
             Command::ImportPath(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks.spawn(import_path_task(cmd, self.context()));
+                self.tasks.spawn(import_path(cmd, self.context()));
             }
             Command::ExportPath(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(export_path_task(cmd, ctx));
+                self.tasks.spawn(export_path(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(export_bao_task(cmd, ctx));
+                self.tasks.spawn(export_bao(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(import_bao_task(cmd, ctx));
+                self.tasks.spawn(import_bao(cmd, ctx));
             }
             Command::Observe(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(observe_task(cmd, ctx));
+                self.tasks.spawn(observe(cmd, ctx));
             }
         }
     }
 
     /// Create a hash context for a given hash.
     fn hash_context(&mut self, hash: impl Into<Hash>) -> HashContext {
+        let hash = hash.into();
         HashContext {
             slot: self.handles.entry(hash.into()).or_default().clone(),
             ctx: self.context.clone(),
@@ -364,8 +372,14 @@ impl Actor {
                 self.db().send(cmd.into()).await.ok();
             }
             InternalCommand::FinishImport(cmd) => {
+                if cmd.hash.as_bytes() == Hash::EMPTY.as_bytes() {
+                    cmd.tx
+                        .send(ImportProgress::Done { hash: cmd.hash })
+                        .await
+                        .ok();
+                }
                 let handle = self.hash_context(cmd.hash);
-                self.tasks.spawn(finish_import_task(cmd, handle));
+                self.tasks.spawn(finish_import(cmd, handle));
             }
         }
     }
@@ -426,6 +440,11 @@ impl Actor {
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
             epoch: AtomicU64::new(0),
+            empty: BaoFileHandle::new_complete(
+                Hash::EMPTY,
+                MemOrFile::Mem(Bytes::new()),
+                MemOrFile::Mem(Bytes::new()),
+            ),
         });
         rt.spawn(db_actor.run());
         Ok(Self {
@@ -466,12 +485,13 @@ impl Drop for RtWrapper {
     }
 }
 
-async fn finish_import_task(import_data: ImportEntry, ctx: HashContext) {
-    let Ok(send) = import_data.out.clone().reserve_owned().await else {
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn finish_import(cmd: ImportEntry, ctx: HashContext) {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
-    let hash = import_data.hash;
-    let res = match finish_import_impl(import_data, ctx).await {
+    let hash = cmd.hash;
+    let res = match finish_import_impl(cmd, ctx).await {
         Ok(()) => ImportProgress::Done { hash },
         Err(cause) => ImportProgress::Error { cause },
     };
@@ -565,20 +585,16 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
     Ok(())
 }
 
-async fn import_bao_task(cmd: ImportBao, ctx: HashContext) {
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn import_bao(cmd: ImportBao, ctx: HashContext) {
     trace!("{cmd:?}");
-    let ImportBao {
-        size,
-        data,
-        out,
-        hash,
-    } = cmd;
+    let ImportBao { size, rx, tx, hash } = cmd;
     let res = match ctx.get_or_create(hash).await {
-        Ok(handle) => import_bao_impl(size, data, handle, ctx).await,
+        Ok(handle) => import_bao_impl(size, rx, handle, ctx).await,
         Err(cause) => Err(cause),
     };
     trace!("{res:?}");
-    out.send(res).ok();
+    tx.send(res).ok();
 }
 
 fn chunk_range(leaf: &Leaf) -> ChunkRanges {
@@ -620,7 +636,8 @@ async fn import_bao_impl(
     Ok(())
 }
 
-async fn observe_task(cmd: Observe, ctx: HashContext) {
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn observe(cmd: Observe, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.hash).await else {
         return;
     };
@@ -632,8 +649,9 @@ async fn observe_task(cmd: Observe, ctx: HashContext) {
     handle.observer_dropped();
 }
 
-async fn export_bao_task(cmd: ExportBao, ctx: HashContext) {
-    let Ok(send) = cmd.out.clone().reserve_owned().await else {
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn export_bao(cmd: ExportBao, ctx: HashContext) {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
     match ctx.get_or_create(cmd.hash).await {
@@ -655,7 +673,11 @@ async fn export_bao_task(cmd: ExportBao, ctx: HashContext) {
 }
 
 async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Result<()> {
-    let ExportBao { ranges, out, hash } = cmd;
+    let ExportBao {
+        ranges,
+        tx: out,
+        hash,
+    } = cmd;
     trace!(
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
@@ -667,7 +689,8 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
     Ok(())
 }
 
-async fn export_path_task(cmd: ExportPath, ctx: HashContext) {
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn export_path(cmd: ExportPath, ctx: HashContext) {
     let Ok(send) = cmd.out.clone().reserve_owned().await else {
         return;
     };
@@ -733,10 +756,7 @@ impl DbStore {
     }
 
     /// Load or create a new store with custom options, returning an additional sender for file store specific commands.
-    pub async fn load_with_opts(
-        path: PathBuf,
-        options: Options,
-    ) -> anyhow::Result<DbStore> {
+    pub async fn load_with_opts(path: PathBuf, options: Options) -> anyhow::Result<DbStore> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
@@ -795,12 +815,28 @@ mod tests {
         io::{outboard::PreOrderMemOutboard, round_up_to_chunks, round_up_to_chunks_groups},
         BlockSize, ChunkRanges,
     };
-    use n0_future::StreamExt;
+    use n0_future::{stream, Stream, StreamExt};
     use testresult::TestResult;
     use walkdir::WalkDir;
 
     use super::*;
-    use crate::{bitfield::Bitfield, util::{read_checksummed, Tag}, HashAndFormat, IROH_BLOCK_SIZE};
+    use crate::{
+        bitfield::Bitfield,
+        util::{observer::Aggregator, read_checksummed, Tag},
+        HashAndFormat, IROH_BLOCK_SIZE,
+    };
+
+    /// Interesting sizes for testing.
+    const INTERESTING_SIZES: [usize; 8] = [
+        0,               // annoying corner case - always present, handled by the api
+        1,               // less than 1 chunk, data inline, outboard not needed
+        1024,            // exactly 1 chunk, data inline, outboard not needed
+        1024 * 16 - 1,   // less than 1 chunk group, data inline, outboard not needed
+        1024 * 16,       // exactly 1 chunk group, data inline, outboard not needed
+        1024 * 16 + 1,   // data file, outboard inline (just 1 hash pair)
+        1024 * 1024,     // data file, outboard inline (many hash pairs)
+        1024 * 1024 * 8, // data file, outboard file
+    ];
 
     /// Create n0 flavoured bao. Note that this can be used to request ranges below a chunk group size,
     /// which can not be exported via bao because we don't store hashes below the chunk group level.
@@ -844,18 +880,9 @@ mod tests {
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
         let store = DbStore::load_with_opts(db_dir, options).await?;
-        let sizes = [
-            // 0,
-            1,
-            // 1024,
-            // 1024 * 16 - 1,
-            // 1024 * 16,
-            // 1024 * 16 + 1,
-            // 1024 * 1024,
-            // 1024 * 1024 * 8,
-        ];
+        let sizes = INTERESTING_SIZES;
         for size in sizes {
-            let data = vec![1u8; size];
+            let data = test_data(size);
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             let obs = store.observe(hash);
@@ -869,17 +896,13 @@ mod tests {
                     }
                 }
             });
-            println!("importing {}", size);
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
             task.await?;
-            println!("done importing {}", size);
         }
         Ok(())
     }
 
-    // observe a hash while it is being imported
-    #[tokio::test]
-    async fn import_bytes_observe() -> TestResult<()> {
+    async fn import_path_observe() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
@@ -895,18 +918,112 @@ mod tests {
             1024 * 1024,
             1024 * 1024 * 8,
         ];
-        for size in sizes {
-            let data = vec![1u8; size];
-            let ranges = ChunkRanges::all();
-            let (hash, _) = create_n0_bao(&data, &ranges)?;
-            let mut obs = store.observe(hash).aggregated();
-            let hash2 = store.import_bytes(data.into()).await?;
-            assert_eq!(hash, hash2);
-            while let Some(update) = obs.next().await {
-                if obs.state().is_complete() {
-                    break;
-                }
+        Ok(())
+    }
+
+    /// Generate test data for size n.
+    ///
+    /// We don't really care about the content, since we assume blake3 works.
+    /// The only thing it should not be is all zeros, since that is what you
+    /// will get for a gap.
+    fn test_data(n: usize) -> Bytes {
+        vec![1u8; n].into()
+    }
+
+    async fn await_completion(mut obs: Aggregator<Bitfield>) {
+        while let Some(_) = obs.next().await {
+            if obs.state().is_complete() {
+                break;
             }
+        }
+    }
+
+    // import data via import_bytes, check that we can observe it and that it is complete
+    #[tokio::test]
+    async fn test_import_byte_stream() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = DbStore::load(db_dir).await?;
+        for size in INTERESTING_SIZES {
+            let expected = test_data(size);
+            let expected_hash = blake3::hash(&expected);
+            let stream = bytes_to_stream(expected.clone(), 1023);
+            let obs = store.observe(expected_hash).aggregated();
+            let actual_hash = store.import_byte_stream(stream).await?;
+            assert_eq!(expected_hash, actual_hash);
+            // we must at some point see completion, otherwise the test will hang
+            await_completion(obs).await;
+            let actual = store.export_bytes(expected_hash).await?;
+            // check that the data is there
+            assert_eq!(&expected, &actual);
+        }
+        Ok(())
+    }
+
+    // import data via import_bytes, check that we can observe it and that it is complete
+    #[tokio::test]
+    async fn test_import_bytes() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = DbStore::load(db_dir).await?;
+        for size in INTERESTING_SIZES {
+            let expected = test_data(size);
+            let expected_hash = blake3::hash(&expected);
+            let obs = store.observe(expected_hash).aggregated();
+            let actual_hash = store.import_bytes(expected.clone()).await?;
+            assert_eq!(expected_hash, actual_hash);
+            // we must at some point see completion, otherwise the test will hang
+            await_completion(obs).await;
+            let actual = store.export_bytes(expected_hash).await?;
+            // check that the data is there
+            assert_eq!(&expected, &actual);
+        }
+        Ok(())
+    }
+
+    // import data via import_bytes, check that we can observe it and that it is complete
+    #[tokio::test]
+    async fn test_import_path() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = DbStore::load(db_dir).await?;
+        for size in INTERESTING_SIZES {
+            let expected = test_data(size);
+            let expected_hash = blake3::hash(&expected);
+            let path = testdir.path().join(format!("in-{}", size));
+            fs::write(&path, &expected)?;
+            let obs = store.observe(expected_hash).aggregated();
+            let actual_hash = store.import_path(&path).await?;
+            assert_eq!(expected_hash, actual_hash);
+            // we must at some point see completion, otherwise the test will hang
+            await_completion(obs).await;
+            let actual = store.export_bytes(expected_hash).await?;
+            // check that the data is there
+            assert_eq!(&expected, &actual);
+        }
+        dump_dir_full(testdir.path())?;
+        Ok(())
+    }
+
+    // import data via import_bytes, check that we can observe it and that it is complete
+    #[tokio::test]
+    async fn test_export_path() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = DbStore::load(db_dir).await?;
+        for size in INTERESTING_SIZES {
+            let expected = test_data(size);
+            let expected_hash = blake3::hash(&expected);
+            let actual_hash = store.import_bytes(expected.clone()).await?;
+            assert_eq!(expected_hash, actual_hash);
+            let out_path = testdir.path().join(format!("out-{}", size));
+            store.export_path(expected_hash, &out_path).await?;
+            let actual = fs::read(&out_path)?;
+            assert_eq!(expected, actual);
         }
         Ok(())
     }
@@ -915,20 +1032,10 @@ mod tests {
     async fn import_bao_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,
-            1,
-            1024,
-            1024 * 16 - 1,
-            1024 * 16,
-            1024 * 16 + 1,
-            1024 * 1024,
-            1024 * 1024 * 8,
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
                 let data = vec![0u8; size];
                 let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
@@ -940,7 +1047,7 @@ mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load_with_opts(db_dir, options).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
                 let expected = vec![0u8; size];
                 let hash = blake3::hash(&expected);
@@ -970,12 +1077,11 @@ mod tests {
             1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
         let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
                 let data = Bytes::from(encoded);
                 if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
@@ -986,10 +1092,10 @@ mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load_with_opts(db_dir, options).await?;
+            let store = DbStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &just_size)?;
                 let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
                     Ok(actual) => actual,
@@ -1018,13 +1124,12 @@ mod tests {
             1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
         let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
                 let data = Bytes::from(encoded);
                 if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
@@ -1037,13 +1142,13 @@ mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
                 let remaining = ChunkRanges::all() - round_up_request(size as u64, &just_size);
                 if remaining.is_empty() {
                     continue;
                 }
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &remaining)?;
                 let data = Bytes::from(encoded);
                 if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
@@ -1055,10 +1160,10 @@ mod tests {
         }
         // check if the data is complete
         {
-            let store = DbStore::load_with_opts(db_dir, options).await?;
+            let store = DbStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &ChunkRanges::all())?;
                 let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
                     Ok(actual) => actual,
@@ -1071,6 +1176,10 @@ mod tests {
         }
         dump_dir_full(testdir.path())?;
         Ok(())
+    }
+
+    fn just_size() -> ChunkRanges {
+        ChunkRanges::from(ChunkNum(u64::MAX)..)
     }
 
     #[tokio::test]
@@ -1088,13 +1197,12 @@ mod tests {
             1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
-        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
                 let data = Bytes::from(encoded);
                 if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
@@ -1107,10 +1215,10 @@ mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let hash = blake3::hash(&data);
                 let mut stream = store.observe(hash).aggregated();
                 let Some(_) = stream.next().await else {
@@ -1140,12 +1248,12 @@ mod tests {
         ];
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
         {
             let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
                 let data = Bytes::from(encoded);
                 if let Err(cause) = store.import_bao_bytes(hash, ranges, data).await {
@@ -1162,13 +1270,17 @@ mod tests {
             let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let hash = blake3::hash(&data);
                 let mut stream = store.observe(hash).aggregated();
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };
-                println!("expected={:?} actual={:?}", expected_ranges, stream.state().ranges);
+                println!(
+                    "expected={:?} actual={:?}",
+                    expected_ranges,
+                    stream.state().ranges
+                );
                 // assert_eq!(stream.state().ranges, expected_ranges, "size={}", size);
             }
             store.dump().await?;
@@ -1181,22 +1293,12 @@ mod tests {
     async fn import_bytes_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,
-            1,
-            1024,
-            1024 * 16 - 1,
-            1024 * 16,
-            1024 * 16 + 1,
-            1024 * 1024,
-            1024 * 1024 * 8,
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             for size in sizes {
-                let data = vec![1u8; size];
+                let data = test_data(size);
                 let data = Bytes::from(data);
                 store.import_bytes(data.clone()).await?;
             }
@@ -1204,10 +1306,10 @@ mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = DbStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
-                let expected = vec![1u8; size];
+                let expected = test_data(size);
                 let hash = blake3::hash(&expected);
                 let Ok(actual) = store
                     .export_bao(hash, ChunkRanges::all())
@@ -1228,22 +1330,12 @@ mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
-        let store = DbStore::load_with_opts(db_dir, options).await?;
+        let store = DbStore::load(db_dir).await?;
         let haf = HashAndFormat::raw(Hash::from([0u8; 32]));
         store.set_tag(Tag::from("test"), haf).await?;
         store.set_tag(Tag::from("boo"), haf).await?;
         store.set_tag(Tag::from("bar"), haf).await?;
-        let sizes = [
-            0,
-            1,
-            1024,
-            1024 * 16 - 1,
-            1024 * 16,
-            1024 * 16 + 1,
-            1024 * 1024,
-            1024 * 1024 * 8,
-        ];
+        let sizes = INTERESTING_SIZES;
         let mut hashes = Vec::new();
         let mut data_by_hash = HashMap::new();
         let mut bao_by_hash = HashMap::new();
@@ -1257,7 +1349,7 @@ mod tests {
         store.sync_db().await?;
         for hash in &hashes {
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export_file(*hash, path).await?;
+            store.export_path(*hash, path).await?;
         }
         for hash in &hashes {
             let data = store
@@ -1276,7 +1368,7 @@ mod tests {
         store.dump().await?;
 
         for size in sizes {
-            let data = vec![1u8; size];
+            let data = test_data(size);
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
@@ -1299,13 +1391,10 @@ mod tests {
     pub fn delete_rec(root_dir: impl AsRef<Path>, extension: &str) -> Result<(), std::io::Error> {
         // Remove leading dot if present, so we have just the extension
         let ext = extension.trim_start_matches('.').to_lowercase();
-    
-        for entry in WalkDir::new(root_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+
+        for entry in WalkDir::new(root_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
-            
+
             if path.is_file() {
                 if let Some(file_ext) = path.extension() {
                     if file_ext.to_string_lossy().to_lowercase() == ext {
@@ -1315,7 +1404,7 @@ mod tests {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -1367,7 +1456,7 @@ mod tests {
                 let path = entry.path();
                 if name.ends_with(".data") {
                     print!("{}  ", indent);
-                    dump_file(path, 1024 * 16)?;    
+                    dump_file(path, 1024 * 16)?;
                 } else if name.ends_with(".obao4") {
                     print!("{}  ", indent);
                     dump_file(path, 64)?;
@@ -1386,7 +1475,6 @@ mod tests {
                 } else {
                     continue; // Skip content dump for other files
                 };
-                
             }
         }
         Ok(())
@@ -1430,30 +1518,46 @@ mod tests {
     fn print_bitfield_ansi(bits: impl IntoIterator<Item = bool>) -> String {
         let mut result = String::new();
         let mut iter = bits.into_iter();
-        
+
         while let Some(b1) = iter.next() {
             let b2 = iter.next();
-            
+
             // ANSI color codes
-            let white_fg = "\x1b[97m";  // bright white foreground
-            let reset = "\x1b[0m";      // reset all attributes
-            let gray_bg = "\x1b[100m";  // bright black (gray) background
-            let black_bg = "\x1b[40m";  // black background
-            
+            let white_fg = "\x1b[97m"; // bright white foreground
+            let reset = "\x1b[0m"; // reset all attributes
+            let gray_bg = "\x1b[100m"; // bright black (gray) background
+            let black_bg = "\x1b[40m"; // black background
+
             let colored_char = match (b1, b2) {
-                (true, Some(true)) => format!("{}{}{}", white_fg, '█', reset),         // 11 - solid white on default background
-                (true, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, '▌', reset),  // 10 - left half white on gray background
-                (false, Some(true)) => format!("{}{}{}{}", gray_bg, white_fg, '▐', reset),  // 01 - right half white on gray background
-                (false, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, ' ', reset),  // 00 - space with gray background
-                (true, None) => format!("{}{}{}{}", black_bg, white_fg, '▌', reset),   // 1 (pad 0) - left half white on black background
-                (false, None) => format!("{}{}{}{}", black_bg, white_fg, ' ', reset),  // 0 (pad 0) - space with black background
+                (true, Some(true)) => format!("{}{}{}", white_fg, '█', reset), // 11 - solid white on default background
+                (true, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, '▌', reset), // 10 - left half white on gray background
+                (false, Some(true)) => format!("{}{}{}{}", gray_bg, white_fg, '▐', reset), // 01 - right half white on gray background
+                (false, Some(false)) => format!("{}{}{}{}", gray_bg, white_fg, ' ', reset), // 00 - space with gray background
+                (true, None) => format!("{}{}{}{}", black_bg, white_fg, '▌', reset), // 1 (pad 0) - left half white on black background
+                (false, None) => format!("{}{}{}{}", black_bg, white_fg, ' ', reset), // 0 (pad 0) - space with black background
             };
-            
+
             result.push_str(&colored_char);
         }
-        
+
         // Ensure we end with a reset code to prevent color bleeding
         result.push_str("\x1b[0m");
         result
+    }
+
+    fn bytes_to_stream(
+        bytes: Bytes,
+        chunk_size: usize,
+    ) -> impl Stream<Item = io::Result<Bytes>> + 'static {
+        assert!(chunk_size > 0, "Chunk size must be greater than 0");
+        stream::unfold((bytes, 0), move |(bytes, offset)| async move {
+            if offset >= bytes.len() {
+                None
+            } else {
+                let chunk_len = chunk_size.min(bytes.len() - offset);
+                let chunk = bytes.slice(offset..offset + chunk_len);
+                Some((Ok(chunk), (bytes, offset + chunk_len)))
+            }
+        })
     }
 }

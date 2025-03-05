@@ -9,11 +9,13 @@ use std::{
 };
 
 use bao_tree::{
-    blake3, io::{
+    blake3,
+    io::{
         fsm::BaoContentItem,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
-    }, BaoTree, ChunkRanges
+    },
+    BaoTree, ChunkRanges,
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
@@ -31,7 +33,8 @@ use crate::{
     hash::DD,
     mem::{PartialMemStorage, SizeInfo},
     util::{
-        observer::{Observable, Observer}, read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile
+        observer::{Observable, Observer},
+        read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
     },
     Hash, IROH_BLOCK_SIZE,
 };
@@ -136,7 +139,6 @@ pub struct PartialFileStorage {
 }
 
 impl PartialFileStorage {
-
     fn sync_all(&self, bitfield_path: &Path) -> io::Result<()> {
         //self.data.sync_all().ok();
         //self.outboard.sync_all().ok();
@@ -153,7 +155,12 @@ impl PartialFileStorage {
         let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
             Ok(bitfield) => bitfield,
             Err(cause) => {
-                warn!("failed to read bitfield for {} at {}: {:?}", hash.to_hex(), bitfield_path.display(), cause);
+                warn!(
+                    "failed to read bitfield for {} at {}: {:?}",
+                    hash.to_hex(),
+                    bitfield_path.display(),
+                    cause
+                );
                 trace!("reconstructing bitfield from outboard");
                 let size = read_size(&sizes).ok().unwrap_or_default();
                 let outboard = PreOrderOutboard {
@@ -162,7 +169,8 @@ impl PartialFileStorage {
                     root: blake3::Hash::from(*hash),
                 };
                 let mut ranges = ChunkRanges::all();
-                for range in bao_tree::io::sync::valid_ranges(outboard, &data, &ChunkRanges::all()) {
+                for range in bao_tree::io::sync::valid_ranges(outboard, &data, &ChunkRanges::all())
+                {
                     if let Ok(range) = range {
                         ranges |= ChunkRanges::from(range);
                     }
@@ -173,7 +181,10 @@ impl PartialFileStorage {
         };
         let bitfield = Observable::new(bitfield);
         Ok(Self {
-            data, outboard, sizes, bitfield,
+            data,
+            outboard,
+            sizes,
+            bitfield,
         })
     }
 
@@ -537,7 +548,11 @@ impl Drop for BaoFileHandleInner {
             if let BaoFileStorage::Partial(fs) = &storage {
                 let options = self.options.as_ref().unwrap();
                 let path = options.path.bitfield_path(&self.hash);
-                info!("writing bitfield for hash {} to {}", self.hash.to_hex(), path.display());
+                info!(
+                    "writing bitfield for hash {} to {}",
+                    self.hash.to_hex(),
+                    path.display()
+                );
                 fs.sync_all(&path).ok();
             }
         }

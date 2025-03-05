@@ -5,6 +5,7 @@
 use core::fmt;
 use std::{io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
+use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
@@ -19,6 +20,14 @@ use crate::{
     BlobFormat, HashAndFormat,
 };
 
+pub trait HashSpecific {
+    fn hash(&self) -> crate::Hash;
+
+    fn hash_short(&self) -> ArrayString<10> {
+        self.hash().fmt_short()
+    }
+}
+
 /// Import bao encoded data for the given hash with the iroh block size.
 ///
 /// The result is just a single item, indicating if a write error occurred.
@@ -27,8 +36,8 @@ use crate::{
 pub struct ImportBao {
     pub hash: Hash,
     pub size: NonZeroU64,
-    pub data: mpsc::Receiver<BaoContentItem>,
-    pub out: oneshot::Sender<anyhow::Result<()>>,
+    pub rx: mpsc::Receiver<BaoContentItem>,
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
 impl fmt::Debug for ImportBao {
@@ -37,6 +46,12 @@ impl fmt::Debug for ImportBao {
             .field("hash", &DD::from(self.hash))
             .field("size", &self.size)
             .finish_non_exhaustive()
+    }
+}
+
+impl HashSpecific for ImportBao {
+    fn hash(&self) -> crate::Hash {
+        self.hash.into()
     }
 }
 
@@ -57,10 +72,16 @@ pub struct Observe {
     pub out: Observer<Bitfield>,
 }
 
+impl HashSpecific for Observe {
+    fn hash(&self) -> crate::Hash {
+        self.hash.into()
+    }
+}
+
 /// Import the given bytes.
 pub struct ImportBytes {
     pub data: Bytes,
-    pub out: mpsc::Sender<ImportProgress>,
+    pub tx: mpsc::Sender<ImportProgress>,
 }
 
 impl fmt::Debug for ImportBytes {
@@ -77,7 +98,13 @@ impl fmt::Debug for ImportBytes {
 pub struct ExportBao {
     pub hash: Hash,
     pub ranges: ChunkRanges,
-    pub out: mpsc::Sender<EncodedItem>,
+    pub tx: mpsc::Sender<EncodedItem>,
+}
+
+impl HashSpecific for ExportBao {
+    fn hash(&self) -> crate::Hash {
+        self.hash.into()
+    }
 }
 
 impl fmt::Debug for ExportBao {
@@ -101,11 +128,17 @@ pub struct ExportPath {
     pub out: mpsc::Sender<ExportProgress>,
 }
 
+impl HashSpecific for ExportPath {
+    fn hash(&self) -> crate::Hash {
+        self.hash.into()
+    }
+}
+
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
 
 pub struct ImportByteStream {
     pub data: BoxedByteStream,
-    pub out: tokio::sync::mpsc::Sender<ImportProgress>,
+    pub tx: tokio::sync::mpsc::Sender<ImportProgress>,
 }
 
 impl std::fmt::Debug for ImportByteStream {
@@ -118,7 +151,7 @@ pub struct ImportPath {
     pub path: PathBuf,
     pub mode: ImportMode,
     pub format: BlobFormat,
-    pub out: mpsc::Sender<ImportProgress>,
+    pub tx: mpsc::Sender<ImportProgress>,
 }
 
 impl fmt::Debug for ImportPath {
@@ -159,6 +192,12 @@ impl fmt::Debug for SetTag {
 pub struct CreateTag {
     pub hash: HashAndFormat,
     pub tx: oneshot::Sender<anyhow::Result<Tag>>,
+}
+
+impl HashSpecific for CreateTag {
+    fn hash(&self) -> crate::Hash {
+        self.hash.hash
+    }
 }
 
 impl fmt::Debug for CreateTag {

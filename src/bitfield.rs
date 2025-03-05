@@ -33,7 +33,7 @@ pub struct Bitfield {
 
 impl Serialize for Bitfield {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut numbers = SmallVec::<[_;4]>::new();
+        let mut numbers = SmallVec::<[_; 4]>::new();
         numbers.push(self.size);
         numbers.extend(self.ranges.boundaries().iter().map(|x| x.0));
         numbers.serialize(serializer)
@@ -43,7 +43,7 @@ impl Serialize for Bitfield {
 impl<'de> Deserialize<'de> for Bitfield {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut numbers: SmallVec<[u64; 4]> = SmallVec::deserialize(deserializer)?;
-        
+
         // Need at least 1 u64 for size
         if numbers.is_empty() {
             return Err(serde::de::Error::custom("Bitfield needs at least size"));
@@ -62,9 +62,7 @@ impl<'de> Deserialize<'de> for Bitfield {
     }
 }
 
-
 impl Bitfield {
-
     pub fn new(mut ranges: ChunkRanges, size: u64) -> Self {
         // for zero size, we have to trust the caller
         if let Some(size) = NonZeroU64::new(size) {
