@@ -27,7 +27,7 @@ use tokio::{
 };
 use tracing::{error, instrument};
 
-use crate::{
+use crate::store::{
     bitfield::Bitfield,
     proto::*,
     util::{

@@ -1,32 +1,9 @@
-use bao_tree::BlockSize;
-mod api;
-mod bitfield;
-mod fs;
+pub mod store;
+
 mod hash;
-mod mem;
-mod proto;
-mod readonly_mem;
-mod test;
-mod util;
-
 pub use hash::{BlobFormat, Hash, HashAndFormat};
-use ref_cast::RefCast;
-
-#[derive(Debug, Clone, ref_cast::RefCast)]
-#[repr(transparent)]
-pub struct Store {
-    sender: tokio::sync::mpsc::Sender<proto::Command>,
-}
-
-impl Store {
-    pub fn from_sender(sender: tokio::sync::mpsc::Sender<proto::Command>) -> Self {
-        Self { sender }
-    }
-
-    pub fn ref_from_sender(sender: &tokio::sync::mpsc::Sender<proto::Command>) -> &Self {
-        Store::ref_cast(sender)
-    }
-}
-
-/// Block size used by iroh, 2^4*1024 = 16KiB
-pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4);
+pub use store::IROH_BLOCK_SIZE;
+pub mod hashseq;
+pub mod net_protocol;
+pub mod protocol;
+pub mod provider;

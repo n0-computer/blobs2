@@ -23,7 +23,7 @@ use n0_future::{Stream, StreamExt};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
-use crate::{
+use crate::store::{
     bitfield::Bitfield,
     proto::*,
     util::{
@@ -383,7 +383,7 @@ impl ExportBaoResult {
         Ok(data)
     }
 
-    pub async fn write_quinn(mut self, mut target: quinn::SendStream) -> io::Result<()> {
+    pub async fn write_quinn(mut self, target: &mut quinn::SendStream) -> io::Result<()> {
         while let Some(item) = self.rx.recv().await {
             match item {
                 EncodedItem::Size(size) => {

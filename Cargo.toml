@@ -13,7 +13,7 @@ quinn = { package = "iroh-quinn", version = "0.13.0" }
 n0-future = "0.1.2"
 range-collections = "0.4.5"
 redb = "2.4.0"
-smallvec = { version = "1", features = ["serde"] }
+smallvec = { version = "1", features = ["serde", "const_new"] }
 thiserror = "2.0.11"
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-util = { version = "0.7.13", features = ["full"] }
@@ -28,6 +28,7 @@ chrono = "0.4.39"
 nested_enum_utils = "0.1.0"
 ref-cast = "1.0.24"
 arrayvec = "0.7.6"
+iroh = "0.33.0"
 
 [dev-dependencies]
 hex = "0.4.3"

@@ -68,7 +68,7 @@ use tokio::{
 };
 use tracing::{error, info, instrument, trace};
 
-use crate::{
+use crate::store::{
     bitfield::is_validated,
     util::{FixedSize, MemOrFile, SenderProgressExt, ValueOrPoisioned},
     Hash,
@@ -79,7 +79,7 @@ mod entry_state;
 mod import;
 mod meta;
 mod options;
-mod util;
+pub(crate) mod util;
 use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntry};
 use options::Options;
@@ -827,7 +827,7 @@ mod tests {
     use walkdir::WalkDir;
 
     use super::*;
-    use crate::{
+    use crate::store::{
         bitfield::Bitfield,
         util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
         HashAndFormat, IROH_BLOCK_SIZE,

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::meta::{ActorError, ActorResult};
-use crate::util::SliceInfoExt;
+use crate::store::util::SliceInfoExt;
 
 /// Location of the data.
 ///

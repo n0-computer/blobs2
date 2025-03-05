@@ -1,2 +1,2 @@
 //! Test harness for store implementations.
-use crate::Store;
+use crate::store::Store;

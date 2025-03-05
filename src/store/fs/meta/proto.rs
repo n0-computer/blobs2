@@ -8,9 +8,12 @@ use redb::{AccessGuard, StorageError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::ActorResult;
-pub use crate::proto::SyncDb;
-use crate::{
-    fs::entry_state::EntryState, hash::DD, proto::Shutdown, util::Tag, Hash, HashAndFormat,
+pub use crate::store::proto::SyncDb;
+use crate::store::{
+    fs::entry_state::EntryState,
+    proto::Shutdown,
+    util::{Tag, DD},
+    Hash, HashAndFormat,
 };
 
 /// Get the entry state for a hash.
@@ -25,7 +28,7 @@ pub struct Get {
 impl fmt::Debug for Get {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Get")
-            .field("hash", &DD::from(self.hash))
+            .field("hash", &DD(self.hash))
             .finish_non_exhaustive()
     }
 }
@@ -57,7 +60,7 @@ impl fmt::Debug for Update {
         f.debug_struct("Update")
             .field("epoch", &self.epoch)
             .field("hash", &self.hash)
-            .field("state", &DD::from(self.state.fmt_short()))
+            .field("state", &DD(self.state.fmt_short()))
             .field("tx", &self.tx.is_some())
             .finish()
     }
@@ -94,9 +97,9 @@ pub struct Tags {
 }
 
 /// Modification method: create a new unique tag and set it to a value.
-pub use crate::proto::CreateTag;
+pub use crate::store::proto::CreateTag;
 /// Modification method: set a tag to a value, or remove it.
-pub use crate::proto::SetTag;
+pub use crate::store::proto::SetTag;
 
 #[derive(Debug)]
 #[enum_conversions(Command)]

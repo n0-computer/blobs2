@@ -34,7 +34,7 @@ use tokio::{sync::mpsc, task::yield_now};
 use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
-use crate::{
+use crate::store::{
     proto::{HashSpecific, ImportByteStream, ImportBytes, ImportPath, ImportProgress},
     util::{MemOrFile, ProgressReader, SenderProgressExt},
     IROH_BLOCK_SIZE,
@@ -402,7 +402,7 @@ mod tests {
     use testresult::TestResult;
 
     use super::*;
-    use crate::{
+    use crate::store::{
         fs::options::{InlineOptions, PathOptions},
         proto::{BoxedByteStream, ImportMode},
         BlobFormat,

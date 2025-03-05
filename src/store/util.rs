@@ -74,7 +74,7 @@ impl Tag {
     }
 }
 
-struct DD<T: fmt::Display>(T);
+pub struct DD<T: fmt::Display>(pub T);
 
 impl<T: fmt::Display> fmt::Debug for DD<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

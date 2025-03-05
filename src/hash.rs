@@ -7,6 +7,8 @@ use bao_tree::blake3;
 use postcard::experimental::max_size::MaxSize;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::store::util::DD;
+
 /// Hash type used throughout.
 #[derive(PartialEq, Eq, Copy, Clone, Hash)]
 pub struct Hash(blake3::Hash);
@@ -14,20 +16,6 @@ pub struct Hash(blake3::Hash);
 impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Hash").field(&DD(self.to_hex())).finish()
-    }
-}
-
-pub(crate) struct DD<T: fmt::Display>(T);
-
-impl<T: fmt::Display> From<T> for DD<T> {
-    fn from(value: T) -> Self {
-        DD(value)
-    }
-}
-
-impl<T: fmt::Display> fmt::Debug for DD<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
     }
 }
 

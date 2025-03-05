@@ -20,7 +20,7 @@ use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
     util::PeekableReceiver,
 };
-use crate::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
+use crate::store::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
 
 /// Error type for message handler functions of the redb actor.
 ///

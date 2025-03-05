@@ -13,8 +13,9 @@ use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{
-    bitfield::Bitfield
+use super::util::DD;
+use crate::store::{
+    bitfield::Bitfield,
     util::{observer::Observer, Tag},
     BlobFormat, HashAndFormat,
 };
@@ -42,7 +43,7 @@ pub struct ImportBao {
 impl fmt::Debug for ImportBao {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImportBao")
-            .field("hash", &DD::from(self.hash))
+            .field("hash", &DD(self.hash))
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
@@ -73,7 +74,7 @@ pub struct Observe {
 impl fmt::Debug for Observe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Observe")
-            .field("hash", &DD::from(self.hash))
+            .field("hash", &DD(self.hash))
             .finish_non_exhaustive()
     }
 }
@@ -116,7 +117,7 @@ impl HashSpecific for ExportBao {
 impl fmt::Debug for ExportBao {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExportBao")
-            .field("hash", &DD::from(self.hash))
+            .field("hash", &DD(self.hash))
             .field("ranges", &self.ranges)
             .finish_non_exhaustive()
     }

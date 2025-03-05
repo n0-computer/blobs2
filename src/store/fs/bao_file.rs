@@ -28,15 +28,14 @@ use super::{
     meta::{self, Update},
     options::{Options, PathOptions},
 };
-use crate::{
+use crate::store::{
     bitfield::Bitfield,
     fs::{meta::raw_outboard_size, TaskContext},
-    hash::DD,
     mem::{PartialMemStorage, SizeInfo},
     util::{
         observer::{Observable, Observer},
         read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
-        ValueOrPoisioned,
+        ValueOrPoisioned, DD,
     },
     Hash, IROH_BLOCK_SIZE,
 };
@@ -61,8 +60,8 @@ pub struct CompleteStorage {
 impl fmt::Debug for CompleteStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompleteStorage")
-            .field("data", &DD::from(self.data.fmt_short()))
-            .field("outboard", &DD::from(self.outboard.fmt_short()))
+            .field("data", &DD(self.data.fmt_short()))
+            .field("outboard", &DD(self.outboard.fmt_short()))
             .finish()
     }
 }
@@ -549,7 +548,7 @@ impl fmt::Debug for BaoFileHandleInner {
         let guard = self.storage.read().unwrap();
         let storage = ValueOrPoisioned(guard.deref().as_ref());
         f.debug_struct("BaoFileHandleInner")
-            .field("hash", &DD::from(self.hash))
+            .field("hash", &DD(self.hash))
             .field("storage", &storage)
             .finish_non_exhaustive()
     }

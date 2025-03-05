@@ -4,7 +4,7 @@ use bao_tree::{ChunkNum, ChunkRanges};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 
-use crate::util::{
+use crate::store::util::{
     observer::{Combine, CombineInPlace},
     RangeSetExt,
 };
@@ -166,7 +166,7 @@ mod tests {
     use test_strategy::proptest;
 
     use super::Bitfield;
-    use crate::util::observer::{Combine, CombineInPlace};
+    use crate::store::util::observer::{Combine, CombineInPlace};
 
     fn gen_chunk_ranges(max: ChunkNum, k: usize) -> impl Strategy<Value = ChunkRanges> {
         prop::collection::btree_set(0..=max.0, 0..=k).prop_map(|vec| {
