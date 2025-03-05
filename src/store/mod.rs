@@ -1,7 +1,7 @@
 use bao_tree::BlockSize;
 mod api;
 mod bitfield;
-mod fs;
+pub mod fs;
 mod mem;
 mod proto;
 mod readonly_mem;

@@ -30,9 +30,12 @@ pub struct Blobs {
 }
 
 impl Blobs {
-    fn new(store: Store, endpoint: Endpoint) -> Self {
+    pub fn new(store: impl AsRef<Store>, endpoint: Endpoint) -> Self {
         Self {
-            inner: Arc::new(BlobsInner { store, endpoint }),
+            inner: Arc::new(BlobsInner {
+                store: store.as_ref().clone(),
+                endpoint,
+            }),
         }
     }
 

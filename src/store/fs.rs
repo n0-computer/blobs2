@@ -799,6 +799,12 @@ impl Deref for DbStore {
     }
 }
 
+impl AsRef<Store> for DbStore {
+    fn as_ref(&self) -> &Store {
+        self.deref()
+    }
+}
+
 impl DbStore {
     fn new(sender: mpsc::Sender<Command>, db: mpsc::Sender<InternalCommand>) -> Self {
         Self { sender, db }
