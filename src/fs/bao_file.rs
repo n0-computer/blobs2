@@ -12,6 +12,7 @@ use bao_tree::{
     blake3,
     io::{
         fsm::BaoContentItem,
+        mixed::ReadBytesAt,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
     },
@@ -563,13 +564,13 @@ impl Drop for BaoFileHandleInner {
 #[derive(Debug)]
 pub struct DataReader(BaoFileHandle);
 
-impl ReadAt for DataReader {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+impl ReadBytesAt for DataReader {
+    fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
         let guard = self.0.storage.read().unwrap();
         match guard.deref() {
-            Some(BaoFileStorage::PartialMem(x)) => x.data.read_at(offset, buf),
-            Some(BaoFileStorage::Partial(x)) => x.data.read_at(offset, buf),
-            Some(BaoFileStorage::Complete(x)) => x.data.read_at(offset, buf),
+            Some(BaoFileStorage::PartialMem(x)) => x.data.read_bytes_at(offset, size),
+            Some(BaoFileStorage::Partial(x)) => x.data.read_bytes_at(offset, size),
+            Some(BaoFileStorage::Complete(x)) => x.data.read_bytes_at(offset, size),
             None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
         }
     }

@@ -11,7 +11,7 @@ use std::{
 use bao_tree::{
     blake3::{self, Hash},
     io::{
-        mixed::{traverse_ranges_validated, EncodedItem},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
         BaoContentItem,
@@ -424,10 +424,10 @@ struct ExportData {
     data: Arc<RwLock<Entry>>,
 }
 
-impl ReadAt for ExportData {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+impl ReadBytesAt for ExportData {
+    fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
         let entry = self.data.read().unwrap();
-        entry.data().read_at(offset, buf)
+        entry.data().read_bytes_at(offset, size)
     }
 }
 

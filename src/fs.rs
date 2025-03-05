@@ -732,7 +732,7 @@ async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Res
             let mut buf = vec![0u8; 1024 * 1024];
             while offset < size {
                 let remaining = buf.len().min((size - offset) as usize);
-                let buf = &mut buf[..remaining];
+                let buf: &mut [u8] = &mut buf[..remaining];
                 file.read_exact_at(offset, buf)?;
                 target.write_all(buf)?;
                 cmd.out

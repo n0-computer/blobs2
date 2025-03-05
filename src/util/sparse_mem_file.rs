@@ -1,6 +1,10 @@
 use std::{io, ops::Deref};
 
-use bao_tree::io::sync::{ReadAt, Size, WriteAt};
+use bao_tree::io::{
+    mixed::ReadBytesAt,
+    sync::{ReadAt, Size, WriteAt},
+};
+use bytes::Bytes;
 use range_collections::{range_set::RangeSetRange, RangeSet2};
 
 /// A file that is sparse in memory
@@ -95,6 +99,12 @@ impl Deref for SparseMemFile {
 impl ReadAt for SparseMemFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.data.read_at(offset, buf)
+    }
+}
+
+impl ReadBytesAt for SparseMemFile {
+    fn read_bytes_at(&self, offset: u64, size: usize) -> io::Result<Bytes> {
+        self.data.read_bytes_at(offset, size)
     }
 }
 

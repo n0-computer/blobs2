@@ -4,7 +4,10 @@ use std::{
     io::{self, Read, Seek},
 };
 
-use bao_tree::io::sync::{ReadAt, Size};
+use bao_tree::io::{
+    mixed::ReadBytesAt,
+    sync::{ReadAt, Size},
+};
 use bytes::Bytes;
 
 #[derive(Debug)]
@@ -28,6 +31,12 @@ impl FixedSize<File> {
 impl<T: ReadAt> ReadAt for FixedSize<T> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.file.read_at(offset, buf)
+    }
+}
+
+impl<T: ReadBytesAt> ReadBytesAt for FixedSize<T> {
+    fn read_bytes_at(&self, offset: u64, size: usize) -> io::Result<Bytes> {
+        self.file.read_bytes_at(offset, size)
     }
 }
 
@@ -89,6 +98,15 @@ impl<A: AsRef<[u8]>, B: ReadAt> ReadAt for MemOrFile<A, B> {
         match self {
             MemOrFile::Mem(mem) => mem.as_ref().read_at(offset, buf),
             MemOrFile::File(file) => file.read_at(offset, buf),
+        }
+    }
+}
+
+impl<A: ReadBytesAt, B: ReadBytesAt> ReadBytesAt for MemOrFile<A, B> {
+    fn read_bytes_at(&self, offset: u64, size: usize) -> io::Result<Bytes> {
+        match self {
+            MemOrFile::Mem(mem) => mem.read_bytes_at(offset, size),
+            MemOrFile::File(file) => file.read_bytes_at(offset, size),
         }
     }
 }

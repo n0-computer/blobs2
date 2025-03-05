@@ -202,7 +202,10 @@ async fn import_byte_stream_impl(
 ) -> anyhow::Result<ImportEntry> {
     let ImportByteStream { data, tx: out } = cmd;
     let import_source = get_import_source(data, &out, &options).await?;
-    out.send(ImportProgress::Size { size: import_source.size() }).await?;
+    out.send(ImportProgress::Size {
+        size: import_source.size(),
+    })
+    .await?;
     out.send(ImportProgress::CopyDone).await?;
     compute_outboard(import_source, options, out).await
 }

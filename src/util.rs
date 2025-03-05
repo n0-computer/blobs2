@@ -1,4 +1,5 @@
 use std::{
+    any::TypeId,
     borrow::Borrow,
     fmt,
     fs::{File, OpenOptions},
@@ -9,7 +10,7 @@ use std::{
 };
 
 use arrayvec::ArrayString;
-use bao_tree::blake3;
+use bao_tree::{blake3, io::sync::ReadAt};
 use bytes::Bytes;
 use derive_more::{From, Into};
 
