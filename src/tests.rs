@@ -13,7 +13,7 @@ use crate::{
         tests::{test_data, INTERESTING_SIZES},
         DbStore,
     },
-    Hash,
+    Hash, HashAndFormat,
 };
 
 #[tokio::test]
@@ -47,9 +47,47 @@ async fn two_nodes_blobs() -> TestResult<()> {
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
         get::db::get_all(conn.clone(), hash, &store2).await?;
     }
+    tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
 }
 
+#[tokio::test]
+async fn two_nodes_hash_seq() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init()?;
+    let testdir = tempfile::tempdir()?;
+    let db1_path = testdir.path().join("db1");
+    let db2_path = testdir.path().join("db2");
+    let store1 = DbStore::load(&db1_path).await?;
+    let store2 = DbStore::load(&db2_path).await?;
+    let sizes = INTERESTING_SIZES;
+    let mut hashes = Vec::new();
+    for size in sizes {
+        let hash = store1.import_bytes(test_data(size)).await?;
+        hashes.push(Hash::from(hash));
+    }
+    let hash_seq = hashes.into_iter().collect::<HashSeq>();
+    let root = Hash::from(store1.import_bytes(hash_seq).await?);
+    let ep1 = Endpoint::builder().discovery_n0().bind().await?;
+    let ep2 = Endpoint::builder().bind().await?;
+    let blobs1 = Blobs::new(&store1, ep1.clone());
+    let blobs2 = Blobs::new(&store2, ep2.clone());
+    let r1 = Router::builder(ep1)
+        .accept(crate::ALPN, blobs1)
+        .spawn()
+        .await?;
+    let r2 = Router::builder(ep2)
+        .accept(crate::ALPN, blobs2)
+        .spawn()
+        .await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    get::db::get_all(conn, HashAndFormat::hash_seq(root), &store2).await?;
+    Ok(())
+}
+
+/// A node serves a hash sequence with all the interesting sizes.
+///
+/// The client requests the hash sequence and the children, but does not store the data.
 #[tokio::test]
 async fn node_serve_hash_seq() -> TestResult<()> {
     tracing_subscriber::fmt::try_init()?;
@@ -82,6 +120,9 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     Ok(())
 }
 
+/// A node serves individual blobs with all the interesting sizes.
+///
+/// The client requests them all one by one, but does not store it.
 #[tokio::test]
 async fn node_serve_blobs() -> TestResult<()> {
     tracing_subscriber::fmt::try_init()?;

@@ -7,15 +7,16 @@ use n0_future::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
+use super::{
+    fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
+    Stats,
+};
 use crate::{
+    get::fsm::AtStartChild,
+    hashseq::HashSeq,
     protocol::{GetRequest, RangeSpecSeq},
     store::Store,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
-};
-
-use super::{
-    fsm::{BlobContentNext, ConnectedNext, EndBlobNext},
-    Stats,
 };
 
 pub async fn get_all(
@@ -30,7 +31,7 @@ pub async fn get_all(
             get_blob_impl(conn, data.hash, store).await?;
         }
         BlobFormat::HashSeq => {
-            todo!()
+            get_hash_seq_impl(conn, data.hash, store).await?;
         }
     }
     Ok(())
@@ -61,11 +62,26 @@ async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::R
         unreachable!()
     };
     let header = root.next();
+    let end = get_blob_ranges_impl(header, hash, store).await?;
+    // we need to drop the sender so the other side can finish
+    let EndBlobNext::Closing(closing) = end.next() else {
+        unreachable!()
+    };
+    let stats = closing.next().await?;
+    trace!(?stats, "get blob done");
+    Ok(stats)
+}
+
+async fn get_blob_ranges_impl(
+    header: AtBlobHeader,
+    hash: Hash,
+    store: &Store,
+) -> anyhow::Result<AtEndBlob> {
     let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {
         return if hash == Hash::EMPTY {
-            // we don't count the time for looking up the bitfield locally
-            Ok(Stats::default())
+            let end = content.drain().await?;
+            Ok(end)
         } else {
             Err(anyhow::anyhow!("invalid size for hash"))
         };
@@ -73,7 +89,6 @@ async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::R
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
     let (tx, rx) = mpsc::channel(buffer_size);
-    info!("calling import_bao");
     let complete = store.import_bao(hash, size, rx);
     let write = async move {
         anyhow::Ok(loop {
@@ -92,11 +107,59 @@ async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::R
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;
-    // we need to drop the sender so the other side can finish
-    let EndBlobNext::Closing(closing) = end.next() else {
-        unreachable!()
+    Ok(end)
+}
+
+// get a single blob, taking the locally available ranges into account
+async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyhow::Result<Stats> {
+    trace!("get hash seq: {}", root);
+    let local_ranges = store
+        .observe(root)
+        .next()
+        .await
+        .map(|x| x.ranges)
+        .unwrap_or_default();
+    let required_ranges = ChunkRanges::all() - local_ranges;
+    let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges]));
+    let start = crate::get::fsm::start(conn, request);
+    let connected = start.next().await?;
+    // read the header
+    let mut next_child = match connected.next().await? {
+        ConnectedNext::StartRoot(at_start_root) => {
+            let header = at_start_root.next();
+            let end = get_blob_ranges_impl(header, root, store).await?;
+            match end.next() {
+                EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+                EndBlobNext::Closing(at_closing) => Err(at_closing),
+            }
+        }
+        ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
+        ConnectedNext::Closing(at_closing) => Err(at_closing),
     };
-    let stats = closing.next().await?;
-    trace!(?stats, "get blob done");
+    let hash_seq = store.export_bytes(root).await?;
+    let Ok(hash_seq) = HashSeq::try_from(hash_seq) else {
+        anyhow::bail!("invalid hash seq");
+    };
+    // read the rest, if any
+    let at_closing = loop {
+        let at_start_child = match next_child {
+            Ok(at_start_child) => at_start_child,
+            Err(at_closing) => break at_closing,
+        };
+        let Ok(offset) = usize::try_from(at_start_child.child_offset()) else {
+            anyhow::bail!("hash seq offset too large");
+        };
+        let Some(hash) = hash_seq.get(offset) else {
+            break at_start_child.finish();
+        };
+        let header = at_start_child.next(hash);
+        let end = get_blob_ranges_impl(header, hash, store).await?;
+        next_child = match end.next() {
+            EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+            EndBlobNext::Closing(at_closing) => Err(at_closing),
+        }
+    };
+    let stats = at_closing.next().await?;
+    trace!(?stats, "get hash seq done");
     Ok(stats)
 }

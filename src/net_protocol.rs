@@ -14,7 +14,7 @@ use anyhow::{bail, Result};
 use futures_lite::future::Boxed as BoxedFuture;
 use iroh::{endpoint::Connecting, protocol::ProtocolHandler, Endpoint, NodeAddr};
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::{store::Store, BlobFormat, Hash};
 
@@ -61,7 +61,9 @@ impl ProtocolHandler for Blobs {
     fn shutdown(&self) -> BoxedFuture<()> {
         let store = self.store().clone();
         Box::pin(async move {
-            store.shutdown().await;
+            if let Err(cause) = store.shutdown().await {
+                error!("error shutting down store: {:?}", cause);
+            }
         })
     }
 }
