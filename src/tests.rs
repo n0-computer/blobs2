@@ -18,7 +18,7 @@ use crate::{
 
 #[tokio::test]
 async fn two_nodes_blobs() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init()?;
+    tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
@@ -53,7 +53,7 @@ async fn two_nodes_blobs() -> TestResult<()> {
 
 #[tokio::test]
 async fn two_nodes_hash_seq() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init()?;
+    tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
@@ -90,7 +90,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
 /// The client requests the hash sequence and the children, but does not store the data.
 #[tokio::test]
 async fn node_serve_hash_seq() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init()?;
+    tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::DbStore::load(&db_path).await?;
@@ -125,7 +125,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
 /// The client requests them all one by one, but does not store it.
 #[tokio::test]
 async fn node_serve_blobs() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init()?;
+    tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::DbStore::load(&db_path).await?;
@@ -160,7 +160,7 @@ async fn node_serve_blobs() -> TestResult<()> {
 
 #[tokio::test]
 async fn node_smoke() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init()?;
+    tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::DbStore::load(&db_path).await?;

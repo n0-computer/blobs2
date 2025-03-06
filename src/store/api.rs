@@ -423,7 +423,6 @@ impl ExportBaoResult {
         if data.len() == 1 {
             Ok(data.pop().unwrap())
         } else {
-            let mut data = data.into_iter().map(Bytes::from).collect::<Vec<_>>();
             let mut out = Vec::new();
             while let Some(item) = data.pop() {
                 out.extend_from_slice(&item);

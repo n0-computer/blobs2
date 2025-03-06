@@ -220,12 +220,20 @@ async fn get_import_source(
     let Some(first) = stream.next().await.transpose()? else {
         return Ok(ImportSource::Memory(Bytes::new()));
     };
-    let Some(second) = stream.next().await.transpose()? else {
-        return Ok(ImportSource::Memory(first.into()));
+    match stream.next().await.transpose()? {
+        Some(second) => {
+            peek.push(Ok(first));
+            peek.push(Ok(second));
+        }
+        None => {
+            let size = first.len() as u64;
+            if options.is_inlined_data(size) {
+                return Ok(ImportSource::Memory(first.into()));
+            }
+            peek.push(Ok(first));
+        }
     };
     // todo: if both first and second are giant, we might want to write them to disk immediately
-    peek.push(Ok(first));
-    peek.push(Ok(second));
     let mut stream = stream::iter(peek).chain(stream);
     let mut size = 0;
     let mut data = Vec::new();

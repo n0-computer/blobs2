@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use bao_tree::ChunkRanges;
+use bao_tree::{blake3, ChunkRanges};
 use bytes::buf;
 use iroh::endpoint::Connection;
 use n0_future::StreamExt;
@@ -23,18 +23,14 @@ pub async fn get_all(
     conn: Connection,
     data: impl Into<HashAndFormat>,
     store: impl AsRef<Store>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Stats> {
     let data = data.into();
     let store = store.as_ref();
-    match data.format {
-        BlobFormat::Raw => {
-            get_blob_impl(conn, data.hash, store).await?;
-        }
-        BlobFormat::HashSeq => {
-            get_hash_seq_impl(conn, data.hash, store).await?;
-        }
-    }
-    Ok(())
+    let stats = match data.format {
+        BlobFormat::Raw => get_blob_impl(conn, data.hash, store).await?,
+        BlobFormat::HashSeq => get_hash_seq_impl(conn, data.hash, store).await?,
+    };
+    Ok(stats)
 }
 
 fn get_buffer_size(size: NonZeroU64) -> usize {
@@ -123,10 +119,12 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
     let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges]));
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
+    info!("Getting the header");
     // read the header
     let mut next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
             let header = at_start_root.next();
+            println!("getting data for {}", root.to_hex());
             let end = get_blob_ranges_impl(header, root, store).await?;
             match end.next() {
                 EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
@@ -136,10 +134,14 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
         ConnectedNext::Closing(at_closing) => Err(at_closing),
     };
+    info!("getting the data from the store");
     let hash_seq = store.export_bytes(root).await?;
+    println!("expected root: {}", root.to_hex());
+    println!("hash_seq: {}", blake3::hash(&hash_seq));
     let Ok(hash_seq) = HashSeq::try_from(hash_seq) else {
         anyhow::bail!("invalid hash seq");
     };
+    info!("getting the rest");
     // read the rest, if any
     let at_closing = loop {
         let at_start_child = match next_child {

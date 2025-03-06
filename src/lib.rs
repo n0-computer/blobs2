@@ -8,6 +8,7 @@ pub mod hashseq;
 pub mod net_protocol;
 pub mod protocol;
 pub mod provider;
+pub mod ticket;
 pub mod util;
 
 #[cfg(test)]

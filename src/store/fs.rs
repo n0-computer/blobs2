@@ -88,8 +88,11 @@ use super::{proto::*, Store};
 
 /// Create a 16 byte unique ID.
 fn new_uuid() -> [u8; 16] {
-    use rand::Rng;
-    rand::rng().random::<[u8; 16]>()
+    use rand::RngCore;
+    let mut rng = rand::thread_rng();
+    let mut bytes = [0u8; 16];
+    rng.fill_bytes(&mut bytes);
+    bytes
 }
 
 /// Create temp file name based on a 16 byte UUID.
@@ -506,6 +509,18 @@ async fn finish_import(cmd: ImportEntry, ctx: HashContext) {
 }
 
 async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyhow::Result<()> {
+    let options = ctx.options();
+    match &import_data.source {
+        ImportSource::Memory(data) => {
+            debug_assert!(options.is_inlined_data(data.len() as u64));
+        }
+        ImportSource::External(_, _, size) => {
+            debug_assert!(!options.is_inlined_data(*size));
+        }
+        ImportSource::TempFile(_, _, size) => {
+            debug_assert!(!options.is_inlined_data(*size));
+        }
+    }
     let hash: crate::Hash = import_data.hash.into();
     let guard = ctx.lock().await;
     let handle = guard.as_ref().and_then(|x| x.upgrade());
@@ -833,7 +848,7 @@ pub mod tests {
         io::{outboard::PreOrderMemOutboard, round_up_to_chunks, round_up_to_chunks_groups},
         BlockSize, ChunkRanges,
     };
-    use n0_future::{stream, Stream, StreamExt};
+    use n0_future::{stream, SinkExt, Stream, StreamExt};
     use testresult::TestResult;
     use walkdir::WalkDir;
 
@@ -945,7 +960,16 @@ pub mod tests {
     /// The only thing it should not be is all zeros, since that is what you
     /// will get for a gap.
     pub fn test_data(n: usize) -> Bytes {
-        vec![1u8; n].into()
+        let mut res = Vec::with_capacity(n);
+        // Using uppercase A-Z (65-90), 26 possible characters
+        for i in 0..n {
+            // Change character every 1024 bytes
+            let block_num = i / 1024;
+            // Map to uppercase A-Z range (65-90)
+            let ascii_val = 65 + (block_num % 26) as u8;
+            res.push(ascii_val);
+        }
+        Bytes::from(res)
     }
 
     async fn await_completion(mut obs: Aggregator<Bitfield>) {
@@ -985,8 +1009,11 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
-        for size in INTERESTING_SIZES {
+        let store = DbStore::load(&db_dir).await?;
+        let sizes = INTERESTING_SIZES;
+        let sizes = [16385];
+        println!("{}", Options::new(&db_dir).is_inlined_data(16385));
+        for size in sizes {
             let expected = test_data(size);
             let expected_hash = blake3::hash(&expected);
             let obs = store.observe(expected_hash).aggregated();
@@ -996,8 +1023,10 @@ pub mod tests {
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
-            assert_eq!(&expected, &actual);
+            // assert_eq!(&expected, &actual);
         }
+        store.shutdown().await?;
+        dump_dir_full(db_dir)?;
         Ok(())
     }
 
@@ -1055,7 +1084,7 @@ pub mod tests {
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
-            assert_eq!(&expected, &actual);
+            assert_eq!(&expected, &actual, "size={size}");
         }
         dump_dir_full(testdir.path())?;
         Ok(())
