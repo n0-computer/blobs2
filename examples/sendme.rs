@@ -1,7 +1,7 @@
 use core::hash;
 use std::collections::hash_set;
 
-use blobs2::{net_protocol::Blobs, store::fs::DbStore, ticket::BlobTicket, HashAndFormat};
+use blobs2::{net_protocol::Blobs, store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
 use clap::Parser;
 use iroh::{endpoint::Connection, protocol::Router};
 
@@ -29,10 +29,10 @@ async fn get_one_by_one(connection: Connection, content: HashAndFormat) -> anyho
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    // let args = ReceiveArgs::parse();
-    // let ticket = args.ticket;
-    let ticket: BlobTicket = "blobaclnb5ydo34g46l57wpcgjnkquwd5bzuhrvxshzhbybh4x5pr5usaajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiaakd3fsxvimayaycuab4xkqybqdqeibyo2s474znqwd3oetwf2duzsgkzlh6tlb57yerg4drxaojzc".parse().unwrap();
-    let store = DbStore::load("blobs").await?;
+    let args = ReceiveArgs::parse();
+    let ticket = args.ticket;
+    // let ticket: BlobTicket = "blobaclnb5ydo34g46l57wpcgjnkquwd5bzuhrvxshzhbybh4x5pr5usaajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiaakd3fsxvimayaycuab4xkqybqdqeibyo2s474znqwd3oetwf2duzsgkzlh6tlb57yerg4drxaojzc".parse().unwrap();
+    let store = FsStore::load("blobs").await?;
     let endpoint = iroh::Endpoint::builder().bind().await?;
     let addr = ticket.node_addr().clone();
     let content = ticket.hash_and_format();

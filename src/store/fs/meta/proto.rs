@@ -66,6 +66,23 @@ impl fmt::Debug for Update {
     }
 }
 
+pub struct Set {
+    pub epoch: u64,
+    pub hash: Hash,
+    pub state: EntryState<Bytes>,
+    pub tx: oneshot::Sender<ActorResult<()>>,
+}
+
+impl fmt::Debug for Set {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Set")
+            .field("epoch", &self.epoch)
+            .field("hash", &self.hash)
+            .field("state", &DD(self.state.fmt_short()))
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 pub struct Delete {
     pub epoch: u64,
@@ -114,6 +131,7 @@ pub enum ReadOnlyCommand {
 #[enum_conversions(Command)]
 pub enum ReadWriteCommand {
     Update(Update),
+    Set(Set),
     Delete(Delete),
     SetTag(SetTag),
     CreateTag(CreateTag),

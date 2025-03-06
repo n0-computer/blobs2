@@ -11,7 +11,7 @@ use crate::{
     net_protocol::Blobs,
     store::fs::{
         tests::{test_data, INTERESTING_SIZES},
-        DbStore,
+        FsStore,
     },
     Hash, HashAndFormat,
 };
@@ -22,8 +22,8 @@ async fn two_nodes_blobs() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
-    let store1 = DbStore::load(&db1_path).await?;
-    let store2 = DbStore::load(&db2_path).await?;
+    let store1 = FsStore::load(&db1_path).await?;
+    let store2 = FsStore::load(&db2_path).await?;
     let sizes = INTERESTING_SIZES;
     for size in sizes {
         store1.import_bytes(test_data(size)).await?;
@@ -57,8 +57,8 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
-    let store1 = DbStore::load(&db1_path).await?;
-    let store2 = DbStore::load(&db2_path).await?;
+    let store1 = FsStore::load(&db1_path).await?;
+    let store2 = FsStore::load(&db2_path).await?;
     let sizes = INTERESTING_SIZES;
     let mut hashes = Vec::new();
     for size in sizes {
@@ -93,7 +93,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
-    let store = crate::store::fs::DbStore::load(&db_path).await?;
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
     let sizes = INTERESTING_SIZES;
     let mut hashes = Vec::new();
     // add all the sizes
@@ -128,7 +128,7 @@ async fn node_serve_blobs() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
-    let store = crate::store::fs::DbStore::load(&db_path).await?;
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
     let sizes = INTERESTING_SIZES;
     // add all the sizes
     for size in sizes {
@@ -163,7 +163,7 @@ async fn node_smoke() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
-    let store = crate::store::fs::DbStore::load(&db_path).await?;
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
     let hash = store.import_bytes(b"hello world".to_vec()).await?;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());

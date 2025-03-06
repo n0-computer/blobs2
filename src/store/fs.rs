@@ -186,6 +186,29 @@ impl HashContext {
         Ok(())
     }
 
+    /// Update the entry state in the database, and wait for completion.
+    pub async fn set(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> anyhow::Result<()> {
+        let hash = hash.into();
+        let epoch = self
+            .ctx
+            .epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.db()
+            .send(
+                meta::Set {
+                    hash,
+                    epoch,
+                    state,
+                    tx,
+                }
+                .into(),
+            )
+            .await?;
+        rx.await??;
+        Ok(())
+    }
+
     pub async fn get_or_create(&self, hash: impl Into<Hash>) -> anyhow::Result<BaoFileHandle> {
         let hash = hash.into();
         if hash == Hash::EMPTY {
@@ -785,7 +808,7 @@ async fn export_path_impl(
                         }
                     }
                 }
-                ctx.update(
+                ctx.set(
                     hash,
                     EntryState::Complete {
                         data_location: DataLocation::External(vec![cmd.target], file.size),
@@ -820,7 +843,7 @@ async fn copy_with_progress(
     Ok(())
 }
 
-impl DbStore {
+impl FsStore {
     /// Load or create a new store.
     pub async fn load(root: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = root.as_ref();
@@ -830,7 +853,7 @@ impl DbStore {
     }
 
     /// Load or create a new store with custom options, returning an additional sender for file store specific commands.
-    pub async fn load_with_opts(path: PathBuf, options: Options) -> anyhow::Result<DbStore> {
+    pub async fn load_with_opts(path: PathBuf, options: Options) -> anyhow::Result<FsStore> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
@@ -849,16 +872,16 @@ impl DbStore {
             ))
             .await??;
         handle.spawn(actor.run());
-        Ok(DbStore::new(commands_tx, fs_commands_tx))
+        Ok(FsStore::new(commands_tx, fs_commands_tx))
     }
 }
 
-pub struct DbStore {
+pub struct FsStore {
     sender: mpsc::Sender<Command>,
     db: mpsc::Sender<InternalCommand>,
 }
 
-impl Deref for DbStore {
+impl Deref for FsStore {
     type Target = Store;
 
     fn deref(&self) -> &Self::Target {
@@ -866,13 +889,13 @@ impl Deref for DbStore {
     }
 }
 
-impl AsRef<Store> for DbStore {
+impl AsRef<Store> for FsStore {
     fn as_ref(&self) -> &Store {
         self.deref()
     }
 }
 
-impl DbStore {
+impl FsStore {
     fn new(sender: mpsc::Sender<Command>, db: mpsc::Sender<InternalCommand>) -> Self {
         Self { sender, db }
     }
@@ -959,7 +982,7 @@ pub mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let store = DbStore::load_with_opts(db_dir, options).await?;
+        let store = FsStore::load_with_opts(db_dir, options).await?;
         let sizes = INTERESTING_SIZES;
         for size in sizes {
             let data = test_data(size);
@@ -987,7 +1010,7 @@ pub mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let store = DbStore::load_with_opts(db_dir, options).await?;
+        let store = FsStore::load_with_opts(db_dir, options).await?;
         let sizes = [
             0,
             1,
@@ -1033,7 +1056,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
+        let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = blake3::hash(&expected);
@@ -1056,7 +1079,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(&db_dir).await?;
+        let store = FsStore::load(&db_dir).await?;
         let sizes = INTERESTING_SIZES;
         println!("{}", Options::new(&db_dir).is_inlined_data(16385));
         for size in sizes {
@@ -1083,7 +1106,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
+        let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES
             .into_iter()
             .filter(|x| *x != 0 && *x <= IROH_BLOCK_SIZE.bytes())
@@ -1117,7 +1140,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
+        let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = blake3::hash(&expected);
@@ -1142,7 +1165,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
+        let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = blake3::hash(&expected);
@@ -1163,7 +1186,7 @@ pub mod tests {
         let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = vec![0u8; size];
                 let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
@@ -1175,7 +1198,7 @@ pub mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let expected = vec![0u8; size];
                 let hash = blake3::hash(&expected);
@@ -1207,7 +1230,7 @@ pub mod tests {
         let db_dir = testdir.path().join("db");
         let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -1220,7 +1243,7 @@ pub mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
                 let data = test_data(size);
@@ -1255,7 +1278,7 @@ pub mod tests {
         let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -1270,7 +1293,7 @@ pub mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let remaining = ChunkRanges::all() - round_up_request(size as u64, &just_size);
                 if remaining.is_empty() {
@@ -1288,7 +1311,7 @@ pub mod tests {
         }
         // check if the data is complete
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
                 let data = test_data(size);
@@ -1328,7 +1351,7 @@ pub mod tests {
         let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -1343,7 +1366,7 @@ pub mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
@@ -1379,7 +1402,7 @@ pub mod tests {
         let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = FsStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -1395,7 +1418,7 @@ pub mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = DbStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = FsStore::load_with_opts(db_dir.clone(), options.clone()).await?;
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
@@ -1424,7 +1447,7 @@ pub mod tests {
         let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = test_data(size);
                 let data = Bytes::from(data);
@@ -1434,7 +1457,7 @@ pub mod tests {
             store.shutdown().await?;
         }
         {
-            let store = DbStore::load(&db_dir).await?;
+            let store = FsStore::load(&db_dir).await?;
             store.dump().await?;
             for size in sizes {
                 let expected = test_data(size);
@@ -1458,7 +1481,7 @@ pub mod tests {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
-        let store = DbStore::load(db_dir).await?;
+        let store = FsStore::load(db_dir).await?;
         let haf = HashAndFormat::raw(Hash::from([0u8; 32]));
         store.set_tag(Tag::from("test"), haf).await?;
         store.set_tag(Tag::from("boo"), haf).await?;

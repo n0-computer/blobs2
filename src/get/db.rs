@@ -12,7 +12,6 @@ use super::{
     Stats,
 };
 use crate::{
-    get::fsm::AtStartChild,
     hashseq::HashSeq,
     protocol::{GetRequest, RangeSpecSeq},
     store::Store,

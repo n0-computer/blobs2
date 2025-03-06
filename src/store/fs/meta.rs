@@ -265,6 +265,42 @@ impl Actor {
         Ok(())
     }
 
+    fn set(tables: &mut Tables, cmd: Set) -> ActorResult<()> {
+        let Set {
+            state,
+            hash,
+            epoch,
+            tx,
+        } = cmd;
+        let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
+            EntryState::Complete {
+                data_location,
+                outboard_location,
+            } => {
+                let (data_location, data) = data_location.split_inline_data();
+                let (outboard_location, outboard) = outboard_location.split_inline_data();
+                (
+                    EntryState::Complete {
+                        data_location,
+                        outboard_location,
+                    },
+                    data,
+                    outboard,
+                )
+            }
+            EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
+        };
+        tables.blobs.insert(hash, state)?;
+        if let Some(data) = data {
+            tables.inline_data.insert(hash, data.as_ref())?;
+        }
+        if let Some(outboard) = outboard {
+            tables.inline_outboard.insert(hash, outboard.as_ref())?;
+        }
+        tx.send(Ok(())).ok();
+        Ok(())
+    }
+
     fn delete(tables: &mut Tables, cmd: Delete) -> ActorResult<()> {
         let Delete { epoch, hashes, .. } = cmd;
         for hash in hashes {
@@ -336,6 +372,7 @@ impl Actor {
     fn handle_readwrite(tables: &mut Tables, cmd: ReadWriteCommand) -> ActorResult<()> {
         match cmd {
             ReadWriteCommand::Update(cmd) => Self::update(tables, cmd),
+            ReadWriteCommand::Set(cmd) => Self::set(tables, cmd),
             ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd),
             ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd),
             ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd),
