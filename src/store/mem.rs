@@ -136,9 +136,9 @@ impl Actor {
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry.clone(), ranges, out));
             }
-            Command::ExportPath(ExportPath { hash, target, out }) => {
-                let entry = self.state.data.get(&hash).cloned();
-                self.unit_tasks.spawn(export_path_task(entry, target, out));
+            Command::ExportPath(cmd) => {
+                let entry = self.state.data.get(&cmd.hash).cloned();
+                self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::Tags(Tags { tx: out }) => {
                 let items = self
@@ -366,32 +366,28 @@ async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
     import_bytes(res.into(), tx).await
 }
 
-async fn export_path_task(
-    entry: Option<Arc<RwLock<Entry>>>,
-    target: PathBuf,
-    out: mpsc::Sender<ExportProgress>,
-) {
+async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
     let Some(entry) = entry else {
-        out.send(ExportProgress::Error {
-            cause: anyhow::anyhow!("hash not found"),
-        })
-        .await
-        .ok();
+        cmd.out
+            .send(ExportProgress::Error {
+                cause: anyhow::anyhow!("hash not found"),
+            })
+            .await
+            .ok();
         return;
     };
-    match export_path_impl(entry, target, &out).await {
-        Ok(()) => out.send(ExportProgress::Done).await.ok(),
-        Err(e) => out.send(ExportProgress::Error { cause: e }).await.ok(),
+    match export_path_impl(entry, &cmd).await {
+        Ok(()) => cmd.out.send(ExportProgress::Done).await.ok(),
+        Err(e) => cmd.out.send(ExportProgress::Error { cause: e }).await.ok(),
     };
 }
 
-async fn export_path_impl(
-    entry: Arc<RwLock<Entry>>,
-    target: PathBuf,
-    out: &mpsc::Sender<ExportProgress>,
-) -> anyhow::Result<()> {
+async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow::Result<()> {
+    let ExportPath {
+        target, out, mode, ..
+    } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
-    let mut file = std::fs::File::create(&target)?;
+    let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
     out.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];

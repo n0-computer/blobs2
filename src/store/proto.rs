@@ -131,6 +131,7 @@ impl fmt::Debug for ExportBao {
 #[derive(Debug)]
 pub struct ExportPath {
     pub hash: Hash,
+    pub mode: ExportMode,
     pub target: PathBuf,
     pub out: mpsc::Sender<ExportProgress>,
 }

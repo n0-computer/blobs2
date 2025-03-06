@@ -169,6 +169,7 @@ impl Store {
             .try_send(
                 ExportPath {
                     hash,
+                    mode: ExportMode::Copy,
                     target: target.as_ref().to_owned(),
                     out: tx,
                 }

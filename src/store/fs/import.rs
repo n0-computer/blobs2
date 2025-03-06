@@ -35,7 +35,7 @@ use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::store::{
-    proto::{HashSpecific, ImportByteStream, ImportBytes, ImportPath, ImportProgress},
+    proto::{HashSpecific, ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress},
     util::{MemOrFile, ProgressReader, SenderProgressExt},
     IROH_BLOCK_SIZE,
 };
@@ -360,7 +360,12 @@ pub async fn import_path(cmd: ImportPath, context: Arc<TaskContext>) {
 }
 
 async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Result<ImportEntry> {
-    let ImportPath { path, tx: out, .. } = cmd;
+    let ImportPath {
+        path,
+        tx: out,
+        format,
+        mode,
+    } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());
     }
@@ -377,27 +382,26 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
         out.send_progress(ImportProgress::CopyDone)?;
         ImportSource::Memory(data.into())
     } else {
-        let temp_path = options.path.temp_file_name();
-        // copy from path to temp_path in increments of 64k and send progress
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&temp_path)?;
-        let mut source = File::open(&path)?;
-        let mut buffer = [0u8; 64 * 1024];
-        let mut offset = 0;
-        while let Ok(n) = source.read(&mut buffer) {
-            if n == 0 {
-                break;
+        if mode == ImportMode::TryReference {
+            // reference where it is. We are going to need the file handle to
+            // compute the outboard, so open it here. If this fails, the import
+            // can't proceed.
+            let file = OpenOptions::new().read(true).open(&path)?;
+            ImportSource::External(path, file, size)
+        } else {
+            let temp_path = options.path.temp_file_name();
+            // todo: if reflink works, we don't need progress.
+            // But if it does not, it might take a while and we won't get progress.
+            if reflink_copy::reflink_or_copy(&path, &temp_path)?.is_none() {
+                trace!("reflinked {} to {}", path.display(), temp_path.display());
+            } else {
+                trace!("copied {} to {}", path.display(), temp_path.display());
             }
-            file.write_all(&buffer[..n])?;
-            offset += n as u64;
-            out.send_progress(ImportProgress::CopyProgress { offset })?;
-            yield_now().await;
+            // copy from path to temp_path
+            let file = OpenOptions::new().read(true).open(&temp_path)?;
+            out.send_progress(ImportProgress::CopyDone)?;
+            ImportSource::TempFile(temp_path, file, size)
         }
-        out.send_progress(ImportProgress::CopyDone)?;
-        ImportSource::TempFile(temp_path, file, size)
     };
     compute_outboard(import_source, options, out).await
 }

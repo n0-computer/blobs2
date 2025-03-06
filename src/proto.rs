@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    bitfield::Bitfield
+    bitfield::Bitfield,
     util::{observer::Observer, Tag},
     BlobFormat, HashAndFormat,
 };

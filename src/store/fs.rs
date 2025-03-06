@@ -723,7 +723,7 @@ async fn export_path(cmd: ExportPath, ctx: HashContext) {
     };
     match ctx.get_or_create(cmd.hash).await {
         Ok(handle) => {
-            if let Err(cause) = export_path_impl(cmd, handle).await {
+            if let Err(cause) = export_path_impl(cmd, handle, ctx).await {
                 send.send(cause.into());
             }
         }
@@ -734,42 +734,89 @@ async fn export_path(cmd: ExportPath, ctx: HashContext) {
     }
 }
 
-async fn export_path_impl(cmd: ExportPath, handle: BaoFileHandle) -> anyhow::Result<()> {
-    let data = {
+async fn export_path_impl(
+    cmd: ExportPath,
+    handle: BaoFileHandle,
+    ctx: HashContext,
+) -> anyhow::Result<()> {
+    let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
             anyhow::bail!("not a complete file");
         };
-        match &complete.data {
-            MemOrFile::Mem(data) => MemOrFile::Mem(data.clone()),
-            MemOrFile::File(file) => {
-                let file = file.try_clone()?;
-                MemOrFile::File(file)
+        let data = {
+            match &complete.data {
+                MemOrFile::Mem(data) => MemOrFile::Mem(data.clone()),
+                MemOrFile::File(file) => {
+                    let file = file.try_clone()?;
+                    MemOrFile::File(file)
+                }
             }
-        }
+        };
+        let outboard = match &complete.outboard {
+            MemOrFile::Mem(data) => OutboardLocation::inline(data.clone()),
+            MemOrFile::File(_) => OutboardLocation::Owned,
+        };
+        (data, outboard)
     };
-    let mut target = fs::File::create(&cmd.target)?;
     match data {
         MemOrFile::Mem(data) => {
+            let mut target = fs::File::create(&cmd.target)?;
             target.write_all(&data)?;
         }
-        MemOrFile::File(file) => {
-            let size = file.size;
-            let mut offset = 0;
-            let mut buf = vec![0u8; 1024 * 1024];
-            while offset < size {
-                let remaining = buf.len().min((size - offset) as usize);
-                let buf: &mut [u8] = &mut buf[..remaining];
-                file.read_exact_at(offset, buf)?;
-                target.write_all(buf)?;
-                cmd.out
-                    .send_progress(ExportProgress::CopyProgress { offset })?;
-                yield_now().await;
-                offset += buf.len() as u64;
+        MemOrFile::File(file) => match cmd.mode {
+            ExportMode::Copy => {
+                let mut target = fs::File::create(&cmd.target)?;
+                copy_with_progress(&file, file.size, &mut target, &cmd.out).await?;
             }
-        }
+            ExportMode::TryReference => {
+                let hash = handle.hash();
+                let owned_path = ctx.options().path.owned_data_path(&hash);
+                match std::fs::rename(&owned_path, &cmd.target) {
+                    Ok(()) => {}
+                    Err(cause) => {
+                        const ERR_CROSS: i32 = 18;
+                        if cause.raw_os_error() == Some(ERR_CROSS) {
+                            let mut target = fs::File::create(&cmd.target)?;
+                            let size = file.size;
+                            copy_with_progress(&file, size, &mut target, &cmd.out).await?;
+                        } else {
+                            anyhow::bail!("failed to move file: {cause}");
+                        }
+                    }
+                }
+                ctx.update(
+                    hash,
+                    EntryState::Complete {
+                        data_location: DataLocation::External(vec![cmd.target], file.size),
+                        outboard_location,
+                    },
+                )
+                .await?;
+            }
+        },
     }
     cmd.out.send(ExportProgress::Done).await?;
+    Ok(())
+}
+
+async fn copy_with_progress(
+    file: impl ReadAt,
+    size: u64,
+    target: &mut impl Write,
+    out: &mpsc::Sender<ExportProgress>,
+) -> anyhow::Result<()> {
+    let mut offset = 0;
+    let mut buf = vec![0u8; 1024 * 1024];
+    while offset < size {
+        let remaining = buf.len().min((size - offset) as usize);
+        let buf: &mut [u8] = &mut buf[..remaining];
+        file.read_exact_at(offset, buf)?;
+        target.write_all(buf)?;
+        out.send_progress(ExportProgress::CopyProgress { offset })?;
+        yield_now().await;
+        offset += buf.len() as u64;
+    }
     Ok(())
 }
 
