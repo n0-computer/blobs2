@@ -91,7 +91,6 @@ async fn get_blob_ranges_impl(
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res?;
-                    info!("send item {:?}", item);
                     tx.send(item).await?;
                     content = next;
                 }
@@ -119,12 +118,11 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
     let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges]));
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
-    info!("Getting the header");
+    info!("Getting header");
     // read the header
     let mut next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
             let header = at_start_root.next();
-            println!("getting data for {}", root.to_hex());
             let end = get_blob_ranges_impl(header, root, store).await?;
             match end.next() {
                 EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
@@ -134,14 +132,10 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
         ConnectedNext::Closing(at_closing) => Err(at_closing),
     };
-    info!("getting the data from the store");
     let hash_seq = store.export_bytes(root).await?;
-    println!("expected root: {}", root.to_hex());
-    println!("hash_seq: {}", blake3::hash(&hash_seq));
     let Ok(hash_seq) = HashSeq::try_from(hash_seq) else {
         anyhow::bail!("invalid hash seq");
     };
-    info!("getting the rest");
     // read the rest, if any
     let at_closing = loop {
         let at_start_child = match next_child {
@@ -154,6 +148,7 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         let Some(hash) = hash_seq.get(offset) else {
             break at_start_child.finish();
         };
+        info!("getting child {offset} {}", hash.fmt_short());
         let header = at_start_child.next(hash);
         let end = get_blob_ranges_impl(header, hash, store).await?;
         next_child = match end.next() {

@@ -1011,7 +1011,6 @@ pub mod tests {
         let db_dir = testdir.path().join("db");
         let store = DbStore::load(&db_dir).await?;
         let sizes = INTERESTING_SIZES;
-        let sizes = [16385];
         println!("{}", Options::new(&db_dir).is_inlined_data(16385));
         for size in sizes {
             let expected = test_data(size);
@@ -1023,7 +1022,7 @@ pub mod tests {
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
-            // assert_eq!(&expected, &actual);
+            assert_eq!(&expected, &actual);
         }
         store.shutdown().await?;
         dump_dir_full(db_dir)?;

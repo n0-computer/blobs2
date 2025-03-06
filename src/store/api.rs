@@ -424,7 +424,7 @@ impl ExportBaoResult {
             Ok(data.pop().unwrap())
         } else {
             let mut out = Vec::new();
-            while let Some(item) = data.pop() {
+            for item in data {
                 out.extend_from_slice(&item);
             }
             Ok(out.into())
