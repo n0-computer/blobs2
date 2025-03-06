@@ -616,6 +616,11 @@ async fn import_bao_impl(
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
+    trace!(
+        "importing bao: {} {} bytes",
+        handle.hash().fmt_short(),
+        size
+    );
     let mut batch = Vec::<BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
     while let Some(item) = data.recv().await {

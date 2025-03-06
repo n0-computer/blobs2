@@ -14,7 +14,7 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        round_up_to_chunks, EncodeError,
+        round_up_to_chunks, BaoContentItem, EncodeError,
     },
     BaoTree, ChunkNum, ChunkRanges,
 };
@@ -23,7 +23,7 @@ use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
 use range_collections::RangeSet2;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::store::{
     bitfield::Bitfield,
@@ -219,6 +219,32 @@ impl Store {
         }
         drop(tx);
         out_receiver.await??;
+        Ok(())
+    }
+
+    /// Import BaoContentItems from a stream.
+    ///
+    /// The store assumes that these are already verified and in the correct order.
+    pub async fn import_bao(
+        &self,
+        hash: impl Into<Hash>,
+        size: NonZeroU64,
+        data: mpsc::Receiver<BaoContentItem>,
+    ) -> anyhow::Result<()> {
+        let hash = hash.into();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(
+                ImportBao {
+                    hash,
+                    size,
+                    rx: data,
+                    tx,
+                }
+                .into(),
+            )
+            .await?;
+        rx.await??;
         Ok(())
     }
 

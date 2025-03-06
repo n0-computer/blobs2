@@ -8,9 +8,47 @@ use tracing::info;
 use crate::{
     get,
     hashseq::HashSeq,
-    store::fs::tests::{test_data, INTERESTING_SIZES},
+    net_protocol::Blobs,
+    store::fs::{
+        tests::{test_data, INTERESTING_SIZES},
+        DbStore,
+    },
     Hash,
 };
+
+#[tokio::test]
+async fn two_nodes_blobs() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init()?;
+    let testdir = tempfile::tempdir()?;
+    let db1_path = testdir.path().join("db1");
+    let db2_path = testdir.path().join("db2");
+    let store1 = DbStore::load(&db1_path).await?;
+    let store2 = DbStore::load(&db2_path).await?;
+    let sizes = INTERESTING_SIZES;
+    for size in sizes {
+        store1.import_bytes(test_data(size)).await?;
+    }
+    let ep1 = Endpoint::builder().discovery_n0().bind().await?;
+    let ep2 = Endpoint::builder().bind().await?;
+    let blobs1 = Blobs::new(&store1, ep1.clone());
+    let blobs2 = Blobs::new(&store2, ep2.clone());
+    let r1 = Router::builder(ep1)
+        .accept(crate::ALPN, blobs1)
+        .spawn()
+        .await?;
+    let r2 = Router::builder(ep2)
+        .accept(crate::ALPN, blobs2)
+        .spawn()
+        .await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    for size in sizes {
+        let hash = Hash::new(&test_data(size));
+        // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
+        get::db::get_all(conn.clone(), hash, &store2).await?;
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn node_serve_hash_seq() -> TestResult<()> {
@@ -45,7 +83,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
 }
 
 #[tokio::test]
-async fn node_sizes() -> TestResult<()> {
+async fn node_serve_blobs() -> TestResult<()> {
     tracing_subscriber::fmt::try_init()?;
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");

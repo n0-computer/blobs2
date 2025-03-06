@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
 use crate::{
-    hashseq::parse_hash_seq,
+    hashseq::{parse_hash_seq, HashSeq},
     protocol::{GetRequest, RangeSpec, Request},
     store::*,
     BlobFormat, Hash,
@@ -191,24 +191,24 @@ pub async fn handle_get(store: Store, request: GetRequest, mut writer: SendStrea
         if offset == 0 {
             send_blob(&store, hash, ranges.to_chunk_ranges(), &mut writer).await?;
         } else {
+            // todo: this assumes that 1. the hashseq is complete and 2. it is
+            // small enough to fit in memory.
+            //
+            // This should really read the hashseq from the store in chunks,
+            // only where needed, so we can deal with holes and large hashseqs.
             let hash_seq = match &hash_seq {
                 Some(b) => b,
                 None => {
-                    hash_seq = Some(store.export_bytes(hash).await?);
+                    let bytes = store.export_bytes(hash).await?;
+                    let hs = HashSeq::try_from(bytes)?;
+                    hash_seq = Some(hs);
                     hash_seq.as_ref().unwrap()
                 }
             };
-            let size = hash_seq.len();
-            if size % 32 != 0 {
-                anyhow::bail!("hash sequence size is not a multiple of 32");
-            }
-            let n = size / 32;
             let o = usize::try_from(offset - 1).context("offset too large")?;
-            if o >= n {
+            let Some(hash) = hash_seq.get(o) else {
                 break;
-            }
-            let range = o * 32..(o + 1) * 32;
-            let hash = Hash::from_bytes(hash_seq[range].try_into().unwrap());
+            };
             send_blob(&store, hash, ranges.to_chunk_ranges(), &mut writer).await?;
         }
     }

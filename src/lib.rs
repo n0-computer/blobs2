@@ -12,3 +12,5 @@ pub mod util;
 
 #[cfg(test)]
 mod tests;
+
+pub use protocol::ALPN;
