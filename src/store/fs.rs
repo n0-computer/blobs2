@@ -943,13 +943,13 @@ pub mod tests {
 
     /// Create n0 flavoured bao. Note that this can be used to request ranges below a chunk group size,
     /// which can not be exported via bao because we don't store hashes below the chunk group level.
-    fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(blake3::Hash, Vec<u8>)> {
+    fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
         let mut encoded = Vec::new();
         let size = data.len() as u64;
         encoded.extend_from_slice(&size.to_le_bytes());
         bao_tree::io::sync::encode_ranges_validated(&data, &outboard, ranges, &mut encoded)?;
-        Ok((outboard.root, encoded))
+        Ok((outboard.root.into(), encoded))
     }
 
     fn round_up_request(size: u64, ranges: &ChunkRanges) -> ChunkRanges {
@@ -970,7 +970,7 @@ pub mod tests {
     fn create_n0_bao_full(
         data: &[u8],
         ranges: &ChunkRanges,
-    ) -> anyhow::Result<(blake3::Hash, ChunkRanges, Vec<u8>)> {
+    ) -> anyhow::Result<(Hash, ChunkRanges, Vec<u8>)> {
         let ranges = round_up_request(data.len() as u64, ranges);
         let (hash, encoded) = create_n0_bao(data, &ranges)?;
         Ok((hash, ranges, encoded))
@@ -1059,7 +1059,7 @@ pub mod tests {
         let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
-            let expected_hash = blake3::hash(&expected);
+            let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
             let obs = store.observe(expected_hash).aggregated();
             let actual_hash = store.import_byte_stream(stream).await?;
@@ -1084,7 +1084,7 @@ pub mod tests {
         println!("{}", Options::new(&db_dir).is_inlined_data(16385));
         for size in sizes {
             let expected = test_data(size);
-            let expected_hash = blake3::hash(&expected);
+            let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated();
             let actual_hash = store.import_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, actual_hash);
@@ -1112,7 +1112,7 @@ pub mod tests {
             .filter(|x| *x != 0 && *x <= IROH_BLOCK_SIZE.bytes())
         {
             let expected = test_data(size);
-            let expected_hash = blake3::hash(&expected);
+            let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated();
             let actual_hash = store.import_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, actual_hash);
@@ -1143,7 +1143,7 @@ pub mod tests {
         let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
-            let expected_hash = blake3::hash(&expected);
+            let expected_hash = Hash::new(&expected);
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).aggregated();
@@ -1168,7 +1168,7 @@ pub mod tests {
         let store = FsStore::load(db_dir).await?;
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
-            let expected_hash = blake3::hash(&expected);
+            let expected_hash = Hash::new(&expected);
             let actual_hash = store.import_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, actual_hash);
             let out_path = testdir.path().join(format!("out-{}", size));
@@ -1201,7 +1201,7 @@ pub mod tests {
             let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let expected = vec![0u8; size];
-                let hash = blake3::hash(&expected);
+                let hash = Hash::new(&expected);
                 let actual = store
                     .export_bao(hash, ChunkRanges::all())
                     .data_to_vec()
@@ -1370,7 +1370,7 @@ pub mod tests {
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
-                let hash = blake3::hash(&data);
+                let hash = Hash::new(&data);
                 let mut stream = store.observe(hash).aggregated();
                 let Some(_) = stream.next().await else {
                     panic!("no update");
@@ -1422,7 +1422,7 @@ pub mod tests {
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
-                let hash = blake3::hash(&data);
+                let hash = Hash::new(&data);
                 let mut stream = store.observe(hash).aggregated();
                 let Some(_) = stream.next().await else {
                     panic!("no update");
@@ -1461,7 +1461,7 @@ pub mod tests {
             store.dump().await?;
             for size in sizes {
                 let expected = test_data(size);
-                let hash = blake3::hash(&expected);
+                let hash = Hash::new(&expected);
                 let Ok(actual) = store
                     .export_bao(hash, ChunkRanges::all())
                     .data_to_vec()

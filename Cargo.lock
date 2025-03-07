@@ -260,7 +260,6 @@ dependencies = [
  "range-collections",
  "self_cell",
  "smallvec",
- "tokio",
 ]
 
 [[package]]

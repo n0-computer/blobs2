@@ -7,21 +7,24 @@ use std::{fmt::Debug, io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
 use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
-use bao_tree::{blake3::Hash, io::BaoContentItem, ChunkRanges};
+use bao_tree::{io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use super::util::DD;
-use crate::store::{
-    bitfield::Bitfield,
-    util::{observer::Observer, Tag},
-    BlobFormat, HashAndFormat,
+use crate::{
+    store::{
+        bitfield::Bitfield,
+        util::{observer::Observer, Tag},
+        BlobFormat, HashAndFormat,
+    },
+    Hash,
 };
 
 pub trait HashSpecific {
-    fn hash(&self) -> crate::Hash;
+    fn hash(&self) -> Hash;
 
     fn hash_short(&self) -> ArrayString<10> {
         self.hash().fmt_short()

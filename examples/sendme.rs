@@ -1,9 +1,6 @@
-use core::hash;
-use std::collections::hash_set;
-
-use blobs2::{net_protocol::Blobs, store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
+use blobs2::{store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
 use clap::Parser;
-use iroh::{endpoint::Connection, protocol::Router};
+use iroh::endpoint::Connection;
 
 #[derive(Parser, Debug)]
 pub struct ReceiveArgs {

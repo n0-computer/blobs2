@@ -18,9 +18,8 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Context;
 use bao_tree::{
-    blake3::{self, Hash},
+    blake3,
     io::{
         outboard::{PreOrderMemOutboard, PreOrderOutboard},
         sync::WriteAt,
@@ -34,10 +33,15 @@ use tokio::{sync::mpsc, task::yield_now};
 use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
-use crate::store::{
-    proto::{HashSpecific, ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress},
-    util::{MemOrFile, ProgressReader, SenderProgressExt},
-    IROH_BLOCK_SIZE,
+use crate::{
+    store::{
+        proto::{
+            HashSpecific, ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress,
+        },
+        util::{MemOrFile, ProgressReader, SenderProgressExt},
+        IROH_BLOCK_SIZE,
+    },
+    Hash,
 };
 
 /// An import source.
@@ -160,7 +164,7 @@ async fn import_bytes_tiny_impl(cmd: ImportBytes) -> anyhow::Result<ImportEntry>
     Ok(if raw_outboard_size(size) == 0 {
         // the thing is so small that it does not even need an outboard
         ImportEntry {
-            hash: blake3::hash(&cmd.data),
+            hash: Hash::new(&cmd.data),
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::Mem(Bytes::new()),
             tx: cmd.tx,

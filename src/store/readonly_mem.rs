@@ -5,7 +5,6 @@ use std::{
 };
 
 use bao_tree::{
-    blake3::Hash,
     io::{mixed::traverse_ranges_validated, outboard::PreOrderMemOutboard, sync::ReadAt},
     BaoTree, ChunkRanges,
 };
@@ -16,12 +15,15 @@ use tokio::{
     task::{JoinError, JoinSet},
 };
 
-use crate::store::{
-    bitfield::Bitfield,
-    mem::CompleteStorage,
-    proto::*,
-    util::{observer::Observable, SenderProgressExt},
-    Store, IROH_BLOCK_SIZE,
+use crate::{
+    store::{
+        bitfield::Bitfield,
+        mem::CompleteStorage,
+        proto::*,
+        util::{observer::Observable, SenderProgressExt},
+        Store, IROH_BLOCK_SIZE,
+    },
+    Hash,
 };
 
 struct Actor {
@@ -146,7 +148,7 @@ async fn export_bao_task(
     let size = data.as_ref().len() as u64;
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let outboard = PreOrderMemOutboard {
-        root: hash,
+        root: hash.into(),
         tree,
         data: outboard,
     };

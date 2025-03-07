@@ -10,7 +10,6 @@ use std::{
 };
 
 use bao_tree::{
-    blake3::Hash,
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
@@ -25,14 +24,17 @@ use range_collections::RangeSet2;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::{info, trace};
 
-use crate::store::{
-    bitfield::Bitfield,
-    proto::*,
-    util::{
-        observer::{Aggregator, Observer},
-        SliceInfoExt, Tag,
+use crate::{
+    store::{
+        bitfield::Bitfield,
+        proto::*,
+        util::{
+            observer::{Aggregator, Observer},
+            SliceInfoExt, Tag,
+        },
+        HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
-    HashAndFormat, Store, IROH_BLOCK_SIZE,
+    Hash,
 };
 
 impl Store {
@@ -199,7 +201,7 @@ impl Store {
             }
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
-        let mut decoder = ResponseDecoder::new(hash, ranges, tree, stream);
+        let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, stream);
         self.sender.try_send(
             ImportBao {
                 hash,

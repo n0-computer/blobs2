@@ -1,6 +1,6 @@
-use std::num::NonZeroU64;
+use std::{collections::{BTreeMap, HashSet}, num::NonZeroU64};
 
-use bao_tree::{blake3, ChunkRanges};
+use bao_tree::{blake3, io::mixed::EncodedItem, ChunkRanges};
 use bytes::buf;
 use iroh::endpoint::Connection;
 use n0_future::StreamExt;
@@ -13,10 +13,69 @@ use super::{
 };
 use crate::{
     hashseq::HashSeq,
-    protocol::{GetRequest, RangeSpecSeq},
+    protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::Store,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
+
+/// Compute the missing data for the given hash or hash seq.
+pub async fn get_missing(
+    data: impl Into<HashAndFormat>,
+    store: impl AsRef<Store>,
+) -> anyhow::Result<RangeSpecSeq> {
+    let data = data.into();
+    let store = store.as_ref();
+    Ok(match data.format {
+        BlobFormat::Raw => get_missing_blob(data.hash, store).await?,
+        BlobFormat::HashSeq => get_missing_hash_seq(data.hash, store).await?,
+    })
+}
+
+pub async fn get_missing_blob(hash: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
+    let local_ranges = store
+        .observe(hash)
+        .next()
+        .await
+        .map(|x| x.ranges)
+        .expect("observe stream stopped");
+    let required_ranges = ChunkRanges::all() - local_ranges;
+    Ok(RangeSpecSeq::from_ranges([required_ranges]))
+}
+
+pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
+    let local_bitmap = store
+        .observe(root)
+        .next()
+        .await
+        .expect("observe stream stopped");
+    let root_ranges = ChunkRanges::all() - local_bitmap.ranges.clone();
+    let mut stream = store.export_bao(root, local_bitmap.ranges);
+    let mut hashes = HashSet::new();
+    hashes.insert(root);
+    let mut ranges = BTreeMap::new();
+    if !root_ranges.is_empty() {
+        ranges.insert(0, RangeSpec::new(root_ranges));
+    }
+    while let Some(item) = stream.next().await {
+        if let EncodedItem::Leaf(data) = item {
+            let offset = data.offset / 32 + 1;
+            let hs = HashSeq::try_from(data.data)?;
+            for (i, hash) in hs.into_iter().enumerate() {
+                if !hashes.insert(hash) {
+                    continue;
+                }
+                let local_bitmap = store.observe(hash).next().await.unwrap();
+                let missing = ChunkRanges::all() - local_bitmap.ranges;
+                let missing = RangeSpec::new(missing);
+                ranges.insert(offset + i as u64, missing);
+            }
+        }
+    }
+    // let required_ranges = ChunkRanges::all() - local_ranges;
+    let n = ranges.keys().last().copied().unwrap_or_default();
+    let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(RangeSpec::all()));
+    Ok(RangeSpecSeq::new(ranges))
+}
 
 pub async fn get_all(
     conn: Connection,

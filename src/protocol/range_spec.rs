@@ -5,7 +5,7 @@
 //!
 //! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
 use serde::{Deserialize, Serialize};

@@ -3,13 +3,12 @@ use std::{
     io::{self, Write},
     num::NonZeroU64,
     ops::DerefMut,
-    path::PathBuf,
     sync::{Arc, RwLock},
     time::SystemTime,
 };
 
 use bao_tree::{
-    blake3::{self, Hash},
+    blake3,
     io::{
         mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         outboard::PreOrderMemOutboard,
@@ -27,14 +26,17 @@ use tokio::{
 };
 use tracing::{error, instrument};
 
-use crate::store::{
-    bitfield::Bitfield,
-    proto::*,
-    util::{
-        observer::{Observable, Observer},
-        SenderProgressExt, SparseMemFile, Tag,
+use crate::{
+    store::{
+        bitfield::Bitfield,
+        proto::*,
+        util::{
+            observer::{Observable, Observer},
+            SenderProgressExt, SparseMemFile, Tag,
+        },
+        HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
-    HashAndFormat, Store, IROH_BLOCK_SIZE,
+    Hash,
 };
 
 /// Keep track of the most precise size we know of.
@@ -192,7 +194,7 @@ impl Actor {
                 return;
             }
         };
-        let hash = import_data.outboard.root();
+        let hash = import_data.outboard.root().into();
         let size = import_data.data.len() as u64;
         let entry = self.state.data.entry(hash).or_default();
         let mut entry = entry.write().unwrap();
@@ -306,7 +308,7 @@ async fn export_bao_task(
     };
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let outboard = ExportOutboard {
-        hash,
+        hash: hash.into(),
         tree,
         data: entry.clone(),
     };
@@ -411,7 +413,7 @@ struct ImportEntry {
 }
 
 struct ExportOutboard {
-    hash: Hash,
+    hash: blake3::Hash,
     tree: BaoTree,
     data: Arc<RwLock<Entry>>,
 }
@@ -428,7 +430,7 @@ impl ReadBytesAt for ExportData {
 }
 
 impl Outboard for ExportOutboard {
-    fn root(&self) -> Hash {
+    fn root(&self) -> blake3::Hash {
         self.hash
     }
 
@@ -583,9 +585,9 @@ pub(crate) struct CompleteStorage {
 }
 
 impl CompleteStorage {
-    pub fn create(data: Bytes) -> (blake3::Hash, Self) {
+    pub fn create(data: Bytes) -> (Hash, Self) {
         let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
-        let hash = outboard.root();
+        let hash = outboard.root().into();
         let outboard = outboard.data.into();
         let entry = Self::new(data, outboard);
         (hash, entry)
