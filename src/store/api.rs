@@ -19,7 +19,10 @@ use bao_tree::{
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{mpsc, oneshot},
+};
 use tracing::trace;
 
 use crate::{
@@ -149,8 +152,8 @@ impl Store {
         ranges: ChunkRanges,
         mut reader: R,
     ) -> anyhow::Result<R> {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let (out, out_receiver) = tokio::sync::oneshot::channel();
+        let (tx, rx) = mpsc::channel(32);
+        let (out, out_receiver) = oneshot::channel();
         let size = u64::from_le_bytes(reader.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
@@ -194,7 +197,7 @@ impl Store {
         data: mpsc::Receiver<BaoContentItem>,
     ) -> anyhow::Result<()> {
         let hash = hash.into();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.sender
             .send(
                 ImportBao {
@@ -236,21 +239,21 @@ impl Store {
     }
 
     async fn set_tag_impl(&self, tag: Tag, value: Option<HashAndFormat>) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.sender.send(SetTag { tag, value, tx }.into()).await?;
         rx.await??;
         Ok(())
     }
 
     pub async fn sync_db(&self) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.sender.send(SyncDb { tx }.into()).await?;
         rx.await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.sender.send(Shutdown { tx }.into()).await?;
         rx.await?;
         Ok(())

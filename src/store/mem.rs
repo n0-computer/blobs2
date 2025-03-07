@@ -21,7 +21,10 @@ use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{
     io::AsyncReadExt,
-    sync::mpsc::{self, OwnedPermit},
+    sync::{
+        mpsc::{self, OwnedPermit},
+        oneshot,
+    },
     task::{JoinError, JoinSet},
 };
 use tracing::{error, instrument};
@@ -245,7 +248,7 @@ async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
     mut stream: mpsc::Receiver<BaoContentItem>,
-    tx: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    tx: oneshot::Sender<anyhow::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
