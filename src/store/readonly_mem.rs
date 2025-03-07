@@ -11,7 +11,7 @@ use bao_tree::{
 use bytes::Bytes;
 use n0_future::future::yield_now;
 use tokio::{
-    sync::mpsc::{self, error::TrySendError},
+    sync::mpsc::{self},
     task::{JoinError, JoinSet},
 };
 
@@ -203,7 +203,7 @@ async fn export_path_impl(
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
         out.send_progress(ExportProgress::CopyProgress {
-            offset: offset as u64,
+            offset,
         })?;
         yield_now().await;
     }
@@ -214,7 +214,7 @@ async fn export_path_impl(
 mod tests {
     use bao_tree::blake3;
 
-    use super::*;
+    
 
     #[tokio::test]
     async fn smoke() {

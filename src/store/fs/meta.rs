@@ -14,7 +14,7 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -72,7 +72,7 @@ impl Db {
         let (tx, rx) = oneshot::channel();
         self.sender.send(Get { hash, tx }.into()).await?;
         let res = rx.await?;
-        Ok(res.state?)
+        res.state
     }
 
     /// Send a command. This exists so the main actor can directly forward commands.
@@ -302,7 +302,7 @@ impl Actor {
     }
 
     fn delete(tables: &mut Tables, cmd: Delete) -> ActorResult<()> {
-        let Delete { epoch, hashes, .. } = cmd;
+        let Delete {  hashes, .. } = cmd;
         for hash in hashes {
             if let Some(entry) = tables.blobs.remove(hash)? {
                 match entry.value() {

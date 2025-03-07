@@ -147,7 +147,7 @@ impl Actor {
                     .state
                     .tags
                     .iter()
-                    .map(|(tag, hash)| (tag.clone(), hash.clone()))
+                    .map(|(tag, hash)| (tag.clone(), *hash))
                     .collect::<Vec<_>>();
                 out.send(Ok(items)).ok();
             }
@@ -386,7 +386,7 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
 
 async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow::Result<()> {
     let ExportPath {
-        target, out, mode, ..
+        target, out,  ..
     } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
@@ -399,7 +399,7 @@ async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
         out.send_progress(ExportProgress::CopyProgress {
-            offset: offset as u64,
+            offset,
         })?;
         yield_now().await;
     }
@@ -479,7 +479,7 @@ impl Entry {
     fn ranges(&self) -> &ChunkRangesRef {
         match self {
             Self::Partial(entry) => &entry.bitfield.state().ranges,
-            Self::Complete(_) => &ChunkRangesRef::single(&ChunkNum(0)),
+            Self::Complete(_) => ChunkRangesRef::single(&ChunkNum(0)),
         }
     }
 

@@ -54,7 +54,7 @@ impl fmt::Debug for ImportBao {
 
 impl HashSpecific for ImportBao {
     fn hash(&self) -> crate::Hash {
-        self.hash.into()
+        self.hash
     }
 }
 
@@ -84,7 +84,7 @@ impl fmt::Debug for Observe {
 
 impl HashSpecific for Observe {
     fn hash(&self) -> crate::Hash {
-        self.hash.into()
+        self.hash
     }
 }
 
@@ -113,7 +113,7 @@ pub struct ExportBao {
 
 impl HashSpecific for ExportBao {
     fn hash(&self) -> crate::Hash {
-        self.hash.into()
+        self.hash
     }
 }
 
@@ -141,7 +141,7 @@ pub struct ExportPath {
 
 impl HashSpecific for ExportPath {
     fn hash(&self) -> crate::Hash {
-        self.hash.into()
+        self.hash
     }
 }
 

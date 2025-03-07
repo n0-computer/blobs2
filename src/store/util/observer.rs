@@ -180,7 +180,7 @@ impl<U> Observable<U> {
 
     // Get the current state (for testing or debugging)
     pub fn state(&self) -> &U {
-        &self.state.as_ref().expect("State must be initialized")
+        self.state.as_ref().expect("State must be initialized")
     }
 
     // Get the list of observables (for testing or debugging)
@@ -234,7 +234,7 @@ impl<U> Aggregator<U> {
         U: Combine + Debug,
     {
         let mut curr = initial;
-        while let Some(update) = self.recv.try_recv().ok() {
+        while let Ok(update) = self.recv.try_recv() {
             curr = curr.combine(update);
         }
         curr

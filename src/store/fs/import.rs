@@ -19,7 +19,6 @@ use std::{
 };
 
 use bao_tree::{
-    blake3,
     io::{
         outboard::{PreOrderMemOutboard, PreOrderOutboard},
         sync::WriteAt,
@@ -29,7 +28,7 @@ use bao_tree::{
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
 use smallvec::SmallVec;
-use tokio::{sync::mpsc, task::yield_now};
+use tokio::sync::mpsc;
 use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
@@ -105,7 +104,7 @@ pub struct ImportEntry {
 
 impl HashSpecific for ImportEntry {
     fn hash(&self) -> crate::Hash {
-        self.hash.into()
+        self.hash
     }
 }
 
@@ -232,7 +231,7 @@ async fn get_import_source(
         None => {
             let size = first.len() as u64;
             if options.is_inlined_data(size) {
-                return Ok(ImportSource::Memory(first.into()));
+                return Ok(ImportSource::Memory(first));
             }
             peek.push(Ok(first));
         }
@@ -385,27 +384,25 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
         let data = std::fs::read(path)?;
         out.send_progress(ImportProgress::CopyDone)?;
         ImportSource::Memory(data.into())
+    } else if mode == ImportMode::TryReference {
+        // reference where it is. We are going to need the file handle to
+        // compute the outboard, so open it here. If this fails, the import
+        // can't proceed.
+        let file = OpenOptions::new().read(true).open(&path)?;
+        ImportSource::External(path, file, size)
     } else {
-        if mode == ImportMode::TryReference {
-            // reference where it is. We are going to need the file handle to
-            // compute the outboard, so open it here. If this fails, the import
-            // can't proceed.
-            let file = OpenOptions::new().read(true).open(&path)?;
-            ImportSource::External(path, file, size)
+        let temp_path = options.path.temp_file_name();
+        // todo: if reflink works, we don't need progress.
+        // But if it does not, it might take a while and we won't get progress.
+        if reflink_copy::reflink_or_copy(&path, &temp_path)?.is_none() {
+            trace!("reflinked {} to {}", path.display(), temp_path.display());
         } else {
-            let temp_path = options.path.temp_file_name();
-            // todo: if reflink works, we don't need progress.
-            // But if it does not, it might take a while and we won't get progress.
-            if reflink_copy::reflink_or_copy(&path, &temp_path)?.is_none() {
-                trace!("reflinked {} to {}", path.display(), temp_path.display());
-            } else {
-                trace!("copied {} to {}", path.display(), temp_path.display());
-            }
-            // copy from path to temp_path
-            let file = OpenOptions::new().read(true).open(&temp_path)?;
-            out.send_progress(ImportProgress::CopyDone)?;
-            ImportSource::TempFile(temp_path, file, size)
+            trace!("copied {} to {}", path.display(), temp_path.display());
         }
+        // copy from path to temp_path
+        let file = OpenOptions::new().read(true).open(&temp_path)?;
+        out.send_progress(ImportProgress::CopyDone)?;
+        ImportSource::TempFile(temp_path, file, size)
     };
     compute_outboard(import_source, options, out).await
 }
@@ -435,12 +432,10 @@ mod tests {
     fn assert_expected_progress(progress: &[ImportProgress]) {
         assert!(progress
             .iter()
-            .find(|x| matches!(x, ImportProgress::Size { .. }))
-            .is_some());
+            .any(|x| matches!(&x, ImportProgress::Size { .. })));
         assert!(progress
             .iter()
-            .find(|x| matches!(x, ImportProgress::CopyDone { .. }))
-            .is_some());
+            .any(|x| matches!(&x, ImportProgress::CopyDone { .. })));
     }
 
     fn chunk_bytes(data: Bytes, chunk_size: usize) -> impl Iterator<Item = Bytes> {

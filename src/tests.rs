@@ -1,4 +1,3 @@
-use core::hash;
 
 use iroh::{protocol::Router, Endpoint};
 use n0_future::StreamExt;
@@ -43,7 +42,7 @@ async fn two_nodes_blobs() -> TestResult<()> {
     let addr1 = r1.endpoint().node_addr().await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     for size in sizes {
-        let hash = Hash::new(&test_data(size));
+        let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
         get::db::get_all(conn.clone(), hash, &store2).await?;
     }
@@ -63,10 +62,10 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let mut hashes = Vec::new();
     for size in sizes {
         let hash = store1.import_bytes(test_data(size)).await?;
-        hashes.push(Hash::from(hash));
+        hashes.push(hash);
     }
     let hash_seq = hashes.into_iter().collect::<HashSeq>();
-    let root = Hash::from(store1.import_bytes(hash_seq).await?);
+    let root = store1.import_bytes(hash_seq).await?;
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
     let blobs1 = Blobs::new(&store1, ep1.clone());
@@ -99,10 +98,10 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     // add all the sizes
     for size in sizes {
         let hash = store.import_bytes(test_data(size)).await?;
-        hashes.push(Hash::from(hash));
+        hashes.push(hash);
     }
     let hash_seq = hashes.into_iter().collect::<HashSeq>();
-    let root = Hash::from(store.import_bytes(hash_seq).await?);
+    let root = store.import_bytes(hash_seq).await?;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
     let r1 = Router::builder(endpoint)
@@ -175,9 +174,9 @@ async fn node_smoke() -> TestResult<()> {
     info!("node addr: {addr1:?}");
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
     let conn = endpoint2.connect(addr1, crate::protocol::ALPN).await?;
-    let (size, stats) = get::request::get_unverified_size(&conn, &hash.into()).await?;
+    let (size, stats) = get::request::get_unverified_size(&conn, &hash).await?;
     info!("size: {} stats: {:?}", size, stats);
-    let data = get::request::get_blob(conn, hash.into()).bytes().await?;
+    let data = get::request::get_blob(conn, hash).bytes().await?;
     assert_eq!(data.as_ref(), b"hello world");
     r1.shutdown().await?;
     Ok(())

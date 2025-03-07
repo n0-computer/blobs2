@@ -1,7 +1,6 @@
 use std::{collections::{BTreeMap, HashSet}, num::NonZeroU64};
 
-use bao_tree::{blake3, io::mixed::EncodedItem, ChunkRanges};
-use bytes::buf;
+use bao_tree::{io::mixed::EncodedItem, ChunkRanges};
 use iroh::endpoint::Connection;
 use n0_future::StreamExt;
 use tokio::sync::mpsc;

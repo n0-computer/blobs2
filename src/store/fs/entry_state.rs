@@ -1,6 +1,5 @@
 use std::{fmt::Debug, path::PathBuf};
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 

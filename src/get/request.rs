@@ -1,6 +1,5 @@
 //! Utilities for complex get requests.
 use std::{
-    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},

@@ -12,17 +12,15 @@ use std::{
 use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
-        mixed::EncodedItem,
-        round_up_to_chunks, BaoContentItem, EncodeError,
+        mixed::EncodedItem, BaoContentItem, EncodeError,
     },
     BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use range_collections::RangeSet2;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
-use tracing::{info, trace};
+use tracing::trace;
 
 use crate::{
     store::{
@@ -50,7 +48,7 @@ impl Store {
         );
         let (tx, rx) = mpsc::channel(32);
         self.sender.try_send(ImportBytes { data, tx }.into()).ok();
-        ImportResult { rx: rx }
+        ImportResult { rx }
     }
 
     pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {

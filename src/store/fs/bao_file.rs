@@ -21,7 +21,7 @@ use bao_tree::{
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use tokio::sync::mpsc;
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -149,10 +149,10 @@ impl PartialFileStorage {
     }
 
     fn load(hash: &Hash, options: &PathOptions) -> io::Result<Self> {
-        let bitfield_path = options.bitfield_path(&hash);
-        let data = create_read_write(&options.owned_data_path(&hash))?;
-        let outboard = create_read_write(options.owned_outboard_path(&hash))?;
-        let sizes = create_read_write(options.owned_sizes_path(&hash))?;
+        let bitfield_path = options.bitfield_path(hash);
+        let data = create_read_write(options.owned_data_path(hash))?;
+        let outboard = create_read_write(options.owned_outboard_path(hash))?;
+        let sizes = create_read_write(options.owned_sizes_path(hash))?;
         let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
             Ok(bitfield) => bitfield,
             Err(cause) => {
@@ -785,7 +785,7 @@ impl SizeInfo {
 impl PartialMemStorage {
     /// Persist the batch to disk, creating a FileBatch.
     fn persist(self, options: &PathOptions, hash: &Hash) -> io::Result<PartialFileStorage> {
-        let mut data = create_read_write(&options.owned_data_path(hash))?;
+        let mut data = create_read_write(options.owned_data_path(hash))?;
         let mut outboard = create_read_write(options.owned_outboard_path(hash))?;
         let mut sizes = create_read_write(options.owned_sizes_path(hash))?;
         self.data.persist(&mut data)?;

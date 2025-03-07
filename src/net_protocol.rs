@@ -4,19 +4,16 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::BTreeSet,
     fmt::Debug,
-    ops::{Deref, DerefMut},
     sync::Arc,
 };
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
-use iroh::{endpoint::Connecting, protocol::ProtocolHandler, Endpoint, NodeAddr};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, error};
+use iroh::{endpoint::Connecting, protocol::ProtocolHandler, Endpoint};
+use tracing::error;
 
-use crate::{store::Store, BlobFormat, Hash};
+use crate::store::Store;
 
 #[derive(Debug)]
 pub(crate) struct BlobsInner {

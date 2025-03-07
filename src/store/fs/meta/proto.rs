@@ -2,10 +2,9 @@
 use std::fmt;
 
 use bytes::Bytes;
-use n0_future::io;
 use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::ActorResult;
 pub use crate::store::proto::SyncDb;

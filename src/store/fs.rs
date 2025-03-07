@@ -66,7 +66,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, info, instrument, trace};
+use tracing::{error, instrument, trace};
 
 use crate::store::{
     bitfield::is_validated,
@@ -219,9 +219,9 @@ impl HashContext {
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.context("failed to get entry")?;
                 match res {
-                    Some(state) => open_bao_file(&hash.into(), state, self.ctx.options.clone()),
+                    Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
                     None => Ok(BaoFileHandle::new_partial_mem(
-                        hash.into(),
+                        hash,
                         self.ctx.options.clone(),
                     )),
                 }
@@ -245,7 +245,7 @@ fn open_bao_file(
             let data = match data_location {
                 DataLocation::Inline(data) => MemOrFile::Mem(data),
                 DataLocation::Owned(size) => {
-                    let path = options.path.owned_data_path(&hash);
+                    let path = options.path.owned_data_path(hash);
                     let file = fs::File::open(&path)?;
                     MemOrFile::File(FixedSize::new(file, size))
                 }
@@ -387,7 +387,7 @@ impl Actor {
     fn hash_context(&mut self, hash: impl Into<Hash>) -> HashContext {
         let hash = hash.into();
         HashContext {
-            slot: self.handles.entry(hash.into()).or_default().clone(),
+            slot: self.handles.entry(hash).or_default().clone(),
             ctx: self.context.clone(),
         }
     }
@@ -544,7 +544,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             debug_assert!(!options.is_inlined_data(*size));
         }
     }
-    let hash: crate::Hash = import_data.hash.into();
+    let hash: crate::Hash = import_data.hash;
     let guard = ctx.lock().await;
     let handle = guard.as_ref().and_then(|x| x.upgrade());
     // if I do have an existing handle, I have to possibly deal with observers.
@@ -604,10 +604,10 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
                 MemOrFile::File(FixedSize::new(file, *size))
             }
             DataLocation::External(paths, size) => {
-                let Some(path) = paths.into_iter().next() else {
+                let Some(path) = paths.iter().next() else {
                     anyhow::bail!("no external data path");
                 };
-                let file = fs::File::open(&path)?;
+                let file = fs::File::open(path)?;
                 MemOrFile::File(FixedSize::new(file, *size))
             }
         };
@@ -623,8 +623,8 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
         handle.complete(data, outboard);
     }
     let state = EntryState::Complete {
-        data_location: data_location,
-        outboard_location: outboard_location,
+        data_location,
+        outboard_location,
     };
     ctx.update(hash, state).await?;
     Ok(())
@@ -732,7 +732,7 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
     );
-    debug_assert!(handle.hash() == Hash::from(hash), "hash mismatch");
+    debug_assert!(handle.hash() == hash, "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
     traverse_ranges_validated(data, outboard, &ranges, &out).await;
@@ -914,11 +914,9 @@ pub mod tests {
     use std::{collections::HashMap, io::Read, u64};
 
     use bao_tree::{
-        blake3,
-        io::{outboard::PreOrderMemOutboard, round_up_to_chunks, round_up_to_chunks_groups},
-        BlockSize, ChunkRanges,
+        io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups}, ChunkRanges,
     };
-    use n0_future::{stream, SinkExt, Stream, StreamExt};
+    use n0_future::{stream, Stream, StreamExt};
     use testresult::TestResult;
     use walkdir::WalkDir;
 
@@ -948,7 +946,7 @@ pub mod tests {
         let mut encoded = Vec::new();
         let size = data.len() as u64;
         encoded.extend_from_slice(&size.to_le_bytes());
-        bao_tree::io::sync::encode_ranges_validated(&data, &outboard, ranges, &mut encoded)?;
+        bao_tree::io::sync::encode_ranges_validated(data, &outboard, ranges, &mut encoded)?;
         Ok((outboard.root.into(), encoded))
     }
 
@@ -1431,7 +1429,7 @@ pub mod tests {
             let store = FsStore::load(&db_dir).await?;
             for size in sizes {
                 let data = test_data(size);
-                let data = Bytes::from(data);
+                let data = data;
                 store.import_bytes(data.clone()).await?;
             }
             store.dump().await?;
@@ -1629,8 +1627,8 @@ pub mod tests {
             let remaining = file_size - offset;
             let current_chunk_size = chunk_size.min(remaining);
 
-            let mut chunk = &mut buffer[..current_chunk_size as usize];
-            file.read_exact_at(offset, &mut chunk)?;
+            let chunk = &mut buffer[..current_chunk_size as usize];
+            file.read_exact_at(offset, chunk)?;
 
             let has_non_zero = chunk.iter().any(|&byte| byte != 0);
             bits.push(has_non_zero);

@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use bao_tree::io::outboard;
 
 use super::{meta::raw_outboard_size, temp_name};
 use crate::Hash;

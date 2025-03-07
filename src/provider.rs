@@ -1,26 +1,18 @@
 //! The server side API
-use core::panic;
-use std::{fmt::Debug, io, sync::Arc, time::Duration};
+use std::{fmt::Debug, io};
 
 use anyhow::{Context, Result};
 use bao_tree::{
-    io::{
-        fsm::{encode_ranges_validated, Outboard},
-        EncodeError,
-    },
+    io::EncodeError,
     ChunkRanges,
 };
-use futures_lite::future::Boxed as BoxFuture;
 use iroh::endpoint::{self, RecvStream, SendStream};
-use quinn::Chunk;
-use serde::{Deserialize, Serialize};
-use tracing::{debug, debug_span, info, trace, warn, Instrument};
+use tracing::{debug, debug_span, warn, Instrument};
 
 use crate::{
-    hashseq::{parse_hash_seq, HashSeq},
-    protocol::{GetRequest, RangeSpec, Request},
-    store::*,
-    BlobFormat, Hash,
+    hashseq::HashSeq,
+    protocol::{GetRequest, Request},
+    store::*, Hash,
 };
 
 /// Read the request from the getter.
@@ -250,7 +242,7 @@ pub async fn send_blob(
     writer: &mut SendStream,
 ) -> io::Result<()> {
     store
-        .export_bao(hash.into(), ranges)
+        .export_bao(hash, ranges)
         .write_quinn(writer)
         .await
 }

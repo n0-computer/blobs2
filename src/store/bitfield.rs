@@ -19,7 +19,7 @@ pub fn is_validated(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
 pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
     let complete = ChunkRanges::from(..ChunkNum::chunks(size.get()));
     // is_subset is a bit weirdly named. This means that complete is a subset of ranges.
-    complete.is_subset(&ranges)
+    complete.is_subset(ranges)
 }
 
 /// The state of a bitfield, or an update to a bitfield

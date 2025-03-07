@@ -1,16 +1,14 @@
 use std::{
-    any::TypeId,
     borrow::Borrow,
     fmt,
     fs::{File, OpenOptions},
-    hash::Hash,
     io::{self, Read, Write},
     path::Path,
     time::SystemTime,
 };
 
 use arrayvec::ArrayString;
-use bao_tree::{blake3, io::sync::ReadAt};
+use bao_tree::blake3;
 use bytes::Bytes;
 use derive_more::{From, Into};
 
@@ -239,7 +237,7 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
         .read(true)
         .write(true)
         .truncate(false)
-        .open(&path)?;
+        .open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     file.set_len(0)?;
@@ -311,7 +309,7 @@ pub trait SliceInfoExt: AsRef<[u8]> {
     // a short symbol string for the address
     fn addr_short(&self) -> ArrayString<12> {
         let addr = self.addr().to_le_bytes();
-        let hash = crate::Hash::new(&addr);
+        let hash = crate::Hash::new(addr);
         symbol_string(&addr)
     }
 
