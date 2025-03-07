@@ -1005,25 +1005,6 @@ pub mod tests {
         Ok(())
     }
 
-    async fn import_path_observe() -> TestResult<()> {
-        tracing_subscriber::fmt::try_init().ok();
-        let testdir = tempfile::tempdir()?;
-        let db_dir = testdir.path().join("db");
-        let options = Options::new(&db_dir);
-        let store = FsStore::load_with_opts(db_dir, options).await?;
-        let sizes = [
-            0,
-            1,
-            1024,
-            1024 * 16 - 1,
-            1024 * 16,
-            1024 * 16 + 1,
-            1024 * 1024,
-            1024 * 1024 * 8,
-        ];
-        Ok(())
-    }
-
     /// Generate test data for size n.
     ///
     /// We don't really care about the content, since we assume blake3 works.

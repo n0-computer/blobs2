@@ -8,6 +8,7 @@ pub struct ReceiveArgs {
     pub ticket: BlobTicket,
 }
 
+#[allow(dead_code)]
 async fn get_one_by_one(connection: Connection, content: HashAndFormat) -> anyhow::Result<()> {
     println!("Getting hash_seq: {}", content.hash);
     let hash_seq = blobs2::get::request::get_blob(connection.clone(), content.hash)
@@ -16,7 +17,7 @@ async fn get_one_by_one(connection: Connection, content: HashAndFormat) -> anyho
     let hash_seq = blobs2::hashseq::HashSeq::try_from(hash_seq)?;
     for hash in hash_seq {
         println!("Getting blob: {}", hash);
-        let blob = blobs2::get::request::get_blob(connection.clone(), content.hash)
+        let _blob = blobs2::get::request::get_blob(connection.clone(), content.hash)
             .bytes()
             .await?;
     }
