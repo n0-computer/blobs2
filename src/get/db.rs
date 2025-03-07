@@ -1,4 +1,7 @@
-use std::{collections::{BTreeMap, HashSet}, num::NonZeroU64};
+use std::{
+    collections::{BTreeMap, HashSet},
+    num::NonZeroU64,
+};
 
 use bao_tree::{io::mixed::EncodedItem, ChunkRanges};
 use iroh::endpoint::Connection;

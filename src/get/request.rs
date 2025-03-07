@@ -26,7 +26,7 @@ pub struct GetBlobResult {
 
 impl GetBlobResult {
     pub async fn bytes(self) -> anyhow::Result<Bytes> {
-        let (bytes, stats) = self.bytes_and_stats().await?;
+        let (bytes, _) = self.bytes_and_stats().await?;
         Ok(bytes)
     }
 
@@ -48,7 +48,6 @@ impl GetBlobResult {
                 GetBlobItem::Error(cause) => {
                     return Err(cause);
                 }
-                _ => {}
             }
         };
         let bytes = if parts.len() == 1 {

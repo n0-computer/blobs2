@@ -3,7 +3,6 @@ use std::{
     future::Future,
     io,
     num::NonZeroU64,
-    ops::{Bound, RangeBounds},
     path::Path,
     pin::Pin,
     task::{Context, Poll},
@@ -12,9 +11,10 @@ use std::{
 use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
-        mixed::EncodedItem, BaoContentItem, EncodeError,
+        mixed::EncodedItem,
+        BaoContentItem, EncodeError,
     },
-    BaoTree, ChunkNum, ChunkRanges,
+    BaoTree, ChunkRanges,
 };
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
@@ -93,43 +93,6 @@ impl Store {
         ExportBaoResult { rx }
     }
 
-    pub async fn export_range(
-        &self,
-        hash: Hash,
-        range: impl RangeBounds<u64>,
-    ) -> anyhow::Result<Bytes> {
-        todo!("this does not properly deal with ranges outside of the blob");
-        let lb = match range.start_bound() {
-            Bound::Included(x) => *x,
-            Bound::Excluded(x) => x + 1,
-            Bound::Unbounded => 0,
-        };
-        let ub = match range.end_bound() {
-            Bound::Included(x) => Some(x + 1),
-            Bound::Excluded(x) => Some(*x),
-            Bound::Unbounded => None,
-        };
-        let len = ub.map(|ub| ub - lb).map(usize::try_from).transpose()?;
-        let lbc = ChunkNum::full_chunks(lb);
-        let ubc = ub.map(ChunkNum::chunks);
-        let chunks = match ubc {
-            Some(ubc) => ChunkRanges::from(lbc..ubc),
-            None => ChunkRanges::from(lbc..),
-        };
-        let start = (lb - lbc.to_bytes()) as usize;
-        let data = self.export_bao(hash, chunks).data_to_bytes().await?;
-        anyhow::ensure!(data.len() >= start, "range out of bounds");
-        let bytes = match len {
-            Some(len) => {
-                let end = start + len;
-                anyhow::ensure!(data.len() >= end, "range out of bounds");
-                data.slice(start..end)
-            }
-            None => data.slice(start..),
-        };
-        Ok(bytes)
-    }
-
     /// Helper to just export the entire blob into a Bytes
     pub async fn export_bytes(&self, hash: impl Into<Hash>) -> io::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
@@ -179,27 +142,25 @@ impl Store {
         ExportPathResult { rx }
     }
 
-    /// todo: export_path_with_opts
-
-    async fn import_bao_reader(
+    // todo: export_path_with_opts
+    async fn import_bao_reader<R: AsyncStreamReader>(
         &self,
         hash: Hash,
         ranges: ChunkRanges,
-        mut stream: impl AsyncStreamReader,
-    ) -> anyhow::Result<()> {
+        mut reader: R,
+    ) -> anyhow::Result<R> {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let (out, out_receiver) = tokio::sync::oneshot::channel();
-        let size = u64::from_le_bytes(stream.read::<8>().await?);
+        let size = u64::from_le_bytes(reader.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
-            // todo: drain stream here?
-            if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
-                return Ok(());
+            return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
+                Ok(reader)
             } else {
-                return Err(anyhow::anyhow!("invalid size for hash"));
-            }
+                Err(anyhow::anyhow!("invalid size for hash"))
+            };
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
-        let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, stream);
+        let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         self.sender.try_send(
             ImportBao {
                 hash,
@@ -209,18 +170,18 @@ impl Store {
             }
             .into(),
         )?;
-        loop {
+        let reader = loop {
             match decoder.next().await {
                 ResponseDecoderNext::More((rest, item)) => {
                     tx.send(item?).await?;
                     decoder = rest;
                 }
-                ResponseDecoderNext::Done(_) => break,
+                ResponseDecoderNext::Done(reader) => break reader,
             };
-        }
+        };
         drop(tx);
         out_receiver.await??;
-        Ok(())
+        Ok(reader)
     }
 
     /// Import BaoContentItems from a stream.
@@ -256,7 +217,8 @@ impl Store {
         stream: &mut quinn::RecvStream,
     ) -> anyhow::Result<()> {
         let reader = TokioStreamReader::new(stream);
-        self.import_bao_reader(hash, ranges, reader).await
+        self.import_bao_reader(hash, ranges, reader).await?;
+        Ok(())
     }
 
     pub async fn import_bao_bytes(
@@ -265,7 +227,8 @@ impl Store {
         ranges: ChunkRanges,
         data: Bytes,
     ) -> anyhow::Result<()> {
-        self.import_bao_reader(hash, ranges, data).await
+        self.import_bao_reader(hash, ranges, data).await?;
+        Ok(())
     }
 
     pub async fn set_tag(&self, tag: Tag, value: HashAndFormat) -> anyhow::Result<()> {
@@ -401,7 +364,7 @@ pub struct ExportBaoResult {
 impl ExportBaoResult {
     pub async fn bao_to_vec(self) -> io::Result<Vec<u8>> {
         let mut data = Vec::new();
-        let mut stream = self.to_byte_stream();
+        let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {
             data.extend_from_slice(&item?);
         }
@@ -470,7 +433,7 @@ impl ExportBaoResult {
         Ok(())
     }
 
-    pub fn to_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
+    pub fn into_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
         self.filter_map(|item| match item {
             EncodedItem::Size(size) => {
                 let size = size.to_le_bytes().to_vec().into();

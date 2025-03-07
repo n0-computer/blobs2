@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-
 use super::{meta::raw_outboard_size, temp_name};
 use crate::Hash;
 

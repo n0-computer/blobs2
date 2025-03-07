@@ -2,17 +2,15 @@
 use std::{fmt::Debug, io};
 
 use anyhow::{Context, Result};
-use bao_tree::{
-    io::EncodeError,
-    ChunkRanges,
-};
+use bao_tree::{io::EncodeError, ChunkRanges};
 use iroh::endpoint::{self, RecvStream, SendStream};
 use tracing::{debug, debug_span, warn, Instrument};
 
 use crate::{
     hashseq::HashSeq,
     protocol::{GetRequest, Request},
-    store::*, Hash,
+    store::*,
+    Hash,
 };
 
 /// Read the request from the getter.
@@ -28,108 +26,6 @@ pub async fn read_request(mut reader: RecvStream) -> Result<Request> {
     let request: Request = postcard::from_bytes(&payload)?;
     Ok(request)
 }
-
-/// Transfers a blob or hash sequence to the client.
-///
-/// The difference to [`handle_get`] is that we already have a reader for the
-/// root blob and outboard.
-///
-/// First, it transfers the root blob. Then, if needed, it sequentially
-/// transfers each individual blob data.
-///
-/// The transfer fail if there is an error writing to the writer or reading from
-/// the database.
-///
-/// If a blob from the hash sequence cannot be found in the database, the
-/// transfer will return with [`SentStatus::NotFound`]. If the transfer completes
-/// successfully, it will return with [`SentStatus::Sent`].
-// pub(crate) async fn transfer_hash_seq(
-//     request: GetRequest,
-//     // Store from which to fetch blobs.
-//     db: &Store,
-//     // Response writer, containing the quinn stream.
-//     writer: &mut ResponseWriter,
-//     // the collection to transfer
-// ) -> Result<SentStatus> {
-//     let hash = request.hash;
-//     let request_id = writer.request_id();
-//     let connection_id = writer.connection_id();
-
-//     // if the request is just for the root, we don't need to deserialize the collection
-//     let just_root = matches!(request.ranges.as_single(), Some((0, _)));
-//     let mut c = if !just_root {
-//         // parse the hash seq
-//         let (stream, num_blobs) = parse_hash_seq(&mut data).await?;
-//         Some(stream)
-//     } else {
-//         None
-//     };
-
-//     let mut prev = 0;
-//     for (offset, ranges) in request.ranges.iter_non_empty() {
-//         // create a tracking writer so we can get some stats for writing
-//         let mut tw = writer.tracking_writer();
-//         if offset == 0 {
-//             debug!("writing ranges '{:?}' of sequence {}", ranges, hash);
-//             // wrap the data reader in a tracking reader so we can get some stats for reading
-//             let mut tracking_reader = TrackingSliceReader::new(&mut data);
-//             let mut sending_reader =
-//                 SendingSliceReader::new(&mut tracking_reader, &events, mk_progress);
-//             // send the root
-//             tw.write(outboard.tree().size().to_le_bytes().as_slice())
-//                 .await?;
-//             encode_ranges_validated(
-//                 &mut sending_reader,
-//                 &mut outboard,
-//                 &ranges.to_chunk_ranges(),
-//                 &mut tw,
-//             )
-//             .await?;
-//             stats.read += tracking_reader.stats();
-//             stats.send += tw.stats();
-//             debug!(
-//                 "finished writing ranges '{:?}' of collection {}",
-//                 ranges, hash
-//             );
-//         } else {
-//             let c = c.as_mut().context("collection parser not available")?;
-//             debug!("wrtiting ranges '{:?}' of child {}", ranges, offset);
-//             // skip to the next blob if there is a gap
-//             if prev < offset - 1 {
-//                 c.skip(offset - prev - 1).await?;
-//             }
-//             if let Some(hash) = c.next().await? {
-//                 tokio::task::yield_now().await;
-//                 let (status, size, blob_read_stats) =
-//                     send_blob(db, hash, ranges, &mut tw, events.clone(), mk_progress).await?;
-//                 stats.send += tw.stats();
-//                 stats.read += blob_read_stats;
-//                 if SentStatus::NotFound == status {
-//                     writer.inner.finish()?;
-//                     return Ok(status);
-//                 }
-
-//                 writer
-//                     .events
-//                     .send(|| Event::TransferBlobCompleted {
-//                         connection_id: writer.connection_id(),
-//                         request_id: writer.request_id(),
-//                         hash,
-//                         index: offset - 1,
-//                         size,
-//                     })
-//                     .await;
-//             } else {
-//                 // nothing more we can send
-//                 break;
-//             }
-//             prev = offset;
-//         }
-//     }
-
-//     debug!("done writing");
-//     Ok(SentStatus::Sent)
-// }
 
 /// Handle a single connection.
 pub async fn handle_connection(connection: endpoint::Connection, store: Store) {
@@ -216,11 +112,11 @@ pub struct ResponseWriter {
 }
 
 impl ResponseWriter {
-    fn connection_id(&self) -> u64 {
+    pub fn connection_id(&self) -> u64 {
         self.connection_id
     }
 
-    fn request_id(&self) -> u64 {
+    pub fn request_id(&self) -> u64 {
         self.inner.id().index()
     }
 }
@@ -241,12 +137,10 @@ pub async fn send_blob(
     ranges: ChunkRanges,
     writer: &mut SendStream,
 ) -> io::Result<()> {
-    store
-        .export_bao(hash, ranges)
-        .write_quinn(writer)
-        .await
+    store.export_bao(hash, ranges).write_quinn(writer).await
 }
 
+#[allow(dead_code)]
 fn encode_error_to_anyhow(err: EncodeError, hash: &Hash) -> anyhow::Error {
     match err {
         EncodeError::LeafHashMismatch(x) => anyhow::Error::from(EncodeError::LeafHashMismatch(x))

@@ -49,6 +49,7 @@ pub struct SizeInfo {
     pub size: u64,
 }
 
+#[allow(dead_code)]
 impl SizeInfo {
     /// Create a new size info for a complete file of size `size`.
     pub(crate) fn complete(size: u64) -> Self {
@@ -385,9 +386,7 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
 }
 
 async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow::Result<()> {
-    let ExportPath {
-        target, out,  ..
-    } = cmd;
+    let ExportPath { target, out, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
@@ -398,9 +397,7 @@ async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        out.send_progress(ExportProgress::CopyProgress {
-            offset,
-        })?;
+        out.send_progress(ExportProgress::CopyProgress { offset })?;
         yield_now().await;
     }
     Ok(())
@@ -476,6 +473,7 @@ impl Default for Entry {
 }
 
 impl Entry {
+    #[allow(dead_code)]
     fn ranges(&self) -> &ChunkRangesRef {
         match self {
             Self::Partial(entry) => &entry.bitfield.state().ranges,
@@ -534,6 +532,7 @@ impl PartialMemStorage {
         self.bitfield.add_observer(out);
     }
 
+    #[allow(dead_code)]
     pub fn bitfield(&self) -> &Observable<Bitfield> {
         &self.bitfield
     }
@@ -605,16 +604,9 @@ impl CompleteStorage {
     pub fn size(&self) -> u64 {
         self.data.len() as u64
     }
-
-    pub fn data(&self) -> impl AsRef<[u8]> + '_ {
-        self.data.as_ref()
-    }
-
-    pub fn outboard(&self) -> impl AsRef<[u8]> + '_ {
-        self.outboard.as_ref()
-    }
 }
 
+#[allow(dead_code)]
 fn print_outboard(hashes: &[u8]) {
     assert!(hashes.len() % 64 == 0);
     for chunk in hashes.chunks(64) {

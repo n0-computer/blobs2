@@ -135,7 +135,7 @@ struct Actor {
     // handles
     handles: HashMap<Hash, Slot>,
     // our private tokio runtime. It has to live somewhere.
-    rt: RtWrapper,
+    _rt: RtWrapper,
 }
 
 /// Wraps a slot and the task context.
@@ -275,7 +275,7 @@ fn open_bao_file(
 /// An entry for each hash, containing a weak reference to a BaoFileHandle
 /// wrapped in a tokio mutex so handle creation is sequential.
 #[derive(Debug, Clone, Default)]
-struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
+pub struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
 
 impl Slot {
     /// Get the handle if it exists and is still alive.
@@ -479,7 +479,7 @@ impl Actor {
             fs_cmd_rx: fs_commands_rx,
             tasks: JoinSet::new(),
             handles: Default::default(),
-            rt,
+            _rt: rt,
         })
     }
 }
@@ -911,10 +911,11 @@ impl FsStore {
 #[cfg(test)]
 pub mod tests {
     use core::panic;
-    use std::{collections::HashMap, io::Read, u64};
+    use std::collections::HashMap;
 
     use bao_tree::{
-        io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups}, ChunkRanges,
+        io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
+        ChunkRanges,
     };
     use n0_future::{stream, Stream, StreamExt};
     use testresult::TestResult;
@@ -1022,7 +1023,7 @@ pub mod tests {
     }
 
     async fn await_completion(mut obs: Aggregator<Bitfield>) {
-        while let Some(_) = obs.next().await {
+        while obs.next().await.is_some() {
             if obs.state().is_complete() {
                 break;
             }
@@ -1639,6 +1640,7 @@ pub mod tests {
         Ok(bits)
     }
 
+    #[allow(dead_code)]
     fn print_bitfield(bits: impl IntoIterator<Item = bool>) -> String {
         bits.into_iter()
             .map(|bit| if bit { '#' } else { '_' })

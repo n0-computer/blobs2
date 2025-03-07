@@ -11,6 +11,7 @@ pub trait Combine: Debug {
     fn combine(self, other: Self) -> Self;
 }
 
+#[allow(dead_code)]
 pub trait CombineInPlace: Combine {
     fn combine_with(&mut self, other: Self) -> Self;
     fn is_neutral(&self) -> bool;
@@ -130,7 +131,6 @@ impl<U> Observable<U> {
         U: Combine + Clone,
     {
         let state = self.state().clone();
-        let id = &self as *const _ as usize;
         if observer.send(state).is_ok() {
             self.observers.push(observer);
         }
@@ -142,6 +142,7 @@ impl<U> Observable<U> {
     }
 
     // Update the state and send the update to all observables, retaining only live observables
+    #[allow(dead_code)]
     pub fn update2(&mut self, update: U)
     where
         U: CombineInPlace + Clone,
@@ -164,7 +165,6 @@ impl<U> Observable<U> {
     where
         U: Combine + Clone,
     {
-        let id = &self as *const _ as usize;
         // Update the state by combining with the update
         self.state = Some(
             self.state
@@ -184,11 +184,13 @@ impl<U> Observable<U> {
     }
 
     // Get the list of observables (for testing or debugging)
+    #[allow(dead_code)]
     pub fn observables(&self) -> &[Observer<U>] {
         &self.observers
     }
 
     // Finish all observables (send pending update if any)
+    #[allow(dead_code)]
     pub async fn finish(&mut self) {
         let mut observers = std::mem::take(&mut self.observers);
         observers.retain_mut(|o| !o.is_closed());

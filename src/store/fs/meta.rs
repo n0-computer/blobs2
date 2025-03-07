@@ -267,10 +267,7 @@ impl Actor {
 
     fn set(tables: &mut Tables, cmd: Set) -> ActorResult<()> {
         let Set {
-            state,
-            hash,
-            epoch,
-            tx,
+            state, hash, tx, ..
         } = cmd;
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
             EntryState::Complete {
@@ -302,7 +299,7 @@ impl Actor {
     }
 
     fn delete(tables: &mut Tables, cmd: Delete) -> ActorResult<()> {
-        let Delete {  hashes, .. } = cmd;
+        let Delete { hashes, .. } = cmd;
         for hash in hashes {
             if let Some(entry) = tables.blobs.remove(hash)? {
                 match entry.value() {

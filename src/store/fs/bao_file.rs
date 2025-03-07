@@ -171,10 +171,10 @@ impl PartialFileStorage {
                 };
                 let mut ranges = ChunkRanges::all();
                 for range in bao_tree::io::sync::valid_ranges(outboard, &data, &ChunkRanges::all())
+                    .into_iter()
+                    .flatten()
                 {
-                    if let Ok(range) = range {
-                        ranges |= ChunkRanges::from(range);
-                    }
+                    ranges |= ChunkRanges::from(range);
                 }
                 trace!("reconstructed range is {:?}", ranges);
                 Bitfield::new(ranges, size)
@@ -497,6 +497,7 @@ impl BaoFileStorage {
     }
 
     /// Call sync_all on all the files.
+    #[allow(dead_code)]
     fn sync_all(&self) -> io::Result<()> {
         match self {
             Self::Complete(_) => Ok(()),
@@ -511,7 +512,8 @@ impl BaoFileStorage {
     }
 
     /// True if the storage is in memory.
-    pub fn is_mem(&self) -> bool {
+    #[allow(dead_code)]
+    fn is_mem(&self) -> bool {
         match self {
             Self::PartialMem(_) => true,
             Self::Partial(_) => false,
@@ -560,17 +562,15 @@ pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 impl Drop for BaoFileHandleInner {
     fn drop(&mut self) {
-        if let Ok(Some(storage)) = self.storage.get_mut() {
-            if let BaoFileStorage::Partial(fs) = &storage {
-                let options = self.options.as_ref().unwrap();
-                let path = options.path.bitfield_path(&self.hash);
-                info!(
-                    "writing bitfield for hash {} to {}",
-                    self.hash.to_hex(),
-                    path.display()
-                );
-                fs.sync_all(&path).ok();
-            }
+        if let Ok(Some(BaoFileStorage::Partial(fs))) = self.storage.get_mut() {
+            let options = self.options.as_ref().unwrap();
+            let path = options.path.bitfield_path(&self.hash);
+            info!(
+                "writing bitfield for hash {} to {}",
+                self.hash.to_hex(),
+                path.display()
+            );
+            fs.sync_all(&path).ok();
         }
     }
 }
@@ -737,7 +737,7 @@ impl BaoFileHandle {
     }
 
     /// Write a batch and notify the db
-    pub async fn write_batch(
+    pub(super) async fn write_batch(
         &self,
         size: NonZeroU64,
         batch: &[BaoContentItem],
@@ -775,6 +775,7 @@ impl SizeInfo {
     }
 
     /// Convert to a vec in slot format.
+    #[allow(dead_code)]
     pub fn to_vec(&self) -> Vec<u8> {
         let mut res = Vec::new();
         self.persist(&mut res).expect("io error writing to vec");
@@ -803,6 +804,7 @@ impl PartialMemStorage {
     }
 
     /// Get the parts data, outboard and sizes
+    #[allow(dead_code)]
     pub fn into_parts(self) -> (SparseMemFile, SparseMemFile, SizeInfo) {
         (self.data, self.outboard, self.size)
     }

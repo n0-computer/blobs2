@@ -188,7 +188,7 @@ async fn export_path_task(
 }
 
 async fn export_path_impl(
-    (data, outboard): (Bytes, Bytes),
+    (data, _): (Bytes, Bytes),
     target: PathBuf,
     out: &mpsc::Sender<ExportProgress>,
 ) -> anyhow::Result<()> {
@@ -202,9 +202,7 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        out.send_progress(ExportProgress::CopyProgress {
-            offset,
-        })?;
+        out.send_progress(ExportProgress::CopyProgress { offset })?;
         yield_now().await;
     }
     Ok(())
@@ -214,11 +212,9 @@ async fn export_path_impl(
 mod tests {
     use bao_tree::blake3;
 
-    
-
     #[tokio::test]
     async fn smoke() {
         let data = b"hello world";
-        let hash = blake3::hash(data);
+        let _hash = blake3::hash(data);
     }
 }

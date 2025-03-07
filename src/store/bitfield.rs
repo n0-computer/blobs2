@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{cmp::Ordering, num::NonZeroU64};
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -115,15 +115,11 @@ impl Bitfield {
 
 fn choose_size(a: &Bitfield, b: &Bitfield) -> u64 {
     match (a.ranges.upper_bound(), b.ranges.upper_bound()) {
-        (Some(ac), Some(bc)) => {
-            if ac < bc {
-                b.size
-            } else if ac > bc {
-                a.size
-            } else {
-                a.size.max(b.size)
-            }
-        }
+        (Some(ac), Some(bc)) => match ac.cmp(&bc) {
+            Ordering::Less => b.size,
+            Ordering::Greater => a.size,
+            Ordering::Equal => a.size.max(b.size),
+        },
         (Some(_), None) => b.size,
         (None, Some(_)) => a.size,
         (None, None) => a.size.max(b.size),

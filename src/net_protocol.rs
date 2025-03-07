@@ -3,10 +3,7 @@
 // TODO: reduce API surface and add documentation
 #![allow(missing_docs)]
 
-use std::{
-    fmt::Debug,
-    sync::Arc,
-};
+use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;

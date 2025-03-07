@@ -13,7 +13,7 @@ use crate::store::util::SliceInfoExt;
 ///
 /// Only complete data can be inlined.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum DataLocation<I = (), E = ()> {
+pub enum DataLocation<I = (), E = ()> {
     /// Data is in the inline_data table.
     Inline(I),
     /// Data is in the canonical location in the data directory.
@@ -80,6 +80,7 @@ impl<X> DataLocation<X, u64> {
 }
 
 impl<I, E> DataLocation<I, E> {
+    #[allow(dead_code)]
     pub fn discard_inline_data(self) -> DataLocation<(), E> {
         match self {
             DataLocation::Inline(_) => DataLocation::Inline(()),
@@ -104,7 +105,7 @@ impl<I, E> DataLocation<I, E> {
 ///
 /// Only complete outboards can be inlined.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum OutboardLocation<I = ()> {
+pub enum OutboardLocation<I = ()> {
     /// Outboard is in the inline_outboard table.
     Inline(I),
     /// Outboard is in the canonical location in the data directory.
@@ -135,6 +136,7 @@ impl<I> OutboardLocation<I> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn discard_extra_data(self) -> OutboardLocation<()> {
         match self {
             Self::Inline(_) => OutboardLocation::Inline(()),

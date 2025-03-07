@@ -251,6 +251,7 @@ async fn get_import_source(
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&temp_path)?;
             file.write_all(&data)?;
             file.write_all(&chunk)?;
@@ -366,8 +367,8 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
     let ImportPath {
         path,
         tx: out,
-        format,
         mode,
+        ..
     } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());

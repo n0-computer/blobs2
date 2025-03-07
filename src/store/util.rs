@@ -269,6 +269,7 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
     Ok(deserialized)
 }
 
+#[cfg(test)]
 pub fn read_checksummed<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Result<T> {
     let path = path.as_ref();
     let mut file = File::open(path)?;
@@ -309,10 +310,10 @@ pub trait SliceInfoExt: AsRef<[u8]> {
     // a short symbol string for the address
     fn addr_short(&self) -> ArrayString<12> {
         let addr = self.addr().to_le_bytes();
-        let hash = crate::Hash::new(addr);
         symbol_string(&addr)
     }
 
+    #[allow(dead_code)]
     fn hash_short(&self) -> ArrayString<10> {
         crate::Hash::new(self.as_ref()).fmt_short()
     }
@@ -346,8 +347,8 @@ pub fn symbol_string(data: &[u8]) -> ArrayString<12> {
     let mut result = ArrayString::<12>::new();
 
     // Fill with 3 symbols
-    for i in 0..3 {
-        let byte = bytes[i] as usize;
+    for byte in bytes.iter().take(3) {
+        let byte = *byte as usize;
         let index = byte % BASE;
         result.push(SYMBOLS[index]); // Each char can be up to 4 bytes
     }

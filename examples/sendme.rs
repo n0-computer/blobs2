@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Connected to {:?}", addr);
     // get_one_by_one(connection, content).await?;
     let stats = blobs2::get::db::get_all(connection, content, &store).await?;
-    // println!("Stats: {:?}", stats);
+    println!("Stats: {:?}", stats);
     endpoint.close().await;
     store.shutdown().await?;
     Ok(())
