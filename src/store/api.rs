@@ -19,10 +19,7 @@ use bao_tree::{
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{mpsc, oneshot},
-};
+use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
 use crate::{
@@ -35,6 +32,7 @@ use crate::{
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
+    util::channel::{oneshot, mpsc},
     Hash,
 };
 
@@ -81,7 +79,7 @@ impl Store {
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
     ) -> ImportResult {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(ImportByteStream { data, tx }.into())
             .ok();
@@ -89,7 +87,7 @@ impl Store {
     }
 
     pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(ExportBao { hash, ranges, tx }.into())
             .ok();
@@ -112,11 +110,11 @@ impl Store {
     pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
         let hash = hash.into();
         if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let (tx, rx) = mpsc::channel(1);
             tx.try_send(Bitfield::complete(0)).ok();
             return ObserveResult { rx };
         }
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(
                 Observe {
@@ -130,7 +128,7 @@ impl Store {
     }
 
     pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(
                 ExportPath {
@@ -261,7 +259,7 @@ impl Store {
 }
 
 pub struct ImportResult {
-    rx: tokio::sync::mpsc::Receiver<ImportProgress>,
+    rx: mpsc::Receiver<ImportProgress>,
 }
 
 impl Future for ImportResult {
@@ -304,7 +302,7 @@ impl Stream for ImportResult {
 /// and all following are updates. Once a blob is complete, there will be no
 /// more updates.
 pub struct ObserveResult {
-    rx: tokio::sync::mpsc::Receiver<Bitfield>,
+    rx: mpsc::Receiver<Bitfield>,
 }
 
 impl ObserveResult {
@@ -325,7 +323,7 @@ impl Stream for ObserveResult {
 }
 
 pub struct ExportPathResult {
-    rx: tokio::sync::mpsc::Receiver<ExportProgress>,
+    rx: mpsc::Receiver<ExportProgress>,
 }
 
 impl Stream for ExportPathResult {
@@ -361,7 +359,7 @@ impl Future for ExportPathResult {
 }
 
 pub struct ExportBaoResult {
-    rx: tokio::sync::mpsc::Receiver<EncodedItem>,
+    rx: mpsc::Receiver<EncodedItem>,
 }
 
 impl ExportBaoResult {

@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use crate::util::channel::mpsc;
 
 /// A wrapper for a tokio mpsc receiver that allows peeking at the next message.
 #[derive(Debug)]

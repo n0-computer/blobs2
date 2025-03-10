@@ -20,7 +20,6 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
-use tokio::sync::mpsc;
 use tracing::{info, trace, warn};
 
 use super::{
@@ -39,6 +38,7 @@ use crate::store::{
     },
     Hash, IROH_BLOCK_SIZE,
 };
+use crate::util::channel::mpsc;
 
 /// Storage for complete blobs. There is no longer any uncertainty about the
 /// size, so we don't need a sizes file.

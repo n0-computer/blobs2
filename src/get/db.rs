@@ -6,7 +6,6 @@ use std::{
 use bao_tree::{io::mixed::EncodedItem, ChunkRanges};
 use iroh::endpoint::Connection;
 use n0_future::StreamExt;
-use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use super::{
@@ -17,6 +16,7 @@ use crate::{
     hashseq::HashSeq,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::Store,
+    util::channel::mpsc,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 
@@ -173,7 +173,10 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         .map(|x| x.ranges)
         .unwrap_or_default();
     let required_ranges = ChunkRanges::all() - local_ranges;
-    let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges, ChunkRanges::all()]));
+    let request = GetRequest::new(
+        root,
+        RangeSpecSeq::from_ranges_infinite([required_ranges, ChunkRanges::all()]),
+    );
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
     info!("Getting header");

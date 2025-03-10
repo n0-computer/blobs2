@@ -10,10 +10,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::future::yield_now;
-use tokio::{
-    sync::mpsc::{self},
-    task::{JoinError, JoinSet},
-};
+use tokio::task::{JoinError, JoinSet};
 
 use crate::{
     store::{
@@ -23,6 +20,7 @@ use crate::{
         util::{observer::Observable, SenderProgressExt},
         Store, IROH_BLOCK_SIZE,
     },
+    util::channel::mpsc,
     Hash,
 };
 
@@ -34,10 +32,7 @@ struct Actor {
 }
 
 impl Actor {
-    fn new(
-        commands: tokio::sync::mpsc::Receiver<Command>,
-        data: HashMap<Hash, CompleteStorage>,
-    ) -> Self {
+    fn new(commands: mpsc::Receiver<Command>, data: HashMap<Hash, CompleteStorage>) -> Self {
         Self {
             data,
             commands,
@@ -128,7 +123,7 @@ async fn export_bao_task(
     hash: Hash,
     entry: Option<(Bytes, Bytes)>,
     ranges: ChunkRanges,
-    sender: tokio::sync::mpsc::Sender<EncodedItem>,
+    sender: mpsc::Sender<EncodedItem>,
 ) {
     let (data, outboard) = match entry {
         Some(entry) => entry,
@@ -163,7 +158,7 @@ impl Store {
             let (hash, entry) = CompleteStorage::create(data);
             entries.insert(hash, entry);
         }
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(1);
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
         Store::from_sender(sender)

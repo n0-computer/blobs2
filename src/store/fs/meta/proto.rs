@@ -4,15 +4,17 @@ use std::fmt;
 use bytes::Bytes;
 use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
-use tokio::sync::oneshot;
 
 use super::ActorResult;
 pub use crate::store::proto::SyncDb;
-use crate::store::{
-    fs::entry_state::EntryState,
-    proto::Shutdown,
-    util::{Tag, DD},
-    Hash, HashAndFormat,
+use crate::{
+    store::{
+        fs::entry_state::EntryState,
+        proto::Shutdown,
+        util::{Tag, DD},
+        Hash, HashAndFormat,
+    },
+    util::channel::oneshot,
 };
 
 /// Get the entry state for a hash.

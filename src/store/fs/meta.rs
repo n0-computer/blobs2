@@ -9,7 +9,8 @@ use std::{
 use bao_tree::BaoTree;
 use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
-use tokio::sync::{mpsc, oneshot};
+
+use crate::util::channel::{mpsc, oneshot};
 mod proto;
 pub use proto::*;
 mod tables;

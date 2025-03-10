@@ -11,7 +11,6 @@ use bao_tree::{io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
 
 use super::util::DD;
 use crate::{
@@ -20,6 +19,7 @@ use crate::{
         util::{observer::Observer, Tag},
         BlobFormat, HashAndFormat,
     },
+    util::channel::{mpsc, oneshot},
     Hash,
 };
 
@@ -149,7 +149,7 @@ pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send +
 
 pub struct ImportByteStream {
     pub data: BoxedByteStream,
-    pub tx: tokio::sync::mpsc::Sender<ImportProgress>,
+    pub tx: mpsc::Sender<ImportProgress>,
 }
 
 impl std::fmt::Debug for ImportByteStream {

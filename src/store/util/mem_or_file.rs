@@ -137,7 +137,6 @@ impl<F> MemOrFile<Bytes, F> {
 }
 
 impl<M, F> MemOrFile<M, F> {
-
     /// True if this is a Mem
     pub fn is_mem(&self) -> bool {
         matches!(self, MemOrFile::Mem(_))

@@ -4,7 +4,8 @@ use std::{
 };
 
 use n0_future::{join_all, Stream};
-use tokio::sync::mpsc;
+
+use crate::util::channel::mpsc;
 
 // A commutative combine trait for updates
 pub trait Combine: Debug {
@@ -270,9 +271,9 @@ where
 #[cfg(test)]
 mod tests {
     use testresult::TestResult;
-    use tokio::sync::mpsc;
 
     use super::*;
+    use crate::util::channel::mpsc;
 
     // Example update type for testing, implementing Combine and Default
     #[derive(Debug, PartialEq, Default, Clone)]

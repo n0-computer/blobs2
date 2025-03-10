@@ -11,19 +11,20 @@ pub(crate) mod util;
 use ref_cast::RefCast;
 
 pub use crate::hash::{BlobFormat, Hash, HashAndFormat};
+use crate::util::channel::mpsc;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
-    sender: tokio::sync::mpsc::Sender<proto::Command>,
+    sender: mpsc::Sender<proto::Command>,
 }
 
 impl Store {
-    pub fn from_sender(sender: tokio::sync::mpsc::Sender<proto::Command>) -> Self {
+    pub fn from_sender(sender: mpsc::Sender<proto::Command>) -> Self {
         Self { sender }
     }
 
-    pub fn ref_from_sender(sender: &tokio::sync::mpsc::Sender<proto::Command>) -> &Self {
+    pub fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
         Store::ref_cast(sender)
     }
 }

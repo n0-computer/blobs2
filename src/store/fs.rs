@@ -466,11 +466,7 @@ impl Actor {
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
             epoch: AtomicU64::new(0),
-            empty: BaoFileHandle::new_complete(
-                Hash::EMPTY,
-                MemOrFile::empty(),
-                MemOrFile::empty(),
-            ),
+            empty: BaoFileHandle::new_complete(Hash::EMPTY, MemOrFile::empty(), MemOrFile::empty()),
         });
         rt.spawn(db_actor.run());
         Ok(Self {

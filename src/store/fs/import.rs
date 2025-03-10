@@ -28,7 +28,6 @@ use bao_tree::{
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
 use smallvec::SmallVec;
-use tokio::sync::mpsc;
 use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
@@ -40,6 +39,7 @@ use crate::{
         util::{MemOrFile, ProgressReader, SenderProgressExt},
         IROH_BLOCK_SIZE,
     },
+    util::channel::mpsc,
     Hash,
 };
 

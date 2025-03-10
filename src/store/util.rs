@@ -18,9 +18,9 @@ pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 use serde::{de::DeserializeOwned, Serialize};
 pub use sparse_mem_file::SparseMemFile;
-use tokio::sync::mpsc;
 use tracing::info;
 pub mod observer;
+use crate::util::channel::mpsc;
 
 /// A tag
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
@@ -151,7 +151,7 @@ pub trait SenderProgressExt<T> {
     ) -> std::result::Result<(), mpsc::error::TrySendError<T>>;
 }
 
-impl<T> SenderProgressExt<T> for tokio::sync::mpsc::Sender<T> {
+impl<T> SenderProgressExt<T> for mpsc::Sender<T> {
     fn send_progress<V: Into<T>>(
         &self,
         value: V,
