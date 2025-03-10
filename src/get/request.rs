@@ -81,14 +81,14 @@ pub enum GetBlobItem {
 
 pub fn get_blob(connection: Connection, hash: Hash) -> GetBlobResult {
     let gen = Gen::new(|co| async move {
-        if let Err(cause) = get_blob_inner(&connection, &hash, &co).await {
+        if let Err(cause) = get_blob_impl(&connection, &hash, &co).await {
             co.yield_(GetBlobItem::Error(cause)).await;
         }
     });
     GetBlobResult { rx: Box::pin(gen) }
 }
 
-async fn get_blob_inner(
+async fn get_blob_impl(
     connection: &Connection,
     hash: &Hash,
     co: &Co<GetBlobItem>,

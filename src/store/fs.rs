@@ -258,7 +258,7 @@ fn open_bao_file(
                 }
             };
             let outboard = match outboard_location {
-                OutboardLocation::NotNeeded => MemOrFile::Mem(Bytes::new()),
+                OutboardLocation::NotNeeded => MemOrFile::empty(),
                 OutboardLocation::Inline(data) => MemOrFile::Mem(data),
                 OutboardLocation::Owned => {
                     let path = options.path.owned_outboard_path(hash);
@@ -468,8 +468,8 @@ impl Actor {
             epoch: AtomicU64::new(0),
             empty: BaoFileHandle::new_complete(
                 Hash::EMPTY,
-                MemOrFile::Mem(Bytes::new()),
-                MemOrFile::Mem(Bytes::new()),
+                MemOrFile::empty(),
+                MemOrFile::empty(),
             ),
         });
         rt.spawn(db_actor.run());
@@ -612,7 +612,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             }
         };
         let outboard = match &outboard_location {
-            OutboardLocation::NotNeeded => MemOrFile::Mem(Bytes::new()),
+            OutboardLocation::NotNeeded => MemOrFile::empty(),
             OutboardLocation::Inline(data) => MemOrFile::Mem(data.clone()),
             OutboardLocation::Owned => {
                 let path = ctx.options().path.owned_outboard_path(&hash);

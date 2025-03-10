@@ -55,9 +55,7 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
     let mut hashes = HashSet::new();
     hashes.insert(root);
     let mut ranges = BTreeMap::new();
-    if !root_ranges.is_empty() {
-        ranges.insert(0, RangeSpec::new(root_ranges));
-    }
+    ranges.insert(0, RangeSpec::new(root_ranges));
     while let Some(item) = stream.next().await {
         if let EncodedItem::Leaf(data) = item {
             let offset = data.offset / 32 + 1;
@@ -175,7 +173,7 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         .map(|x| x.ranges)
         .unwrap_or_default();
     let required_ranges = ChunkRanges::all() - local_ranges;
-    let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges]));
+    let request = GetRequest::new(root, RangeSpecSeq::from_ranges_infinite([required_ranges, ChunkRanges::all()]));
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
     info!("Getting header");

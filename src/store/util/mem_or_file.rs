@@ -12,6 +12,7 @@ use bytes::Bytes;
 
 use super::SliceInfoExt;
 
+/// A wrapper for a file with a fixed size.
 #[derive(Debug)]
 pub struct FixedSize<T> {
     file: T,
@@ -128,52 +129,17 @@ impl<M: Default, F> Default for MemOrFile<M, F> {
     }
 }
 
-impl<M, F> MemOrFile<M, F> {
-    /// Turn a reference to a MemOrFile into a MemOrFile of references
-    pub fn as_ref(&self) -> MemOrFile<&M, &F> {
-        match self {
-            MemOrFile::Mem(mem) => MemOrFile::Mem(mem),
-            MemOrFile::File(file) => MemOrFile::File(file),
-        }
+impl<F> MemOrFile<Bytes, F> {
+    /// Create an empty MemOrFile, using a Bytes for the Mem part
+    pub fn empty() -> Self {
+        MemOrFile::default()
     }
+}
+
+impl<M, F> MemOrFile<M, F> {
 
     /// True if this is a Mem
     pub fn is_mem(&self) -> bool {
         matches!(self, MemOrFile::Mem(_))
-    }
-
-    /// Get the mem part
-    pub fn mem(&self) -> Option<&M> {
-        match self {
-            MemOrFile::Mem(mem) => Some(mem),
-            MemOrFile::File(_) => None,
-        }
-    }
-
-    /// Map the file part of this MemOrFile
-    pub fn map_file<F2>(self, f: impl FnOnce(F) -> F2) -> MemOrFile<M, F2> {
-        match self {
-            MemOrFile::Mem(mem) => MemOrFile::Mem(mem),
-            MemOrFile::File(file) => MemOrFile::File(f(file)),
-        }
-    }
-
-    /// Try to map the file part of this MemOrFile
-    pub fn try_map_file<F2, E>(
-        self,
-        f: impl FnOnce(F) -> Result<F2, E>,
-    ) -> Result<MemOrFile<M, F2>, E> {
-        match self {
-            MemOrFile::Mem(mem) => Ok(MemOrFile::Mem(mem)),
-            MemOrFile::File(file) => f(file).map(MemOrFile::File),
-        }
-    }
-
-    /// Map the memory part of this MemOrFile
-    pub fn map_mem<M2>(self, f: impl FnOnce(M) -> M2) -> MemOrFile<M2, F> {
-        match self {
-            MemOrFile::Mem(mem) => MemOrFile::Mem(f(mem)),
-            MemOrFile::File(file) => MemOrFile::File(file),
-        }
     }
 }

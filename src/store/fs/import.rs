@@ -165,7 +165,7 @@ async fn import_bytes_tiny_impl(cmd: ImportBytes) -> anyhow::Result<ImportEntry>
         ImportEntry {
             hash: Hash::new(&cmd.data),
             source: ImportSource::Memory(cmd.data),
-            outboard: MemOrFile::Mem(Bytes::new()),
+            outboard: MemOrFile::empty(),
             tx: cmd.tx,
         }
     } else {

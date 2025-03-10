@@ -207,7 +207,7 @@ impl PartialFileStorage {
         };
         let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
             if outboard_size == 0 {
-                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded)
+                (MemOrFile::empty(), OutboardLocation::NotNeeded)
             } else {
                 let outboard = read_to_end(&self.outboard, 0, outboard_size as usize)?;
                 trace!("read outboard from file: {:?}", outboard.len());
@@ -359,7 +359,7 @@ impl PartialMemStorage {
                     OutboardLocation::Inline(outboard),
                 )
             } else {
-                (MemOrFile::Mem(Bytes::new()), OutboardLocation::NotNeeded)
+                (MemOrFile::empty(), OutboardLocation::NotNeeded)
             }
         } else {
             let outboard_path = ctx.options.path.owned_outboard_path(hash);
