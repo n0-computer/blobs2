@@ -32,7 +32,7 @@ use crate::{
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
-    util::channel::{oneshot, mpsc},
+    util::channel::{mpsc, oneshot},
     Hash,
 };
 

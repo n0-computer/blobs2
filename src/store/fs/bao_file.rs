@@ -27,18 +27,20 @@ use super::{
     meta::{self, Update},
     options::{Options, PathOptions},
 };
-use crate::store::{
-    bitfield::Bitfield,
-    fs::{meta::raw_outboard_size, TaskContext},
-    mem::{PartialMemStorage, SizeInfo},
-    util::{
-        observer::{Observable, Observer},
-        read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
-        ValueOrPoisioned, DD,
+use crate::{
+    store::{
+        bitfield::Bitfield,
+        fs::{meta::raw_outboard_size, TaskContext},
+        mem::{PartialMemStorage, SizeInfo},
+        util::{
+            observer::{Observable, Observer},
+            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
+            ValueOrPoisioned, DD,
+        },
+        Hash, IROH_BLOCK_SIZE,
     },
-    Hash, IROH_BLOCK_SIZE,
+    util::channel::mpsc,
 };
-use crate::util::channel::mpsc;
 
 /// Storage for complete blobs. There is no longer any uncertainty about the
 /// size, so we don't need a sizes file.

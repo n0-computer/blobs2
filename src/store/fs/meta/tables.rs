@@ -112,7 +112,6 @@ impl ReadableTables for ReadOnlyTables {
 #[derive(Debug, Default)]
 pub(super) struct DeleteSet(BTreeSet<(Hash, BaoFilePart)>);
 
-#[allow(dead_code)]
 impl DeleteSet {
     /// Mark a file as to be deleted after the transaction is committed.
     pub fn insert(&mut self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
@@ -131,6 +130,7 @@ impl DeleteSet {
     }
 
     /// Get the inner set of files to delete.
+    #[allow(dead_code)]
     pub fn into_inner(self) -> BTreeSet<(Hash, BaoFilePart)> {
         self.0
     }

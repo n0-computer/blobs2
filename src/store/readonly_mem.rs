@@ -44,7 +44,7 @@ impl Actor {
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::ImportBao(ImportBao { tx: out, .. }) => {
-                out.send(Err(anyhow::anyhow!("import not supported"))).ok();
+                out.send(Err(anyhow::anyhow!("import not supported")));
             }
             Command::ImportBytes(ImportBytes { tx: out, .. }) => {
                 out.try_send(ImportProgress::Error {

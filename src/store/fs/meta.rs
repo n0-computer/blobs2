@@ -3,6 +3,7 @@ use std::{
     io,
     ops::{Deref, DerefMut},
     path::PathBuf,
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -19,6 +20,7 @@ use tracing::{debug, trace};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
+    options::PathOptions,
     util::PeekableReceiver,
 };
 use crate::store::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
@@ -90,10 +92,15 @@ impl Db {
 pub struct Actor {
     db: redb::Database,
     cmds: PeekableReceiver<Command>,
+    options: Arc<PathOptions>,
 }
 
 impl Actor {
-    pub fn new(db_path: PathBuf, cmds: mpsc::Receiver<Command>) -> anyhow::Result<Self> {
+    pub fn new(
+        db_path: PathBuf,
+        cmds: mpsc::Receiver<Command>,
+        options: Arc<PathOptions>,
+    ) -> anyhow::Result<Self> {
         trace!(
             "creating or opening meta database at {:?}",
             db_path.display()
@@ -110,13 +117,13 @@ impl Actor {
         Tables::new(&tx, &mut ds)?;
         tx.commit()?;
         let cmds = PeekableReceiver::new(cmds);
-        Ok(Self { db, cmds })
+        Ok(Self { db, cmds, options })
     }
 
     fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
         let Get { hash, tx } = cmd;
         let Some(entry) = tables.blobs().get(hash)? else {
-            tx.send(GetResult { state: Ok(None) }).ok();
+            tx.send(GetResult { state: Ok(None) });
             return Ok(());
         };
         let entry = entry.value();
@@ -136,8 +143,7 @@ impl Actor {
         };
         tx.send(GetResult {
             state: Ok(Some(entry)),
-        })
-        .ok();
+        });
         Ok(())
     }
 
@@ -167,7 +173,7 @@ impl Actor {
             let v = v.value();
             println!("inline_outboard: {} -> {:?}", k.to_hex(), v.len());
         }
-        cmd.tx.send(Ok(())).ok();
+        cmd.tx.send(Ok(()));
         Ok(())
     }
 
@@ -190,7 +196,7 @@ impl Actor {
             index += 1;
         }
         let res = res.into_iter().collect::<Result<Vec<_>, _>>();
-        tx.send(res).ok();
+        tx.send(res);
         Ok(())
     }
 
@@ -212,7 +218,7 @@ impl Actor {
             }
             index += 1;
         }
-        tx.send(Ok(res)).ok();
+        tx.send(Ok(res));
         Ok(())
     }
 
@@ -261,7 +267,7 @@ impl Actor {
             tables.inline_outboard.insert(hash, outboard.as_ref())?;
         }
         if let Some(tx) = tx {
-            tx.send(Ok(())).ok();
+            tx.send(Ok(()));
         }
         Ok(())
     }
@@ -295,7 +301,7 @@ impl Actor {
         if let Some(outboard) = outboard {
             tables.inline_outboard.insert(hash, outboard.as_ref())?;
         }
-        tx.send(Ok(())).ok();
+        tx.send(Ok(()));
         Ok(())
     }
 
@@ -350,7 +356,7 @@ impl Actor {
             Some(value) => tables.tags.insert(tag, value).map(|_| ()),
             None => tables.tags.remove(tag).map(|_| ()),
         };
-        tx.send(res.map_err(anyhow::Error::from)).ok();
+        tx.send(res.map_err(anyhow::Error::from));
         Ok(())
     }
 
@@ -363,7 +369,7 @@ impl Actor {
             tables.tags.insert(tag.clone(), hash)?;
             tag
         };
-        tx.send(Ok(tag.clone())).ok();
+        tx.send(Ok(tag.clone()));
         Ok(())
     }
 
@@ -380,7 +386,7 @@ impl Actor {
     fn sync_db(_db: &mut Database, sync: SyncDb) -> ActorResult<()> {
         let SyncDb { tx } = sync;
         // nothing to do here, since for a toplevel cmd we are outside a write transaction
-        tx.send(Ok(())).ok();
+        tx.send(Ok(()));
         Ok(())
     }
 
@@ -399,6 +405,7 @@ impl Actor {
 
     pub async fn run(mut self) -> ActorResult<()> {
         let mut db = DbWrapper::from(self.db);
+        let mut delete_set = DeleteSet::default();
         let shutdown = loop {
             let Some(cmd) = self.cmds.recv().await else {
                 break None;
@@ -418,18 +425,18 @@ impl Actor {
                 }
                 Command::ReadWrite(cmd) => {
                     trace!("{cmd:?}");
-                    let mut delete_set = DeleteSet::default();
                     let tx = db.begin_write()?;
                     let mut tables = Tables::new(&tx, &mut delete_set)?;
                     Self::handle_readwrite(&mut tables, cmd)?;
                     drop(tables);
                     tx.commit()?;
+                    delete_set.apply_and_clear(&self.options);
                 }
             }
         };
         if let Some(shutdown) = shutdown {
             drop(db);
-            shutdown.tx.send(()).ok();
+            shutdown.tx.send(());
         }
         Ok(())
     }

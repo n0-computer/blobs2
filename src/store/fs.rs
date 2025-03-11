@@ -62,16 +62,16 @@ use entry_state::{DataLocation, OutboardLocation};
 use import::ImportSource;
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::{JoinError, JoinSet},
-};
+use tokio::task::{JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
-use crate::store::{
-    bitfield::is_validated,
-    util::{FixedSize, MemOrFile, SenderProgressExt, ValueOrPoisioned},
-    Hash,
+use crate::{
+    store::{
+        bitfield::is_validated,
+        util::{FixedSize, MemOrFile, SenderProgressExt, ValueOrPoisioned},
+        Hash,
+    },
+    util::channel::{mpsc, oneshot},
 };
 mod bao_file;
 use bao_file::{BaoFileHandle, BaoFileHandleWeak, BaoFileStorage};
@@ -404,8 +404,8 @@ impl Actor {
                         .await
                         .ok();
                 }
-                let handle = self.hash_context(cmd.hash);
-                self.tasks.spawn(finish_import(cmd, handle));
+                let ctx = self.hash_context(cmd.hash);
+                self.tasks.spawn(finish_import(cmd, ctx));
             }
         }
     }
@@ -460,7 +460,7 @@ impl Actor {
         );
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
-        let db_actor = meta::Actor::new(db_path, db_recv)?;
+        let db_actor = meta::Actor::new(db_path, db_recv, Arc::new(options.path.clone()))?;
         let slot_context = Arc::new(TaskContext {
             options,
             db: meta::Db::new(db_send),
@@ -635,7 +635,7 @@ async fn import_bao(cmd: ImportBao, ctx: HashContext) {
         Err(cause) => Err(cause),
     };
     trace!("{res:?}");
-    tx.send(res).ok();
+    tx.send(res);
 }
 
 fn chunk_range(leaf: &Leaf) -> ChunkRanges {

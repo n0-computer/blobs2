@@ -32,7 +32,9 @@ async fn main() -> anyhow::Result<()> {
     // let ticket: BlobTicket = "blobadez2n2x3z6hvrp53h5kty2l53xpcdqyv2jaasjqt2aapiuavvcdiajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiaakd3fswf7wayaycuab4ul7mbqddbhyacyfy226kffhjqhq3vt2lj7ab2cam74wthkkrxtrbyl4s6y".parse().unwrap();
     let dirname = format!(".sendme2-recv-{}", ticket.hash().to_hex());
     let store = FsStore::load(dirname).await?;
+    // let blobs = Blobs::new(store.clone());
     let endpoint = iroh::Endpoint::builder().bind().await?;
+    // let router = Router::builder(endpoint).accept(blobs2::ALPN, blobs.clone()).build();
     let addr = ticket.node_addr().clone();
     let content = ticket.hash_and_format();
     let connection = endpoint.connect(addr.clone(), blobs2::ALPN).await?;

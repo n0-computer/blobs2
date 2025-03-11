@@ -21,10 +21,7 @@ use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{
     io::AsyncReadExt,
-    sync::{
-        mpsc::{self, OwnedPermit},
-        oneshot,
-    },
+    sync::mpsc::{self, OwnedPermit},
     task::{JoinError, JoinSet},
 };
 use tracing::{error, instrument};
@@ -39,6 +36,7 @@ use crate::{
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
+    util::channel::oneshot,
     Hash,
 };
 
@@ -153,7 +151,7 @@ impl Actor {
                     .iter()
                     .map(|(tag, hash)| (tag.clone(), *hash))
                     .collect::<Vec<_>>();
-                out.send(Ok(items)).ok();
+                out.send(Ok(items));
             }
             Command::SetTag(SetTag {
                 tag,
@@ -165,15 +163,15 @@ impl Actor {
                 } else {
                     self.state.tags.remove(&tag);
                 }
-                out.send(Ok(())).ok();
+                out.send(Ok(()));
             }
             Command::CreateTag(CreateTag { hash, tx }) => {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
                 self.state.tags.insert(tag.clone(), hash);
-                tx.send(Ok(tag)).ok();
+                tx.send(Ok(tag));
             }
             Command::SyncDb(SyncDb { tx }) => {
-                tx.send(Ok(())).ok();
+                tx.send(Ok(()));
             }
             Command::Shutdown(cmd) => {
                 return Some(cmd);
@@ -297,7 +295,7 @@ async fn import_bao_task(
             }
         }
     }
-    tx.send(Ok(())).ok();
+    tx.send(Ok(()));
 }
 
 async fn export_bao_task(
