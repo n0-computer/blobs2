@@ -111,7 +111,7 @@ pub enum InternalCommand {
 
 /// Context needed by most tasks
 #[derive(Debug)]
-pub(crate) struct TaskContext {
+struct TaskContext {
     // Store options such as paths and inline thresholds, in an Arc to cheaply share with tasks.
     pub options: Arc<Options>,
     // Metadata database, basically a mpsc sender with some extra functionality.
@@ -558,6 +558,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
     //   the entry exists in the db, but we don't have a handle
     //   the entry does not exist at all.
     // convert the import source to a data location and drop the open files
+    ctx.protect(hash, [BaoFilePart::Data, BaoFilePart::Outboard]);
     let data_location = match import_data.source {
         ImportSource::Memory(data) => DataLocation::Inline(data),
         ImportSource::External(path, _file, size) => DataLocation::External(vec![path], size),
@@ -570,7 +571,6 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
                 path.display(),
                 target.display()
             );
-            ctx.protect(hash, [BaoFilePart::Data]);
             if let Err(cause) = fs::rename(&path, &target) {
                 error!(
                     "failed to move temp file {} to owned data location {}: {cause}",
@@ -592,7 +592,6 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
                 path.display(),
                 target.display()
             );
-            ctx.protect(hash, [BaoFilePart::Outboard]);
             if let Err(cause) = fs::rename(&path, &target) {
                 error!(
                     "failed to move temp file {} to owned outboard location {}: {cause}",

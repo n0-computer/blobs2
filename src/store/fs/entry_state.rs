@@ -182,6 +182,16 @@ pub enum EntryState<I = ()> {
     },
 }
 
+impl<I> EntryState<I> {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete { .. })
+    }
+
+    pub fn is_partial(&self) -> bool {
+        matches!(self, Self::Partial { .. })
+    }
+}
+
 impl Default for EntryState {
     fn default() -> Self {
         Self::Partial { size: None }
@@ -205,8 +215,8 @@ impl<I: AsRef<[u8]>> EntryState<I> {
 }
 
 impl EntryState {
-    pub fn union(self, that: Self) -> ActorResult<Self> {
-        match (self, that) {
+    pub fn union(old: Self, new: Self) -> ActorResult<Self> {
+        match (old, new) {
             (
                 Self::Complete {
                     data_location,

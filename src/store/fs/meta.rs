@@ -15,10 +15,10 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{ReadOnlyTables, ReadableTables, Tables};
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use super::{
-    delete_set::DeleteSetHandle,
+    delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     util::PeekableReceiver,
     BaoFilePart,
@@ -92,14 +92,14 @@ impl Db {
 pub struct Actor {
     db: redb::Database,
     cmds: PeekableReceiver<Command>,
-    ds: DeleteSetHandle,
+    ds: DeleteHandle,
 }
 
 impl Actor {
     pub fn new(
         db_path: PathBuf,
         cmds: mpsc::Receiver<Command>,
-        mut ds: DeleteSetHandle,
+        mut ds: DeleteHandle,
     ) -> anyhow::Result<Self> {
         trace!(
             "creating or opening meta database at {:?}",
@@ -257,7 +257,16 @@ impl Actor {
             EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
         };
         let state = match old_entry_opt {
-            Some(old_entry) => old_entry.union(state)?,
+            Some(old) => {
+                let partial_to_complete = old.is_partial() && state.is_complete();
+                let res = EntryState::union(old, state)?;
+                if partial_to_complete {
+                    tables
+                        .ftx
+                        .delete(hash, [BaoFilePart::Sizes, BaoFilePart::Bitfield]);
+                }
+                res
+            }
             None => state,
         };
         tables.blobs.insert(hash, state)?;

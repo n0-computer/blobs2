@@ -16,9 +16,13 @@ pub(super) enum BaoFilePart {
     Bitfield,
 }
 
-pub fn pair(options: Arc<PathOptions>) -> (ProtectHandle, DeleteSetHandle) {
+/// Creates a pair of a protect handle and a delete handle.
+///
+/// The protect handle can be used to protect files from deletion.
+/// The delete handle can be used to create transactions in which files can be marked for deletion.
+pub(super) fn pair(options: Arc<PathOptions>) -> (ProtectHandle, DeleteHandle) {
     let ds = Arc::new(Mutex::new(DeleteSet::default()));
-    (ProtectHandle(ds.clone()), DeleteSetHandle::new(ds, options))
+    (ProtectHandle(ds.clone()), DeleteHandle::new(ds, options))
 }
 
 /// Helper to keep track of files to delete after a transaction is committed.
@@ -27,7 +31,7 @@ struct DeleteSet(BTreeSet<(Hash, BaoFilePart)>);
 
 impl DeleteSet {
     /// Mark a file as to be deleted after the transaction is committed.
-    pub fn delete(&mut self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
+    fn delete(&mut self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
         for part in parts {
             self.0.insert((hash, part));
         }
@@ -36,7 +40,7 @@ impl DeleteSet {
     /// Mark a file as to be kept after the transaction is committed.
     ///
     /// This will cancel any previous delete for the same file in the same transaction.
-    pub fn protect(&mut self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
+    fn protect(&mut self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
         for part in parts {
             self.0.remove(&(hash, part));
         }
@@ -46,7 +50,7 @@ impl DeleteSet {
     ///
     /// This will delete all files marked for deletion and then clear the set.
     /// Errors will just be logged.
-    pub fn commit(&mut self, options: &PathOptions) {
+    fn commit(&mut self, options: &PathOptions) {
         for (hash, to_delete) in &self.0 {
             tracing::debug!("deleting {:?} for {hash}", to_delete);
             let path = match to_delete {
@@ -70,17 +74,17 @@ impl DeleteSet {
         self.0.clear();
     }
 
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         self.0.clear();
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ProtectHandle(Arc<Mutex<DeleteSet>>);
+pub(super) struct ProtectHandle(Arc<Mutex<DeleteSet>>);
 
 /// Protect handle, to be used concurrently with transactions to mark files for keeping.
 impl ProtectHandle {
@@ -93,41 +97,45 @@ impl ProtectHandle {
     }
 }
 
+/// A delete handle. The only thing you can do with this is to open transactions that keep track of files to delete.
 #[derive(Debug)]
-pub(super) struct DeleteSetHandle {
+pub(super) struct DeleteHandle {
     ds: Arc<Mutex<DeleteSet>>,
     options: Arc<PathOptions>,
 }
 
-impl DeleteSetHandle {
+impl DeleteHandle {
     fn new(ds: Arc<Mutex<DeleteSet>>, options: Arc<PathOptions>) -> Self {
         Self { ds, options }
     }
 
-    pub fn begin_write(&mut self) -> FileTransaction<'_> {
+    /// Open a file transaction. You can open only one transaction at a time.
+    pub(super) fn begin_write(&mut self) -> FileTransaction<'_> {
         FileTransaction::new(self)
     }
 }
 
-/// Delete handle, to be used linearly with transactions to mark files for deletion.
+/// A file transaction. Inside a transaction, you can mark files for deletion.
+///
+/// Dropping a transaction will clear the delete set. Committing a transaction will apply the delete set by actually deleting the files.
 #[derive(Debug)]
-pub(super) struct FileTransaction<'a>(&'a DeleteSetHandle);
+pub(super) struct FileTransaction<'a>(&'a DeleteHandle);
 
 impl<'a> FileTransaction<'a> {
-    pub fn new(inner: &'a DeleteSetHandle) -> Self {
+    fn new(inner: &'a DeleteHandle) -> Self {
         let guard = inner.ds.lock().unwrap();
         debug_assert!(guard.is_empty());
         drop(guard);
         Self(inner)
     }
 
-    /// Inside a transaction, mark files as to be deleted
+    /// Mark files as to be deleted
     pub fn delete(&self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
         let mut guard = self.0.ds.lock().unwrap();
         guard.delete(hash, parts);
     }
 
-    /// After a successful commit, apply the delete set and clear it.
+    /// Apply the delete set and clear it.
     pub fn commit(self) {
         let mut guard = self.0.ds.lock().unwrap();
         guard.commit(&self.0.options);

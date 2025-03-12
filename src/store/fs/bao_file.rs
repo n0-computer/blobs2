@@ -26,6 +26,7 @@ use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
     meta::{self, Update},
     options::{Options, PathOptions},
+    BaoFilePart,
 };
 use crate::{
     store::{
@@ -430,7 +431,7 @@ impl BaoFileStorage {
                     // a write at the end of a very large file.
                     //
                     // opt: we should check if we become complete to avoid going from mem to partial to complete
-                    let mut fs = ms.persist(&ctx.options.path, hash)?;
+                    let mut fs = ms.persist(ctx, hash)?;
                     fs.write_batch(size, batch, ranges)?;
                     if fs.bitfield.state().is_complete() {
                         let (state, update) = fs.into_complete(hash, ctx)?;
@@ -787,7 +788,17 @@ impl SizeInfo {
 
 impl PartialMemStorage {
     /// Persist the batch to disk, creating a FileBatch.
-    fn persist(self, options: &PathOptions, hash: &Hash) -> io::Result<PartialFileStorage> {
+    fn persist(self, ctx: &TaskContext, hash: &Hash) -> io::Result<PartialFileStorage> {
+        let options = &ctx.options.path;
+        ctx.protect.protect(
+            *hash,
+            [
+                BaoFilePart::Data,
+                BaoFilePart::Outboard,
+                BaoFilePart::Sizes,
+                BaoFilePart::Bitfield,
+            ],
+        );
         let mut data = create_read_write(options.data_path(hash))?;
         let mut outboard = create_read_write(options.outboard_path(hash))?;
         let mut sizes = create_read_write(options.sizes_path(hash))?;
