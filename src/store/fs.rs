@@ -58,6 +58,7 @@ use bao_tree::{
     ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
+use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
 use import::ImportSource;
 use n0_future::{future::yield_now, io};
@@ -75,6 +76,7 @@ use crate::{
 };
 mod bao_file;
 use bao_file::{BaoFileHandle, BaoFileHandleWeak, BaoFileStorage};
+mod delete_set;
 mod entry_state;
 mod import;
 mod meta;
@@ -120,6 +122,8 @@ pub(crate) struct TaskContext {
     pub epoch: AtomicU64,
     /// The file handle for the empty hash.
     pub empty: BaoFileHandle,
+    /// Handle to protect files from deletion.
+    pub protect: ProtectHandle,
 }
 
 #[derive(Debug)]
@@ -157,6 +161,10 @@ impl HashContext {
 
     pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Option<BaoFileHandleWeak>> {
         self.slot.0.lock().await
+    }
+
+    pub fn protect(&self, hash: Hash, parts: impl IntoIterator<Item = BaoFilePart>) {
+        self.ctx.protect.protect(hash, parts);
     }
 
     /// Update the entry state in the database, and wait for completion.
@@ -245,7 +253,7 @@ fn open_bao_file(
             let data = match data_location {
                 DataLocation::Inline(data) => MemOrFile::Mem(data),
                 DataLocation::Owned(size) => {
-                    let path = options.path.owned_data_path(hash);
+                    let path = options.path.data_path(hash);
                     let file = fs::File::open(&path)?;
                     MemOrFile::File(FixedSize::new(file, size))
                 }
@@ -261,7 +269,7 @@ fn open_bao_file(
                 OutboardLocation::NotNeeded => MemOrFile::empty(),
                 OutboardLocation::Inline(data) => MemOrFile::Mem(data),
                 OutboardLocation::Owned => {
-                    let path = options.path.owned_outboard_path(hash);
+                    let path = options.path.outboard_path(hash);
                     let file = fs::File::open(&path)?;
                     MemOrFile::File(file)
                 }
@@ -460,13 +468,15 @@ impl Actor {
         );
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
-        let db_actor = meta::Actor::new(db_path, db_recv, Arc::new(options.path.clone()))?;
+        let (protect, ds) = delete_set::pair(Arc::new(options.path.clone()));
+        let db_actor = meta::Actor::new(db_path, db_recv, ds)?;
         let slot_context = Arc::new(TaskContext {
             options,
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
             epoch: AtomicU64::new(0),
             empty: BaoFileHandle::new_complete(Hash::EMPTY, MemOrFile::empty(), MemOrFile::empty()),
+            protect,
         });
         rt.spawn(db_actor.run());
         Ok(Self {
@@ -554,12 +564,13 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
         ImportSource::TempFile(path, _file, size) => {
             // this will always work on any unix, but on windows there might be an issue if the target file is open!
             // possibly open with FILE_SHARE_DELETE on windows?
-            let target = ctx.options().path.owned_data_path(&hash);
+            let target = ctx.options().path.data_path(&hash);
             trace!(
                 "moving temp file to owned data location: {} -> {}",
                 path.display(),
                 target.display()
             );
+            ctx.protect(hash, [BaoFilePart::Data]);
             if let Err(cause) = fs::rename(&path, &target) {
                 error!(
                     "failed to move temp file {} to owned data location {}: {cause}",
@@ -575,12 +586,13 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
         MemOrFile::Mem(bytes) => OutboardLocation::Inline(bytes),
         MemOrFile::File(path) => {
             // the same caveat as above applies here
-            let target = ctx.options().path.owned_outboard_path(&hash);
+            let target = ctx.options().path.outboard_path(&hash);
             trace!(
                 "moving temp file to owned outboard location: {} -> {}",
                 path.display(),
                 target.display()
             );
+            ctx.protect(hash, [BaoFilePart::Outboard]);
             if let Err(cause) = fs::rename(&path, &target) {
                 error!(
                     "failed to move temp file {} to owned outboard location {}: {cause}",
@@ -595,7 +607,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
         let data = match &data_location {
             DataLocation::Inline(data) => MemOrFile::Mem(data.clone()),
             DataLocation::Owned(size) => {
-                let path = ctx.options().path.owned_data_path(&hash);
+                let path = ctx.options().path.data_path(&hash);
                 let file = fs::File::open(&path)?;
                 MemOrFile::File(FixedSize::new(file, *size))
             }
@@ -611,7 +623,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             OutboardLocation::NotNeeded => MemOrFile::empty(),
             OutboardLocation::Inline(data) => MemOrFile::Mem(data.clone()),
             OutboardLocation::Owned => {
-                let path = ctx.options().path.owned_outboard_path(&hash);
+                let path = ctx.options().path.outboard_path(&hash);
                 let file = fs::File::open(&path)?;
                 MemOrFile::File(file)
             }
@@ -790,7 +802,7 @@ async fn export_path_impl(
             }
             ExportMode::TryReference => {
                 let hash = handle.hash();
-                let owned_path = ctx.options().path.owned_data_path(&hash);
+                let owned_path = ctx.options().path.data_path(&hash);
                 match std::fs::rename(&owned_path, &cmd.target) {
                     Ok(()) => {}
                     Err(cause) => {

@@ -3,7 +3,6 @@ use std::{
     io,
     ops::{Deref, DerefMut},
     path::PathBuf,
-    sync::Arc,
     time::SystemTime,
 };
 
@@ -15,13 +14,14 @@ use crate::util::channel::{mpsc, oneshot};
 mod proto;
 pub use proto::*;
 mod tables;
-use tables::{BaoFilePart, DeleteSet, ReadOnlyTables, ReadableTables, Tables};
+use tables::{ReadOnlyTables, ReadableTables, Tables};
 use tracing::{debug, trace};
 
 use super::{
+    delete_set::DeleteSetHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
-    options::PathOptions,
     util::PeekableReceiver,
+    BaoFilePart,
 };
 use crate::store::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
 
@@ -92,14 +92,14 @@ impl Db {
 pub struct Actor {
     db: redb::Database,
     cmds: PeekableReceiver<Command>,
-    options: Arc<PathOptions>,
+    ds: DeleteSetHandle,
 }
 
 impl Actor {
     pub fn new(
         db_path: PathBuf,
         cmds: mpsc::Receiver<Command>,
-        options: Arc<PathOptions>,
+        mut ds: DeleteSetHandle,
     ) -> anyhow::Result<Self> {
         trace!(
             "creating or opening meta database at {:?}",
@@ -113,11 +113,12 @@ impl Actor {
             Err(err) => return Err(err.into()),
         };
         let tx = db.begin_write()?;
-        let mut ds = DeleteSet::default();
-        Tables::new(&tx, &mut ds)?;
+        let ftx = ds.begin_write();
+        Tables::new(&tx, &ftx)?;
         tx.commit()?;
+        drop(ftx);
         let cmds = PeekableReceiver::new(cmds);
-        Ok(Self { db, cmds, options })
+        Ok(Self { db, cmds, ds })
     }
 
     fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
@@ -320,7 +321,7 @@ impl Actor {
                             }
                             DataLocation::Owned(_) => {
                                 // mark the data for deletion
-                                tables.delete_after_commit.insert(hash, [BaoFilePart::Data]);
+                                tables.ftx.delete(hash, [BaoFilePart::Data]);
                             }
                             DataLocation::External(_, _) => {}
                         }
@@ -330,18 +331,20 @@ impl Actor {
                             }
                             OutboardLocation::Owned => {
                                 // mark the outboard for deletion
-                                tables
-                                    .delete_after_commit
-                                    .insert(hash, [BaoFilePart::Outboard]);
+                                tables.ftx.delete(hash, [BaoFilePart::Outboard]);
                             }
                             OutboardLocation::NotNeeded => {}
                         }
                     }
                     EntryState::Partial { .. } => {
-                        // mark all parts for deletion
-                        tables.delete_after_commit.insert(
+                        tables.ftx.delete(
                             hash,
-                            [BaoFilePart::Outboard, BaoFilePart::Data, BaoFilePart::Sizes],
+                            [
+                                BaoFilePart::Outboard,
+                                BaoFilePart::Data,
+                                BaoFilePart::Sizes,
+                                BaoFilePart::Bitfield,
+                            ],
                         );
                     }
                 }
@@ -405,7 +408,6 @@ impl Actor {
 
     pub async fn run(mut self) -> ActorResult<()> {
         let mut db = DbWrapper::from(self.db);
-        let mut delete_set = DeleteSet::default();
         let shutdown = loop {
             let Some(cmd) = self.cmds.recv().await else {
                 break None;
@@ -425,12 +427,13 @@ impl Actor {
                 }
                 Command::ReadWrite(cmd) => {
                     trace!("{cmd:?}");
+                    let ftx = self.ds.begin_write();
                     let tx = db.begin_write()?;
-                    let mut tables = Tables::new(&tx, &mut delete_set)?;
+                    let mut tables = Tables::new(&tx, &ftx)?;
                     Self::handle_readwrite(&mut tables, cmd)?;
                     drop(tables);
                     tx.commit()?;
-                    delete_set.apply_and_clear(&self.options);
+                    ftx.commit();
                 }
             }
         };

@@ -152,9 +152,9 @@ impl PartialFileStorage {
 
     fn load(hash: &Hash, options: &PathOptions) -> io::Result<Self> {
         let bitfield_path = options.bitfield_path(hash);
-        let data = create_read_write(options.owned_data_path(hash))?;
-        let outboard = create_read_write(options.owned_outboard_path(hash))?;
-        let sizes = create_read_write(options.owned_sizes_path(hash))?;
+        let data = create_read_write(options.data_path(hash))?;
+        let outboard = create_read_write(options.outboard_path(hash))?;
+        let sizes = create_read_write(options.sizes_path(hash))?;
         let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
             Ok(bitfield) => bitfield,
             Err(cause) => {
@@ -345,7 +345,7 @@ impl PartialMemStorage {
             let data: Bytes = self.data.to_vec().into();
             (MemOrFile::Mem(data.clone()), DataLocation::Inline(data))
         } else {
-            let data_path = ctx.options.path.owned_data_path(hash);
+            let data_path = ctx.options.path.data_path(hash);
             let mut data_file = create_read_write(&data_path)?;
             self.data.persist(&mut data_file)?;
             (
@@ -364,7 +364,7 @@ impl PartialMemStorage {
                 (MemOrFile::empty(), OutboardLocation::NotNeeded)
             }
         } else {
-            let outboard_path = ctx.options.path.owned_outboard_path(hash);
+            let outboard_path = ctx.options.path.outboard_path(hash);
             let mut outboard_file = create_read_write(&outboard_path)?;
             self.outboard.persist(&mut outboard_file)?;
             let outboard_location = if outboard_size == 0 {
@@ -788,9 +788,9 @@ impl SizeInfo {
 impl PartialMemStorage {
     /// Persist the batch to disk, creating a FileBatch.
     fn persist(self, options: &PathOptions, hash: &Hash) -> io::Result<PartialFileStorage> {
-        let mut data = create_read_write(options.owned_data_path(hash))?;
-        let mut outboard = create_read_write(options.owned_outboard_path(hash))?;
-        let mut sizes = create_read_write(options.owned_sizes_path(hash))?;
+        let mut data = create_read_write(options.data_path(hash))?;
+        let mut outboard = create_read_write(options.outboard_path(hash))?;
+        let mut sizes = create_read_write(options.sizes_path(hash))?;
         self.data.persist(&mut data)?;
         self.outboard.persist(&mut outboard)?;
         self.size.persist(&mut sizes)?;

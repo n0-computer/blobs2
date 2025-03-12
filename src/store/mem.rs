@@ -237,7 +237,7 @@ impl Actor {
             }
         };
         if let Some(shutdown) = shutdown {
-            let _ = shutdown.tx.send(());
+            shutdown.tx.send(());
         }
     }
 }

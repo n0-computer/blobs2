@@ -25,15 +25,15 @@ impl PathOptions {
         }
     }
 
-    pub fn owned_data_path(&self, hash: &Hash) -> PathBuf {
+    pub fn data_path(&self, hash: &Hash) -> PathBuf {
         self.data_path.join(format!("{}.data", hash.to_hex()))
     }
 
-    pub fn owned_outboard_path(&self, hash: &Hash) -> PathBuf {
+    pub fn outboard_path(&self, hash: &Hash) -> PathBuf {
         self.data_path.join(format!("{}.obao4", hash.to_hex()))
     }
 
-    pub fn owned_sizes_path(&self, hash: &Hash) -> PathBuf {
+    pub fn sizes_path(&self, hash: &Hash) -> PathBuf {
         self.data_path.join(format!("{}.sizes4", hash.to_hex()))
     }
 
