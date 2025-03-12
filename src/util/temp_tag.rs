@@ -120,7 +120,14 @@ struct TempCounters {
 }
 
 impl TempCounters {
-    fn counter(&mut self, format: BlobFormat) -> &mut u64 {
+    fn counter(&self, format: BlobFormat) -> u64 {
+        match format {
+            BlobFormat::Raw => self.raw,
+            BlobFormat::HashSeq => self.hash_seq,
+        }
+    }
+
+    fn counter_mut(&mut self, format: BlobFormat) -> &mut u64 {
         match format {
             BlobFormat::Raw => &mut self.raw,
             BlobFormat::HashSeq => &mut self.hash_seq,
@@ -128,12 +135,12 @@ impl TempCounters {
     }
 
     fn inc(&mut self, format: BlobFormat) {
-        let counter = self.counter(format);
+        let counter = self.counter_mut(format);
         *counter = counter.checked_add(1).unwrap();
     }
 
     fn dec(&mut self, format: BlobFormat) {
-        let counter = self.counter(format);
+        let counter = self.counter_mut(format);
         *counter = counter.saturating_sub(1);
     }
 
@@ -163,8 +170,11 @@ impl TempCounterMap {
         }
     }
 
-    fn contains(&self, hash: &Hash) -> bool {
-        self.0.contains_key(hash)
+    fn contains(&self, haf: &HashAndFormat) -> bool {
+        let Some(entry) = self.0.get(&haf.hash) else {
+            return false;
+        };
+        entry.counter(haf.format) > 0
     }
 
     fn keys(&self) -> impl Iterator<Item = HashAndFormat> {

@@ -393,7 +393,6 @@ fn send_update(
 ) {
     permit.send(
         Update {
-            epoch: ctx.epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             hash: *hash,
             state: update,
             tx: None,

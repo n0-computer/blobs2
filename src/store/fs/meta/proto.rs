@@ -49,7 +49,6 @@ pub struct Dump {
 }
 
 pub struct Update {
-    pub epoch: u64,
     pub hash: Hash,
     pub state: EntryState<Bytes>,
     /// do I need this? Optional?
@@ -59,7 +58,6 @@ pub struct Update {
 impl fmt::Debug for Update {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Update")
-            .field("epoch", &self.epoch)
             .field("hash", &self.hash)
             .field("state", &DD(self.state.fmt_short()))
             .field("tx", &self.tx.is_some())
@@ -68,7 +66,6 @@ impl fmt::Debug for Update {
 }
 
 pub struct Set {
-    pub epoch: u64,
     pub hash: Hash,
     pub state: EntryState<Bytes>,
     pub tx: oneshot::Sender<ActorResult<()>>,
@@ -77,7 +74,6 @@ pub struct Set {
 impl fmt::Debug for Set {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Set")
-            .field("epoch", &self.epoch)
             .field("hash", &self.hash)
             .field("state", &DD(self.state.fmt_short()))
             .finish_non_exhaustive()
@@ -86,7 +82,6 @@ impl fmt::Debug for Set {
 
 #[derive(Debug)]
 pub struct Delete {
-    pub epoch: u64,
     pub hashes: Vec<Hash>,
     pub tx: oneshot::Sender<ActorResult<()>>,
 }
@@ -150,6 +145,30 @@ pub enum Command {
     ReadOnly(ReadOnlyCommand),
     ReadWrite(ReadWriteCommand),
     TopLevel(TopLevelCommand),
+}
+
+impl Command {
+    pub fn non_top_level(self) -> std::result::Result<NonTopLevelCommand, Self> {
+        match self {
+            Self::ReadOnly(cmd) => Ok(NonTopLevelCommand::ReadOnly(cmd)),
+            Self::ReadWrite(cmd) => Ok(NonTopLevelCommand::ReadWrite(cmd)),
+            _ => Err(self),
+        }
+    }
+
+    pub fn read_only(self) -> std::result::Result<ReadOnlyCommand, Self> {
+        match self {
+            Self::ReadOnly(cmd) => Ok(cmd),
+            _ => Err(self),
+        }
+    }
+}
+
+#[derive(Debug)]
+#[enum_conversions()]
+pub enum NonTopLevelCommand {
+    ReadOnly(ReadOnlyCommand),
+    ReadWrite(ReadWriteCommand),
 }
 
 impl fmt::Debug for Command {

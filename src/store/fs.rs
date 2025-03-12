@@ -49,7 +49,7 @@ use std::{
     num::NonZeroU64,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicU64, Arc},
+    sync::Arc,
 };
 
 use anyhow::Context;
@@ -118,8 +118,6 @@ struct TaskContext {
     pub db: meta::Db,
     // Handle to send internal commands
     pub internal_cmd_tx: mpsc::Sender<InternalCommand>,
-    // Epoch counter to provide a total order for databse operations
-    pub epoch: AtomicU64,
     /// The file handle for the empty hash.
     pub empty: BaoFileHandle,
     /// Handle to protect files from deletion.
@@ -174,16 +172,11 @@ impl HashContext {
         state: EntryState<Bytes>,
     ) -> anyhow::Result<()> {
         let hash = hash.into();
-        let epoch = self
-            .ctx
-            .epoch
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.db()
             .send(
                 meta::Update {
                     hash,
-                    epoch,
                     state,
                     tx: Some(tx),
                 }
@@ -197,22 +190,8 @@ impl HashContext {
     /// Update the entry state in the database, and wait for completion.
     pub async fn set(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> anyhow::Result<()> {
         let hash = hash.into();
-        let epoch = self
-            .ctx
-            .epoch
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.db()
-            .send(
-                meta::Set {
-                    hash,
-                    epoch,
-                    state,
-                    tx,
-                }
-                .into(),
-            )
-            .await?;
+        self.db().send(meta::Set { hash, state, tx }.into()).await?;
         rx.await??;
         Ok(())
     }
@@ -469,12 +448,11 @@ impl Actor {
         fs::create_dir_all(db_path.parent().unwrap())?;
         let (db_send, db_recv) = mpsc::channel(100);
         let (protect, ds) = delete_set::pair(Arc::new(options.path.clone()));
-        let db_actor = meta::Actor::new(db_path, db_recv, ds)?;
+        let db_actor = meta::Actor::new(db_path, db_recv, ds, options.batch.clone())?;
         let slot_context = Arc::new(TaskContext {
             options,
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
-            epoch: AtomicU64::new(0),
             empty: BaoFileHandle::new_complete(Hash::EMPTY, MemOrFile::empty(), MemOrFile::empty()),
             protect,
         });

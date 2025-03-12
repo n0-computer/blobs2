@@ -3,7 +3,7 @@ use std::{
     io,
     ops::{Deref, DerefMut},
     path::PathBuf,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use bao_tree::BaoTree;
@@ -15,11 +15,12 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{ReadOnlyTables, ReadableTables, Tables};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 use super::{
     delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
+    options::{self, BatchOptions, InlineOptions},
     util::PeekableReceiver,
     BaoFilePart,
 };
@@ -93,6 +94,7 @@ pub struct Actor {
     db: redb::Database,
     cmds: PeekableReceiver<Command>,
     ds: DeleteHandle,
+    options: BatchOptions,
 }
 
 impl Actor {
@@ -100,6 +102,7 @@ impl Actor {
         db_path: PathBuf,
         cmds: mpsc::Receiver<Command>,
         mut ds: DeleteHandle,
+        options: BatchOptions,
     ) -> anyhow::Result<Self> {
         trace!(
             "creating or opening meta database at {:?}",
@@ -118,7 +121,12 @@ impl Actor {
         tx.commit()?;
         drop(ftx);
         let cmds = PeekableReceiver::new(cmds);
-        Ok(Self { db, cmds, ds })
+        Ok(Self {
+            db,
+            cmds,
+            ds,
+            options,
+        })
     }
 
     fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
@@ -395,6 +403,13 @@ impl Actor {
         }
     }
 
+    fn handle_non_toplevel(tables: &mut Tables, cmd: NonTopLevelCommand) -> ActorResult<()> {
+        match cmd {
+            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd),
+            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd),
+        }
+    }
+
     fn sync_db(_db: &mut Database, sync: SyncDb) -> ActorResult<()> {
         let SyncDb { tx } = sync;
         // nothing to do here, since for a toplevel cmd we are outside a write transaction
@@ -429,17 +444,40 @@ impl Actor {
                     }
                 }
                 Command::ReadOnly(cmd) => {
-                    trace!("{cmd:?}");
+                    self.cmds.push_back(cmd.into()).ok();
                     let tx = db.begin_read()?;
                     let tables = ReadOnlyTables::new(&tx)?;
-                    Self::handle_readonly(&tables, cmd)?;
+                    let t0 = Instant::now();
+                    let mut n = 0;
+                    while let Some(cmd) = self.cmds.extract(Command::read_only).await {
+                        Self::handle_readonly(&tables, cmd)?;
+                        if t0.elapsed() > self.options.max_read_duration {
+                            break;
+                        }
+                        if n > self.options.max_read_batch {
+                            break;
+                        }
+                        n += 1;
+                    }
                 }
                 Command::ReadWrite(cmd) => {
-                    trace!("{cmd:?}");
+                    info!("{cmd:?}");
+                    self.cmds.push_back(cmd.into()).ok();
                     let ftx = self.ds.begin_write();
                     let tx = db.begin_write()?;
                     let mut tables = Tables::new(&tx, &ftx)?;
-                    Self::handle_readwrite(&mut tables, cmd)?;
+                    let t0 = Instant::now();
+                    let mut n = 0;
+                    while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
+                        Self::handle_non_toplevel(&mut tables, cmd)?;
+                        if t0.elapsed() > self.options.max_write_duration {
+                            break;
+                        }
+                        if n > self.options.max_write_batch {
+                            break;
+                        }
+                        n += 1;
+                    }
                     drop(tables);
                     tx.commit()?;
                     ftx.commit();

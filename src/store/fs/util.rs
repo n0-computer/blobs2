@@ -24,6 +24,17 @@ impl<T> PeekableReceiver<T> {
         self.recv.recv().await
     }
 
+    pub async fn extract<U>(&mut self, f: impl Fn(T) -> std::result::Result<U, T>) -> Option<U> {
+        let msg = self.recv().await?;
+        match f(msg) {
+            Ok(u) => Some(u),
+            Err(msg) => {
+                self.msg = Some(msg);
+                None
+            }
+        }
+    }
+
     /// Push back a message. This will only work if there is room for it.
     /// Otherwise, it will fail and return the message.
     pub fn push_back(&mut self, msg: T) -> std::result::Result<(), T> {
