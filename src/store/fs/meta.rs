@@ -378,10 +378,7 @@ impl Actor {
 
     fn set_tag(tables: &mut Tables, cmd: SetTag) -> ActorResult<()> {
         let SetTag { tag, value, tx } = cmd;
-        let res = match value {
-            Some(value) => tables.tags.insert(tag, value).map(|_| ()),
-            None => tables.tags.remove(tag).map(|_| ()),
-        };
+        let res = tables.tags.insert(tag, value).map(|_| ());
         tx.send(res.map_err(anyhow::Error::from));
         Ok(())
     }
@@ -399,6 +396,37 @@ impl Actor {
         Ok(())
     }
 
+    fn delete_tags(tables: &mut Tables, cmd: DeleteTags) -> ActorResult<()> {
+        let DeleteTags { from, to, tx } = cmd;
+        let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
+        let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
+        let removing = tables.tags.extract_from_if((from, to), |_, _| true)?;
+        // drain the iterator to actually remove the tags
+        for res in removing {
+            res?;
+        }
+        tx.send(Ok(()));
+        Ok(())
+    }
+
+    fn rename_tag(tables: &mut Tables, cmd: RenameTag) -> ActorResult<()> {
+        let RenameTag { from, to, tx } = cmd;
+        let value = match tables.tags.remove(from)? {
+            Some(value) => value.value(),
+            None => {
+                tx.send(Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "tag not found",
+                )
+                .into()));
+                return Ok(());
+            }
+        };
+        tables.tags.insert(to, value)?;
+        tx.send(Ok(()));
+        Ok(())
+    }
+
     fn handle_readwrite(tables: &mut Tables, cmd: ReadWriteCommand) -> ActorResult<()> {
         match cmd {
             ReadWriteCommand::Update(cmd) => Self::update(tables, cmd),
@@ -406,6 +434,8 @@ impl Actor {
             ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd),
             ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd),
             ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd),
+            ReadWriteCommand::DeleteTags(cmd) => Self::delete_tags(tables, cmd),
+            ReadWriteCommand::RenameTag(cmd) => Self::rename_tag(tables, cmd),
         }
     }
 

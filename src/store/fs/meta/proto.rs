@@ -98,8 +98,12 @@ pub struct Blobs {
 
 /// Modification method: create a new unique tag and set it to a value.
 pub use crate::store::proto::CreateTag;
+/// Modification method: remove a range of tags.
+pub use crate::store::proto::DeleteTags;
 /// Read method: list a range of tags.
 pub use crate::store::proto::ListTags;
+/// Modification method: rename a tag.
+pub use crate::store::proto::RenameTag;
 /// Modification method: set a tag to a value, or remove it.
 pub use crate::store::proto::SetTag;
 
@@ -119,6 +123,8 @@ pub enum ReadWriteCommand {
     Set(Set),
     Delete(Delete),
     SetTag(SetTag),
+    DeleteTags(DeleteTags),
+    RenameTag(RenameTag),
     CreateTag(CreateTag),
 }
 

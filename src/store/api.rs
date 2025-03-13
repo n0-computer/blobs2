@@ -233,10 +233,10 @@ impl Store {
     }
 
     pub async fn set_tag(&self, tag: Tag, value: HashAndFormat) -> anyhow::Result<()> {
-        self.set_tag_impl(tag, Some(value)).await
+        self.set_tag_impl(tag, value).await
     }
 
-    async fn set_tag_impl(&self, tag: Tag, value: Option<HashAndFormat>) -> anyhow::Result<()> {
+    async fn set_tag_impl(&self, tag: Tag, value: HashAndFormat) -> anyhow::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.sender.send(SetTag { tag, value, tx }.into()).await?;
         rx.await??;

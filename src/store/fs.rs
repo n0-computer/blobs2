@@ -325,6 +325,14 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
+            Command::DeleteTags(cmd) => {
+                trace!("{cmd:?}");
+                self.db().send(cmd.into()).await.ok();
+            }
+            Command::RenameTag(cmd) => {
+                trace!("{cmd:?}");
+                self.db().send(cmd.into()).await.ok();
+            }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");
                 self.tasks.spawn(import_bytes(cmd, self.context()));

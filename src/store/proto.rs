@@ -191,9 +191,32 @@ pub struct ListTags {
     pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
 }
 
+/// Rename a tag atomically
+#[derive(derive_more::Debug)]
+pub struct RenameTag {
+    /// Old tag name
+    pub from: Tag,
+    /// New tag name
+    pub to: Tag,
+    /// Return channel
+    #[debug(skip)]
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
+#[derive(derive_more::Debug)]
+pub struct DeleteTags {
+    /// From tag (inclusive)
+    pub from: Option<Tag>,
+    /// To tag (exclusive)
+    pub to: Option<Tag>,
+    /// return channel
+    #[debug(skip)]
+    pub tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
 pub struct SetTag {
     pub tag: Tag,
-    pub value: Option<HashAndFormat>,
+    pub value: HashAndFormat,
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
@@ -245,6 +268,8 @@ pub enum Command {
     ImportPath(ImportPath),
     ExportPath(ExportPath),
     ListTags(ListTags),
+    RenameTag(RenameTag),
+    DeleteTags(DeleteTags),
     SetTag(SetTag),
     CreateTag(CreateTag),
     SyncDb(SyncDb),

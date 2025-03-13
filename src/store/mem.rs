@@ -24,7 +24,7 @@ use tokio::{
     sync::mpsc::{self, OwnedPermit},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 use crate::{
     store::{
@@ -144,6 +144,43 @@ impl Actor {
                 let entry = self.state.data.get(&cmd.hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
+            Command::DeleteTags(cmd) => {
+                let DeleteTags { from, to, tx } = cmd;
+                info!("deleting tags from {:?} to {:?}", from, to);
+                // state.tags.remove(&from.unwrap());
+                // todo: more efficient impl
+                self.state.tags.retain(|tag, _| {
+                    if let Some(from) = &from {
+                        if tag < from {
+                            return true;
+                        }
+                    }
+                    if let Some(to) = &to {
+                        if tag >= to {
+                            return true;
+                        }
+                    }
+                    info!("    removing {:?}", tag);
+                    false
+                });
+                tx.send(Ok(()));
+            }
+            Command::RenameTag(cmd) => {
+                let RenameTag { from, to, tx } = cmd;
+                let tags = &mut self.state.tags;
+                let value = match tags.remove(&from) {
+                    Some(value) => value,
+                    None => {
+                        tx.send(Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("tag not found: {:?}", from),
+                        )
+                        .into()));
+                        return None;
+                    }
+                };
+                tags.insert(to, value);
+            }
             Command::ListTags(cmd) => {
                 let ListTags {
                     from,
@@ -178,11 +215,7 @@ impl Actor {
                 value,
                 tx: out,
             }) => {
-                if let Some(value) = value {
-                    self.state.tags.insert(tag, value);
-                } else {
-                    self.state.tags.remove(&tag);
-                }
+                self.state.tags.insert(tag, value);
                 out.send(Ok(()));
             }
             Command::CreateTag(CreateTag { hash, tx }) => {
