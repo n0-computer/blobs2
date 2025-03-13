@@ -386,7 +386,6 @@ impl PartialMemStorage {
 }
 
 fn send_update(
-    ctx: &TaskContext,
     permit: mpsc::Permit<meta::Command>,
     hash: &Hash,
     update: EntryState<Bytes>,
@@ -418,7 +417,7 @@ impl BaoFileStorage {
                     ms.write_batch(size, batch, ranges)?;
                     if ms.bitfield.state().is_complete() {
                         let (state, update) = ms.into_complete(hash, ctx)?;
-                        send_update(ctx, permit, hash, update);
+                        send_update(permit, hash, update);
                         state.into()
                     } else {
                         ms.into()
@@ -434,7 +433,7 @@ impl BaoFileStorage {
                     fs.write_batch(size, batch, ranges)?;
                     if fs.bitfield.state().is_complete() {
                         let (state, update) = fs.into_complete(hash, ctx)?;
-                        send_update(ctx, permit, hash, update);
+                        send_update(permit, hash, update);
                         state.into()
                     } else {
                         let size = if fs.bitfield.state().is_validated() {
@@ -442,7 +441,7 @@ impl BaoFileStorage {
                         } else {
                             None
                         };
-                        send_update(ctx, permit, hash, EntryState::Partial { size });
+                        send_update(permit, hash, EntryState::Partial { size });
                         fs.into()
                     }
                 }
@@ -452,13 +451,12 @@ impl BaoFileStorage {
                 fs.write_batch(size, batch, ranges)?;
                 if fs.bitfield.state().is_complete() {
                     let (cs, update) = fs.into_complete(hash, ctx)?;
-                    send_update(ctx, permit, hash, update);
+                    send_update(permit, hash, update);
                     cs.into()
                 } else {
                     if !validated_before && fs.bitfield.state().is_validated() {
                         // we are still partial, but now we know the size
                         send_update(
-                            ctx,
                             permit,
                             hash,
                             EntryState::Partial {

@@ -432,6 +432,7 @@ impl Actor {
 
     pub async fn run(mut self) -> ActorResult<()> {
         let mut db = DbWrapper::from(self.db);
+        let options = &self.options;
         let shutdown = loop {
             let Some(cmd) = self.cmds.recv().await else {
                 break None;
@@ -451,13 +452,13 @@ impl Actor {
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::read_only).await {
                         Self::handle_readonly(&tables, cmd)?;
-                        if t0.elapsed() > self.options.max_read_duration {
-                            break;
-                        }
-                        if n > self.options.max_read_batch {
-                            break;
-                        }
                         n += 1;
+                        if t0.elapsed() > options.max_read_duration {
+                            break;
+                        }
+                        if n >= options.max_read_batch {
+                            break;
+                        }
                     }
                 }
                 Command::ReadWrite(cmd) => {
@@ -470,13 +471,13 @@ impl Actor {
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
                         Self::handle_non_toplevel(&mut tables, cmd)?;
-                        if t0.elapsed() > self.options.max_write_duration {
-                            break;
-                        }
-                        if n > self.options.max_write_batch {
-                            break;
-                        }
                         n += 1;
+                        if t0.elapsed() > options.max_write_duration {
+                            break;
+                        }
+                        if n >= options.max_write_batch {
+                            break;
+                        }
                     }
                     drop(tables);
                     tx.commit()?;
