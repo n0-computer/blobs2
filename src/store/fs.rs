@@ -1446,9 +1446,9 @@ pub mod tests {
         let db_dir = testdir.path().join("db");
         let store = FsStore::load(db_dir).await?;
         let haf = HashAndFormat::raw(Hash::from([0u8; 32]));
-        store.set_tag(Tag::from("test"), haf).await?;
-        store.set_tag(Tag::from("boo"), haf).await?;
-        store.set_tag(Tag::from("bar"), haf).await?;
+        store.tags().set(Tag::from("test"), haf).await?;
+        store.tags().set(Tag::from("boo"), haf).await?;
+        store.tags().set(Tag::from("bar"), haf).await?;
         let sizes = INTERESTING_SIZES;
         let mut hashes = Vec::new();
         let mut data_by_hash = HashMap::new();

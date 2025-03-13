@@ -12,7 +12,7 @@ use bytes::Bytes;
 use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 
-use super::util::DD;
+use super::{api::tags::TagInfo, util::DD};
 use crate::{
     store::{
         bitfield::Bitfield,
@@ -187,8 +187,7 @@ pub struct ListTags {
     /// To tag (exclusive)
     pub to: Option<Tag>,
     #[debug(skip)]
-    #[allow(clippy::type_complexity)]
-    pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
+    pub tx: oneshot::Sender<Vec<anyhow::Result<TagInfo>>>,
 }
 
 /// Rename a tag atomically

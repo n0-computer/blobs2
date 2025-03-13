@@ -10,7 +10,10 @@ use bao_tree::BaoTree;
 use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
 
-use crate::util::channel::{mpsc, oneshot};
+use crate::{
+    store::api::tags::TagInfo,
+    util::channel::{mpsc, oneshot},
+};
 mod proto;
 pub use proto::*;
 mod tables;
@@ -202,7 +205,12 @@ impl Actor {
                 Ok((k, v)) => {
                     let v = v.value();
                     if raw && v.format.is_raw() || hash_seq && v.format.is_hash_seq() {
-                        res.push(anyhow::Ok((k.value(), v)));
+                        let info = TagInfo {
+                            name: k.value(),
+                            hash: v.hash,
+                            format: v.format,
+                        };
+                        res.push(anyhow::Ok(info));
                     }
                 }
                 Err(e) => {
@@ -210,7 +218,6 @@ impl Actor {
                 }
             }
         }
-        let res = res.into_iter().collect::<Result<Vec<_>, _>>();
         tx.send(res);
         Ok(())
     }

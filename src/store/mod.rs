@@ -1,5 +1,5 @@
 use bao_tree::BlockSize;
-mod api;
+pub mod api;
 mod bitfield;
 pub mod fs;
 mod mem;
@@ -19,13 +19,29 @@ pub struct Store {
     sender: mpsc::Sender<proto::Command>,
 }
 
+#[derive(Debug, Clone, ref_cast::RefCast)]
+#[repr(transparent)]
+pub struct Tags {
+    sender: mpsc::Sender<proto::Command>,
+}
+
+impl Tags {
+    pub fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+        Self::ref_cast(sender)
+    }
+}
+
 impl Store {
+    pub fn tags(&self) -> &Tags {
+        Tags::ref_from_sender(&self.sender)
+    }
+
     pub fn from_sender(sender: mpsc::Sender<proto::Command>) -> Self {
         Self { sender }
     }
 
     pub fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
-        Store::ref_cast(sender)
+        Self::ref_cast(sender)
     }
 }
 

@@ -26,6 +26,18 @@ use crate::util::channel::mpsc;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Tag(pub Bytes);
 
+impl From<&[u8]> for Tag {
+    fn from(value: &[u8]) -> Self {
+        Self(Bytes::copy_from_slice(value))
+    }
+}
+
+impl AsRef<[u8]> for Tag {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 impl Borrow<[u8]> for Tag {
     fn borrow(&self) -> &[u8] {
         self.0.as_ref()
@@ -68,6 +80,26 @@ impl Tag {
                 return Self::from(text);
             }
             i += 1;
+        }
+    }
+
+    /// The successor of this tag in lexicographic order.
+    pub fn successor(&self) -> Self {
+        let mut bytes = self.0.to_vec();
+        // increment_vec(&mut bytes);
+        bytes.push(0);
+        Self(bytes.into())
+    }
+
+    /// If this is a prefix, get the next prefix.
+    ///
+    /// This is like successor, except that it will return None if the prefix is all 0xFF instead of appending a 0 byte.
+    pub fn next_prefix(&self) -> Option<Self> {
+        let mut bytes = self.0.to_vec();
+        if next_prefix(&mut bytes) {
+            Some(Self(bytes.into()))
+        } else {
+            None
         }
     }
 }
@@ -365,4 +397,20 @@ impl<T: fmt::Debug> fmt::Debug for ValueOrPoisioned<T> {
             None => f.debug_tuple("Poisoned").finish(),
         }
     }
+}
+
+/// Given a prefix, increment it lexographically.
+///
+/// If the prefix is all FF, this will return false because there is no
+/// higher prefix than that.
+#[allow(dead_code)]
+pub(crate) fn next_prefix(bytes: &mut [u8]) -> bool {
+    for byte in bytes.iter_mut().rev() {
+        if *byte < 255 {
+            *byte += 1;
+            return true;
+        }
+        *byte = 0;
+    }
+    false
 }

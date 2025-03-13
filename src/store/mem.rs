@@ -26,6 +26,7 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
+use super::api::tags::TagInfo;
 use crate::{
     store::{
         bitfield::Bitfield,
@@ -206,7 +207,11 @@ impl Actor {
                         }
                         raw && value.format.is_raw() || hash_seq && value.format.is_hash_seq()
                     })
-                    .map(|(tag, value)| (tag.clone(), *value))
+                    .map(|(tag, value)| TagInfo {
+                        name: tag.clone(),
+                        hash: value.hash,
+                        format: value.format,
+                    })
                     .map(Ok);
                 tx.send(tags.collect());
             }
