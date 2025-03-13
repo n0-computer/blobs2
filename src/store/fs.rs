@@ -321,19 +321,9 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
-            Command::Tags(cmd) => {
+            Command::ListTags(cmd) => {
                 trace!("{cmd:?}");
-                let Tags { tx } = cmd;
-                self.db()
-                    .send(
-                        meta::Tags {
-                            filter: Box::new(|_, k, v| Some((k.value(), v.value()))),
-                            tx,
-                        }
-                        .into(),
-                    )
-                    .await
-                    .ok();
+                self.db().send(cmd.into()).await.ok();
             }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");

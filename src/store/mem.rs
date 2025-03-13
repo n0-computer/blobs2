@@ -144,14 +144,34 @@ impl Actor {
                 let entry = self.state.data.get(&cmd.hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
-            Command::Tags(Tags { tx: out }) => {
-                let items = self
+            Command::ListTags(cmd) => {
+                let ListTags {
+                    from,
+                    to,
+                    raw,
+                    hash_seq,
+                    tx,
+                } = cmd;
+                let tags = self
                     .state
                     .tags
                     .iter()
-                    .map(|(tag, hash)| (tag.clone(), *hash))
-                    .collect::<Vec<_>>();
-                out.send(Ok(items));
+                    .filter(move |(tag, value)| {
+                        if let Some(from) = &from {
+                            if tag < &from {
+                                return false;
+                            }
+                        }
+                        if let Some(to) = &to {
+                            if tag >= &to {
+                                return false;
+                            }
+                        }
+                        raw && value.format.is_raw() || hash_seq && value.format.is_hash_seq()
+                    })
+                    .map(|(tag, value)| (tag.clone(), *value))
+                    .map(Ok);
+                tx.send(tags.collect());
             }
             Command::SetTag(SetTag {
                 tag,

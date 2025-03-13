@@ -385,11 +385,7 @@ impl PartialMemStorage {
     }
 }
 
-fn send_update(
-    permit: mpsc::Permit<meta::Command>,
-    hash: &Hash,
-    update: EntryState<Bytes>,
-) {
+fn send_update(permit: mpsc::Permit<meta::Command>, hash: &Hash, update: EntryState<Bytes>) {
     permit.send(
         Update {
             hash: *hash,

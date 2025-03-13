@@ -8,13 +8,9 @@ use redb::{AccessGuard, StorageError};
 use super::ActorResult;
 pub use crate::store::proto::SyncDb;
 use crate::{
-    store::{
-        fs::entry_state::EntryState,
-        proto::Shutdown,
-        util::{Tag, DD},
-        Hash, HashAndFormat,
-    },
+    store::{fs::entry_state::EntryState, proto::Shutdown, util::DD},
     util::channel::oneshot,
+    Hash,
 };
 
 /// Get the entry state for a hash.
@@ -100,17 +96,10 @@ pub struct Blobs {
         oneshot::Sender<ActorResult<Vec<std::result::Result<(Hash, EntryState), StorageError>>>>,
 }
 
-/// Bulk query method: get the entire tags table    
-#[derive(derive_more::Debug)]
-pub struct Tags {
-    #[debug(skip)]
-    pub filter: FilterPredicate<Tag, HashAndFormat>,
-    #[allow(clippy::type_complexity)]
-    pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
-}
-
 /// Modification method: create a new unique tag and set it to a value.
 pub use crate::store::proto::CreateTag;
+/// Read method: list a range of tags.
+pub use crate::store::proto::ListTags;
 /// Modification method: set a tag to a value, or remove it.
 pub use crate::store::proto::SetTag;
 
@@ -119,7 +108,7 @@ pub use crate::store::proto::SetTag;
 pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
-    Tags(Tags),
+    ListTags(ListTags),
     Blobs(Blobs),
 }
 

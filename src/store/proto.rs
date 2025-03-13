@@ -175,14 +175,20 @@ impl fmt::Debug for ImportPath {
     }
 }
 
-pub struct Tags {
+/// Bulk query method: get the entire tags table    
+#[derive(derive_more::Debug)]
+pub struct ListTags {
+    /// List raw tags
+    pub raw: bool,
+    /// List hash seq tags
+    pub hash_seq: bool,
+    /// From tag (inclusive)
+    pub from: Option<Tag>,
+    /// To tag (exclusive)
+    pub to: Option<Tag>,
+    #[debug(skip)]
+    #[allow(clippy::type_complexity)]
     pub tx: oneshot::Sender<anyhow::Result<Vec<(Tag, HashAndFormat)>>>,
-}
-
-impl fmt::Debug for Tags {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Tags").finish_non_exhaustive()
-    }
 }
 
 pub struct SetTag {
@@ -238,7 +244,7 @@ pub enum Command {
     ImportByteStream(ImportByteStream),
     ImportPath(ImportPath),
     ExportPath(ExportPath),
-    Tags(Tags),
+    ListTags(ListTags),
     SetTag(SetTag),
     CreateTag(CreateTag),
     SyncDb(SyncDb),

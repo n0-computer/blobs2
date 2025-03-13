@@ -1,7 +1,7 @@
 //! The metadata database
 use std::{
     io,
-    ops::{Deref, DerefMut},
+    ops::{Bound, Deref, DerefMut},
     path::PathBuf,
     time::{Instant, SystemTime},
 };
@@ -20,7 +20,7 @@ use tracing::{debug, error, info, trace};
 use super::{
     delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
-    options::{self, BatchOptions, InlineOptions},
+    options::BatchOptions,
     util::PeekableReceiver,
     BaoFilePart,
 };
@@ -186,23 +186,29 @@ impl Actor {
         Ok(())
     }
 
-    fn tags(tables: &impl ReadableTables, cmd: Tags) -> ActorResult<()> {
-        let Tags { filter, tx } = cmd;
+    fn list_tags(tables: &impl ReadableTables, cmd: ListTags) -> ActorResult<()> {
+        let ListTags {
+            from,
+            to,
+            raw,
+            hash_seq,
+            tx,
+        } = cmd;
+        let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
+        let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
         let mut res = Vec::new();
-        let mut index = 0u64;
-        #[allow(clippy::explicit_counter_loop)]
-        for item in tables.tags().iter()? {
+        for item in tables.tags().range((from, to))? {
             match item {
                 Ok((k, v)) => {
-                    if let Some(item) = filter(index, k, v) {
-                        res.push(Ok(item));
+                    let v = v.value();
+                    if raw && v.format.is_raw() || hash_seq && v.format.is_hash_seq() {
+                        res.push(anyhow::Ok((k.value(), v)));
                     }
                 }
                 Err(e) => {
-                    res.push(Err(anyhow::Error::from(e)));
+                    res.push(Err(e.into()));
                 }
             }
-            index += 1;
         }
         let res = res.into_iter().collect::<Result<Vec<_>, _>>();
         tx.send(res);
@@ -235,7 +241,7 @@ impl Actor {
         match cmd {
             ReadOnlyCommand::Get(cmd) => Self::get(tables, cmd),
             ReadOnlyCommand::Dump(cmd) => Self::dump(tables, cmd),
-            ReadOnlyCommand::Tags(cmd) => Self::tags(tables, cmd),
+            ReadOnlyCommand::ListTags(cmd) => Self::list_tags(tables, cmd),
             ReadOnlyCommand::Blobs(cmd) => Self::blobs(tables, cmd),
         }
     }
