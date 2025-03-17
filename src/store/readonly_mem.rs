@@ -43,29 +43,29 @@ impl Actor {
 
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::ImportBao(ImportBao { tx, .. }) => {
+            Command::ImportBao(ImportBaoMsg { tx, .. }) => {
                 tx.send(Err(anyhow::anyhow!("import not supported")));
             }
-            Command::ImportBytes(ImportBytes { tx, .. }) => {
+            Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportByteStream(ImportByteStream { tx, .. }) => {
+            Command::ImportByteStream(ImportByteStreamMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportPath(ImportPath { tx, .. }) => {
+            Command::ImportPath(ImportPathMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::Observe(Observe {
-                opts: ObserveOptions { hash },
+            Command::Observe(ObserveMsg {
+                inner: Observe { hash },
                 tx,
             }) => {
                 if let Some(entry) = self.data.get_mut(&hash) {
@@ -74,9 +74,10 @@ impl Actor {
                     self.observers.add_observer(tx);
                 }
             }
-            Command::ExportBao(ExportBao {
-                opts: ExportBaoOptions { hash, ranges },
+            Command::ExportBao(ExportBaoMsg {
+                inner: ExportBao { hash, ranges },
                 tx,
+                rx,
             }) => {
                 let entry = self
                     .data
@@ -85,8 +86,8 @@ impl Actor {
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry, ranges, tx));
             }
-            Command::ExportPath(ExportPath {
-                opts: ExportPathOptions { hash, target, .. },
+            Command::ExportPath(ExportPathMsg {
+                inner: ExportPath { hash, target, .. },
                 tx,
                 ..
             }) => {
@@ -127,7 +128,7 @@ async fn export_bao_task(
     hash: Hash,
     entry: Option<(Bytes, Bytes)>,
     ranges: ChunkRanges,
-    sender: mpsc::Sender<EncodedItem>,
+    mut sender: quic_rpc::channel::spsc::Sender<EncodedItem>,
 ) {
     let (data, outboard) = match entry {
         Some(entry) => entry,
@@ -150,6 +151,9 @@ async fn export_bao_task(
         root: hash.into(),
         tree,
         data: outboard,
+    };
+    let quic_rpc::channel::spsc::Sender::Tokio(sender) = sender else {
+        panic!();
     };
     traverse_ranges_validated(data.as_ref(), outboard, &ranges, &sender).await;
 }

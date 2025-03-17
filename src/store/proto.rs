@@ -10,6 +10,8 @@ pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
+use quic_rpc::WithChannels;
+use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -34,118 +36,95 @@ pub trait HashSpecific {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBaoOptions {
-    pub hash: Hash,
-    pub size: NonZeroU64,
-}
-
 /// Import bao encoded data for the given hash with the iroh block size.
 ///
 /// The result is just a single item, indicating if a write error occurred.
 /// To observe the incoming data more granularly, use the `Observe` command
 /// concurrently.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ImportBao {
-    pub opts: ImportBaoOptions,
-    pub rx: mpsc::Receiver<BaoContentItem>,
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
+    pub hash: Hash,
+    pub size: NonZeroU64,
 }
 
-impl fmt::Debug for ImportBao {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportBao")
-            .field("hash", &DD(self.opts.hash))
-            .field("size", &self.opts.size)
-            .finish_non_exhaustive()
-    }
-}
+pub type ImportBaoMsg = WithChannels<ImportBao, StoreService>;
 
-impl HashSpecific for ImportBao {
+impl HashSpecific for ImportBaoMsg {
     fn hash(&self) -> crate::Hash {
-        self.opts.hash
+        self.inner.hash
     }
 }
 
-pub struct Shutdown {
+pub struct ShutdownMsg {
+    pub inner: Shutdown,
     pub tx: oneshot::Sender<()>,
 }
 
-impl fmt::Debug for Shutdown {
+impl fmt::Debug for ShutdownMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Shutdown").finish_non_exhaustive()
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ObserveOptions {
+pub struct Observe {
     pub hash: Hash,
 }
 
 /// Observe the bitfield of the given hash.
-pub struct Observe {
-    pub opts: ObserveOptions,
+pub struct ObserveMsg {
+    pub inner: Observe,
     pub tx: Observer<Bitfield>,
 }
 
-impl fmt::Debug for Observe {
+impl fmt::Debug for ObserveMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Observe")
-            .field("hash", &DD(self.opts.hash))
+            .field("hash", &DD(self.inner.hash))
             .finish_non_exhaustive()
     }
 }
 
-impl HashSpecific for Observe {
+impl HashSpecific for ObserveMsg {
     fn hash(&self) -> crate::Hash {
-        self.opts.hash
+        self.inner.hash
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBytesOptions {
+pub struct ImportBytes {
+    pub data: Bytes,
     pub format: BlobFormat,
 }
 
 /// Import the given bytes.
-pub struct ImportBytes {
-    pub opts: ImportBytesOptions,
-    pub data: Bytes,
+pub struct ImportBytesMsg {
+    pub inner: ImportBytes,
     pub tx: mpsc::Sender<ImportProgress>,
 }
 
-impl fmt::Debug for ImportBytes {
+impl fmt::Debug for ImportBytesMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImportBytes")
-            .field("data", &self.data.len())
+            .field("data", &self.inner.data.len())
             .finish_non_exhaustive()
     }
 }
 
-pub struct ExportBaoOptions {
+/// Export the given ranges in bao format, with the iroh block size.
+///
+/// The returned stream should be verified by the store.
+#[derive(Debug)]
+pub struct ExportBao {
     pub hash: Hash,
     pub ranges: ChunkRanges,
 }
 
-/// Export the given sizes in bao format, with the iroh block size.
-///
-/// The returned stream should be verified by the store.
-pub struct ExportBao {
-    pub opts: ExportBaoOptions,
-    pub tx: mpsc::Sender<EncodedItem>,
-}
+pub type ExportBaoMsg = WithChannels<ExportBao, StoreService>;
 
-impl HashSpecific for ExportBao {
+impl HashSpecific for ExportBaoMsg {
     fn hash(&self) -> crate::Hash {
-        self.opts.hash
-    }
-}
-
-impl fmt::Debug for ExportBao {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ExportBao")
-            .field("hash", &DD(self.opts.hash))
-            .field("ranges", &self.opts.ranges)
-            .finish_non_exhaustive()
+        self.inner.hash
     }
 }
 
@@ -156,61 +135,61 @@ impl fmt::Debug for ExportBao {
 /// sparse file.
 
 #[derive(Debug)]
-pub struct ExportPathOptions {
+pub struct ExportPath {
     pub hash: Hash,
     pub mode: ExportMode,
     pub target: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct ExportPath {
-    pub opts: ExportPathOptions,
+pub struct ExportPathMsg {
+    pub inner: ExportPath,
     pub tx: mpsc::Sender<ExportProgress>,
 }
 
-impl HashSpecific for ExportPath {
+impl HashSpecific for ExportPathMsg {
     fn hash(&self) -> crate::Hash {
-        self.opts.hash
+        self.inner.hash
     }
 }
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImportByteStreamOptions {
+pub struct ImportByteStream {
     pub format: BlobFormat,
 }
 
-pub struct ImportByteStream {
-    pub opts: ImportByteStreamOptions,
+pub struct ImportByteStreamMsg {
+    pub inner: ImportByteStream,
     pub data: BoxedByteStream,
     pub tx: mpsc::Sender<ImportProgress>,
 }
 
-impl std::fmt::Debug for ImportByteStream {
+impl std::fmt::Debug for ImportByteStreamMsg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImportByteStream").finish_non_exhaustive()
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImportPathOptions {
+pub struct ImportPath {
     pub path: PathBuf,
     pub mode: ImportMode,
     pub format: BlobFormat,
 }
 
-pub struct ImportPath {
-    pub opts: ImportPathOptions,
+pub struct ImportPathMsg {
+    pub inner: ImportPath,
     pub tx: mpsc::Sender<ImportProgress>,
 }
 
-impl fmt::Debug for ImportPath {
+impl fmt::Debug for ImportPathMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImportPath")
-            .field("path", &self.opts.path)
-            .field("mode", &self.opts.mode)
-            .field("format", &self.opts.format)
+            .field("path", &self.inner.path)
+            .field("mode", &self.inner.mode)
+            .field("format", &self.inner.format)
             .finish_non_exhaustive()
     }
 }
@@ -275,55 +254,99 @@ pub struct ProcessExit {
     pub code: i32,
 }
 
-pub struct CreateTagOptions {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateTag {
     pub content: HashAndFormat,
 }
 
-pub struct CreateTag {
-    pub opts: CreateTagOptions,
+pub struct CreateTagMsg {
+    pub inner: CreateTag,
     pub tx: oneshot::Sender<anyhow::Result<Tag>>,
 }
 
-impl HashSpecific for CreateTag {
+impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
-        self.opts.content.hash
+        self.inner.content.hash
     }
 }
 
-impl fmt::Debug for CreateTag {
+impl fmt::Debug for CreateTagMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CreateTag")
-            .field("hash", &self.opts.content)
+            .field("hash", &self.inner.content)
             .finish_non_exhaustive()
     }
 }
 
-pub struct SyncDb {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncDb;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Shutdown;
+
+pub struct SyncDbMsg {
+    pub inner: SyncDb,
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
-impl fmt::Debug for SyncDb {
+impl fmt::Debug for SyncDbMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SyncDb").finish_non_exhaustive()
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct StoreService;
+impl quic_rpc::Service for StoreService {}
+
+#[rpc_requests(StoreService, RequestMsg)]
+#[derive(Debug)]
+pub enum Request {
+    #[rpc(rx = quic_rpc::channel::spsc::Receiver<BaoContentItem>, tx = quic_rpc::channel::oneshot::Sender<anyhow::Result<()>>)]
+    ImportBao(ImportBao),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<EncodedItem>)]
+    ExportBao(ExportBao),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<Bitfield>)]
+    Observe(Observe),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<ImportProgress>)]
+    ImportBytes(ImportBytes),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<ImportProgress>)]
+    ImportPath(ImportPath),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<anyhow::Result<TagInfo>>)]
+    ListTags(ListOptions),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    SetTag(SetTagOptions),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    DeleteTags(DeleteOptions),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    RenameTag(RenameOptions),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    CreateTag(CreateTag),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    SyncDb(SyncDb),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    Shutdown(Shutdown),
+}
+
 #[derive(Debug, derive_more::From)]
 pub enum Command {
-    ImportBao(ImportBao),
-    ExportBao(ExportBao),
-    Observe(Observe),
-    ImportBytes(ImportBytes),
-    ImportByteStream(ImportByteStream),
-    ImportPath(ImportPath),
-    ExportPath(ExportPath),
+    ImportBao(ImportBaoMsg),
+    ExportBao(ExportBaoMsg),
+
+    Observe(ObserveMsg),
+    ImportBytes(ImportBytesMsg),
+    ImportByteStream(ImportByteStreamMsg),
+    ImportPath(ImportPathMsg),
+    ExportPath(ExportPathMsg),
+
     ListTags(ListTags),
     RenameTag(RenameTag),
     DeleteTags(DeleteTags),
     SetTag(SetTag),
-    CreateTag(CreateTag),
-    SyncDb(SyncDb),
-    Shutdown(Shutdown),
+    CreateTag(CreateTagMsg),
+
+    SyncDb(SyncDbMsg),
+    Shutdown(ShutdownMsg),
 }
 
 #[derive(Debug)]

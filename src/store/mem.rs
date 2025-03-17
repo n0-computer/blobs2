@@ -107,10 +107,10 @@ struct Actor {
 }
 
 impl Actor {
-    fn handle_command(&mut self, cmd: Command) -> Option<Shutdown> {
+    fn handle_command(&mut self, cmd: Command) -> Option<ShutdownMsg> {
         match cmd {
-            Command::ImportBao(ImportBao {
-                opts: ImportBaoOptions { hash, size },
+            Command::ImportBao(ImportBaoMsg {
+                inner: ImportBao { hash, size },
                 rx: data,
                 tx,
             }) => {
@@ -118,33 +118,37 @@ impl Actor {
                 self.unit_tasks
                     .spawn(import_bao_task(entry.clone(), size, data, tx));
             }
-            Command::Observe(Observe {
-                opts: ObserveOptions { hash },
+            Command::Observe(ObserveMsg {
+                inner: Observe { hash },
                 tx,
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
                 entry.add_observer(tx);
             }
-            Command::ImportBytes(ImportBytes { data, opts, tx }) => {
+            Command::ImportBytes(ImportBytesMsg {
+                inner: ImportBytes { data, .. },
+                tx,
+            }) => {
                 self.import_tasks.spawn(import_bytes(data, tx));
             }
-            Command::ImportByteStream(ImportByteStream { data, opts, tx }) => {
+            Command::ImportByteStream(ImportByteStreamMsg { data, inner, tx }) => {
                 self.import_tasks.spawn(import_byte_stream(data, tx));
             }
             Command::ImportPath(cmd) => {
                 self.import_tasks.spawn(import_path(cmd));
             }
-            Command::ExportBao(ExportBao {
-                opts: ExportBaoOptions { hash, ranges },
+            Command::ExportBao(ExportBaoMsg {
+                inner: ExportBao { hash, ranges },
                 tx,
+                rx,
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry.clone(), ranges, tx));
             }
             Command::ExportPath(cmd) => {
-                let entry = self.state.data.get(&cmd.opts.hash).cloned();
+                let entry = self.state.data.get(&cmd.inner.hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
@@ -233,15 +237,15 @@ impl Actor {
                 self.state.tags.insert(tag, value);
                 tx.send(Ok(()));
             }
-            Command::CreateTag(CreateTag {
-                opts: CreateTagOptions { content },
+            Command::CreateTag(CreateTagMsg {
+                inner: CreateTag { content },
                 tx,
             }) => {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
                 self.state.tags.insert(tag.clone(), content);
                 tx.send(Ok(tag));
             }
-            Command::SyncDb(SyncDb { tx }) => {
+            Command::SyncDb(SyncDbMsg { tx, .. }) => {
                 tx.send(Ok(()));
             }
             Command::Shutdown(cmd) => {
@@ -316,15 +320,15 @@ impl Actor {
 async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
-    mut stream: mpsc::Receiver<BaoContentItem>,
-    tx: oneshot::Sender<anyhow::Result<()>>,
+    mut stream: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
+    tx: quic_rpc::channel::oneshot::Sender<anyhow::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
         entry.size.write(0, size);
     }
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
-    while let Some(item) = stream.recv().await {
+    while let Some(item) = stream.recv().await.unwrap() {
         let mut guard = entry.write().unwrap();
         let Some(entry) = guard.incomplete_mut() else {
             // entry was completed somewhere else, no need to write
@@ -366,14 +370,14 @@ async fn import_bao_task(
             }
         }
     }
-    tx.send(Ok(()));
+    tx.send(Ok(())).await.ok();
 }
 
 async fn export_bao_task(
     hash: Hash,
     entry: Arc<RwLock<Entry>>,
     ranges: ChunkRanges,
-    sender: mpsc::Sender<EncodedItem>,
+    sender: quic_rpc::channel::spsc::Sender<EncodedItem>,
 ) {
     let size = entry.read().unwrap().size();
     let data = ExportData {
@@ -384,6 +388,9 @@ async fn export_bao_task(
         hash: hash.into(),
         tree,
         data: entry.clone(),
+    };
+    let quic_rpc::channel::spsc::Sender::Tokio(sender) = sender else {
+        panic!();
     };
     traverse_ranges_validated(data, outboard, &ranges, &sender).await
 }
@@ -421,10 +428,10 @@ async fn import_byte_stream(
     import_bytes(res.into(), tx).await
 }
 
-#[instrument(skip_all, fields(path = %cmd.opts.path.display()))]
-async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
-    let ImportPath {
-        opts: ImportPathOptions { path, .. },
+#[instrument(skip_all, fields(path = %cmd.inner.path.display()))]
+async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
+    let ImportPathMsg {
+        inner: ImportPath { path, .. },
         tx,
         ..
     } = cmd;
@@ -445,7 +452,7 @@ async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
     import_bytes(res.into(), tx).await
 }
 
-async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
+async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg) {
     let Some(entry) = entry else {
         cmd.tx
             .send(ExportProgress::Error {
@@ -461,9 +468,9 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
     };
 }
 
-async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow::Result<()> {
-    let ExportPath {
-        opts: ExportPathOptions { target, .. },
+async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPathMsg) -> anyhow::Result<()> {
+    let ExportPathMsg {
+        inner: ExportPath { target, .. },
         tx,
         ..
     } = cmd;

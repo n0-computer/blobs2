@@ -13,7 +13,7 @@ use redb::{Database, DatabaseError, ReadableTable};
 use crate::{
     store::{
         api::tags::{DeleteOptions, ListOptions, TagInfo},
-        proto::{CreateTagOptions, RenameOptions, SetTagOptions},
+        proto::{CreateTag, RenameOptions, SetTagOptions},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -30,7 +30,7 @@ use super::{
     util::PeekableReceiver,
     BaoFilePart,
 };
-use crate::store::{proto::Shutdown, util::Tag, Hash, IROH_BLOCK_SIZE};
+use crate::store::{proto::ShutdownMsg, util::Tag, Hash, IROH_BLOCK_SIZE};
 
 /// Error type for message handler functions of the redb actor.
 ///
@@ -412,9 +412,9 @@ impl Actor {
         Ok(())
     }
 
-    fn create_tag(tables: &mut Tables, cmd: CreateTag) -> ActorResult<()> {
-        let CreateTag {
-            opts: CreateTagOptions { content: hash },
+    fn create_tag(tables: &mut Tables, cmd: CreateTagMsg) -> ActorResult<()> {
+        let CreateTagMsg {
+            inner: CreateTag { content: hash },
             tx,
         } = cmd;
         let tag = {
@@ -487,14 +487,17 @@ impl Actor {
         }
     }
 
-    fn sync_db(_db: &mut Database, sync: SyncDb) -> ActorResult<()> {
-        let SyncDb { tx } = sync;
+    fn sync_db(_db: &mut Database, sync: SyncDbMsg) -> ActorResult<()> {
+        let SyncDbMsg { tx, .. } = sync;
         // nothing to do here, since for a toplevel cmd we are outside a write transaction
         tx.send(Ok(()));
         Ok(())
     }
 
-    fn handle_toplevel(db: &mut Database, cmd: TopLevelCommand) -> ActorResult<Option<Shutdown>> {
+    fn handle_toplevel(
+        db: &mut Database,
+        cmd: TopLevelCommand,
+    ) -> ActorResult<Option<ShutdownMsg>> {
         Ok(match cmd {
             TopLevelCommand::SyncDb(cmd) => {
                 Self::sync_db(db, cmd)?;

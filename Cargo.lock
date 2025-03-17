@@ -259,6 +259,7 @@ dependencies = [
  "positioned-io",
  "range-collections",
  "self_cell",
+ "serde",
  "smallvec",
  "tokio",
 ]
@@ -339,6 +340,7 @@ dependencies = [
  "postcard",
  "proptest",
  "quic-rpc",
+ "quic-rpc-derive",
  "rand 0.8.5",
  "range-collections",
  "redb",
@@ -2949,11 +2951,23 @@ dependencies = [
 [[package]]
 name = "quic-rpc"
 version = "0.50.0"
-source = "git+https://github.com/n0-computer/quic-rpc?branch=tabula-rasa#d6ecf837155ad56368e344761b34c0111c35aa42"
 dependencies = [
+ "iroh-quinn",
+ "postcard",
  "serde",
+ "smallvec",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "quic-rpc-derive"
+version = "0.50.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

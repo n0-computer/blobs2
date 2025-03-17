@@ -6,11 +6,11 @@ use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, ReadableTable, StorageError};
 
 use super::{Actor, ActorResult, ReadableTables, Tables};
-pub use crate::store::proto::SyncDb;
+pub use crate::store::proto::SyncDbMsg;
 use crate::{
     store::{
         fs::entry_state::EntryState,
-        proto::{ProcessExit, Shutdown},
+        proto::{ProcessExit, ShutdownMsg},
         util::DD,
     },
     util::channel::oneshot,
@@ -101,7 +101,7 @@ pub struct Blobs {
 }
 
 /// Modification method: create a new unique tag and set it to a value.
-pub use crate::store::proto::CreateTag;
+pub use crate::store::proto::CreateTagMsg;
 /// Modification method: remove a range of tags.
 pub use crate::store::proto::DeleteTags;
 /// Read method: list a range of tags.
@@ -129,15 +129,15 @@ pub enum ReadWriteCommand {
     SetTag(SetTag),
     DeleteTags(DeleteTags),
     RenameTag(RenameTag),
-    CreateTag(CreateTag),
+    CreateTag(CreateTagMsg),
     ProcessExit(ProcessExit),
 }
 
 #[derive(Debug)]
 #[enum_conversions(Command)]
 pub enum TopLevelCommand {
-    SyncDb(SyncDb),
-    Shutdown(Shutdown),
+    SyncDb(SyncDbMsg),
+    Shutdown(ShutdownMsg),
 }
 
 #[enum_conversions()]

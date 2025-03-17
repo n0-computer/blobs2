@@ -19,6 +19,7 @@ use bao_tree::{
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
+use quic_rpc::channel::none::{NoReceiver, NoSender};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
@@ -170,7 +171,7 @@ pub mod tags {
     }
 
     /// Options for a delete operation.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct DeleteOptions {
         /// Optional from tag (inclusive)
         pub from: Option<Tag>,
@@ -370,23 +371,32 @@ impl Blobs {
             data.addr_short()
         );
         let (tx, rx) = mpsc::channel(32);
-        let opts = ImportBytesOptions {
+        let inner = ImportBytes {
+            data,
             format: crate::BlobFormat::Raw,
         };
         self.sender
-            .try_send(ImportBytes { data, tx, opts }.into())
+            .try_send(
+                ImportBytesMsg {
+                    tx: tx.into(),
+                    inner,
+                }
+                .into(),
+            )
             .ok();
         ImportResult { rx }
     }
 
     pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
         let (tx, rx) = mpsc::channel(32);
-        let opts = ImportPathOptions {
+        let inner = ImportPath {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: crate::BlobFormat::Raw,
         };
-        self.sender.try_send(ImportPath { opts, tx }.into()).ok();
+        self.sender
+            .try_send(ImportPathMsg { inner, tx }.into())
+            .ok();
         ImportResult { rx }
     }
 
@@ -401,12 +411,12 @@ impl Blobs {
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
     ) -> ImportResult {
-        let opts = ImportByteStreamOptions {
+        let inner = ImportByteStream {
             format: crate::BlobFormat::Raw,
         };
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(ImportByteStream { opts, data, tx }.into())
+            .try_send(ImportByteStreamMsg { inner, data, tx }.into())
             .ok();
         ImportResult { rx }
     }
@@ -415,9 +425,10 @@ impl Blobs {
         let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(
-                ExportBao {
-                    opts: ExportBaoOptions { hash, ranges },
-                    tx,
+                ExportBaoMsg {
+                    inner: ExportBao { hash, ranges },
+                    tx: tx.into(),
+                    rx: NoReceiver,
                 }
                 .into(),
             )
@@ -448,8 +459,8 @@ impl Blobs {
         let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(
-                Observe {
-                    opts: ObserveOptions { hash },
+                ObserveMsg {
+                    inner: Observe { hash },
                     tx: Observer::new(tx),
                 }
                 .into(),
@@ -462,8 +473,8 @@ impl Blobs {
         let (tx, rx) = mpsc::channel(32);
         self.sender
             .try_send(
-                ExportPath {
-                    opts: ExportPathOptions {
+                ExportPathMsg {
+                    inner: ExportPath {
                         hash,
                         mode: ExportMode::Copy,
                         target: target.as_ref().to_owned(),
@@ -495,12 +506,12 @@ impl Blobs {
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
-        let opts = ImportBaoOptions { hash, size };
+        let inner = ImportBao { hash, size };
         self.sender.try_send(
-            ImportBao {
-                opts,
-                rx,
-                tx: out_tx,
+            ImportBaoMsg {
+                inner,
+                rx: rx.into(),
+                tx: out_tx.into(),
             }
             .into(),
         )?;
@@ -528,10 +539,17 @@ impl Blobs {
         data: mpsc::Receiver<BaoContentItem>,
     ) -> anyhow::Result<()> {
         let hash = hash.into();
-        let (tx, rx) = oneshot::channel();
-        let opts = ImportBaoOptions { hash, size };
+        let (tx, rx) = quic_rpc::channel::oneshot::channel();
+        let inner = ImportBao { hash, size };
         self.sender
-            .send(ImportBao { opts, rx: data, tx }.into())
+            .send(
+                ImportBaoMsg {
+                    inner,
+                    rx: data.into(),
+                    tx,
+                }
+                .into(),
+            )
             .await?;
         rx.await??;
         Ok(())
@@ -560,14 +578,24 @@ impl Blobs {
 
     pub async fn sync_db(&self) -> anyhow::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(SyncDb { tx }.into()).await?;
+        self.sender
+            .send(SyncDbMsg { tx, inner: SyncDb }.into())
+            .await?;
         rx.await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(Shutdown { tx }.into()).await?;
+        self.sender
+            .send(
+                ShutdownMsg {
+                    inner: Shutdown,
+                    tx,
+                }
+                .into(),
+            )
+            .await?;
         rx.await?;
         Ok(())
     }

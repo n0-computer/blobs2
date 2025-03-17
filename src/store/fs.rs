@@ -347,22 +347,22 @@ impl Actor {
             }
             Command::ExportPath(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.opts.hash);
+                let ctx = self.hash_context(cmd.inner.hash);
                 self.tasks.spawn(export_path(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.opts.hash);
+                let ctx = self.hash_context(cmd.inner.hash);
                 self.tasks.spawn(export_bao(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.opts.hash);
+                let ctx = self.hash_context(cmd.inner.hash);
                 self.tasks.spawn(import_bao(cmd, ctx));
             }
             Command::Observe(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.opts.hash);
+                let ctx = self.hash_context(cmd.inner.hash);
                 self.tasks.spawn(observe(cmd, ctx));
             }
         }
@@ -614,10 +614,10 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn import_bao(cmd: ImportBao, ctx: HashContext) {
+async fn import_bao(cmd: ImportBaoMsg, ctx: HashContext) {
     trace!("{cmd:?}");
-    let ImportBao {
-        opts: ImportBaoOptions { size, hash },
+    let ImportBaoMsg {
+        inner: ImportBao { size, hash },
         rx,
         tx,
     } = cmd;
@@ -626,7 +626,7 @@ async fn import_bao(cmd: ImportBao, ctx: HashContext) {
         Err(cause) => Err(cause),
     };
     trace!("{res:?}");
-    tx.send(res);
+    tx.send(res).await.ok();
 }
 
 fn chunk_range(leaf: &Leaf) -> ChunkRanges {
@@ -637,7 +637,7 @@ fn chunk_range(leaf: &Leaf) -> ChunkRanges {
 
 async fn import_bao_impl(
     size: NonZeroU64,
-    mut data: mpsc::Receiver<BaoContentItem>,
+    mut rx: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
@@ -648,7 +648,7 @@ async fn import_bao_impl(
     );
     let mut batch = Vec::<BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
-    while let Some(item) = data.recv().await {
+    while let Some(item) = rx.recv().await? {
         // if the batch is not empty, the last item is a leaf and the current item is a parent, write the batch
         if !batch.is_empty() && batch[batch.len() - 1].is_leaf() && item.is_parent() {
             handle.write_batch(size, &batch, &ranges, &ctx.ctx).await?;
@@ -656,7 +656,7 @@ async fn import_bao_impl(
             ranges = ChunkRanges::empty();
         }
         if let BaoContentItem::Leaf(leaf) = &item {
-            let leaf_range = chunk_range(leaf);
+            let leaf_range = chunk_range(&leaf);
             if is_validated(size, &leaf_range) {
                 anyhow::ensure!(
                     size.get() == leaf.offset + leaf.data.len() as u64,
@@ -674,8 +674,8 @@ async fn import_bao_impl(
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn observe(cmd: Observe, ctx: HashContext) {
-    let Ok(handle) = ctx.get_or_create(cmd.opts.hash).await else {
+async fn observe(cmd: ObserveMsg, ctx: HashContext) {
+    let Ok(handle) = ctx.get_or_create(cmd.inner.hash).await else {
         return;
     };
     let receiver_dropped = cmd.tx.receiver_dropped();
@@ -687,33 +687,38 @@ async fn observe(cmd: Observe, ctx: HashContext) {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn export_bao(cmd: ExportBao, ctx: HashContext) {
-    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
-        return;
-    };
-    match ctx.get_or_create(cmd.opts.hash).await {
+async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
+    match ctx.get_or_create(cmd.inner.hash).await {
         Ok(handle) => {
-            if let Err(cause) = export_bao_impl(cmd, handle).await {
-                send.send(
-                    bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause))
-                        .into(),
-                );
+            if let Err(cause) = export_bao_impl(cmd.inner, &cmd.tx, handle).await {
+                cmd.tx
+                    .send(
+                        bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause))
+                            .into(),
+                    )
+                    .await
+                    .ok();
             }
         }
         Err(cause) => {
             let cause = anyhow::anyhow!("failed to open file: {cause}");
-            send.send(
-                bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause)).into(),
-            );
+            cmd.tx
+                .send(
+                    bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause))
+                        .into(),
+                )
+                .await
+                .ok();
         }
     }
 }
 
-async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Result<()> {
-    let ExportBao {
-        opts: ExportBaoOptions { ranges, hash },
-        tx,
-    } = cmd;
+async fn export_bao_impl(
+    cmd: ExportBao,
+    tx: &quic_rpc::channel::spsc::Sender<EncodedItem>,
+    handle: BaoFileHandle,
+) -> anyhow::Result<()> {
+    let ExportBao { ranges, hash } = cmd;
     trace!(
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
@@ -721,16 +726,19 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
     debug_assert!(handle.hash() == hash, "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
-    traverse_ranges_validated(data, outboard, &ranges, &tx).await;
+    let quic_rpc::channel::spsc::Sender::Tokio(tx) = tx else {
+        panic!();
+    };
+    traverse_ranges_validated(data, outboard, &ranges, tx).await;
     Ok(())
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn export_path(cmd: ExportPath, ctx: HashContext) {
+async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
     let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
-    match ctx.get_or_create(cmd.opts.hash).await {
+    match ctx.get_or_create(cmd.inner.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_path_impl(cmd, handle, ctx).await {
                 send.send(cause.into());
@@ -744,11 +752,11 @@ async fn export_path(cmd: ExportPath, ctx: HashContext) {
 }
 
 async fn export_path_impl(
-    cmd: ExportPath,
+    cmd: ExportPathMsg,
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
-    let ExportPathOptions { hash, mode, target } = cmd.opts;
+    let ExportPath { hash, mode, target } = cmd.inner;
     let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
@@ -1142,6 +1150,27 @@ pub mod tests {
             store.export_path(expected_hash, &out_path).await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bao_minimal() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [1];
+        let db_dir = testdir.path().join("db");
+        {
+            let store = FsStore::load(&db_dir).await?;
+            for size in sizes {
+                let data = vec![0u8; size];
+                let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
+                let data = Bytes::from(encoded);
+                store
+                    .import_bao_bytes(hash, ChunkRanges::all(), data)
+                    .await?;
+            }
+            store.shutdown().await?;
         }
         Ok(())
     }
