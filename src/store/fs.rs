@@ -616,7 +616,11 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn import_bao(cmd: ImportBao, ctx: HashContext) {
     trace!("{cmd:?}");
-    let ImportBao { opts: ImportBaoOptions { size, hash }, rx, tx } = cmd;
+    let ImportBao {
+        opts: ImportBaoOptions { size, hash },
+        rx,
+        tx,
+    } = cmd;
     let res = match ctx.get_or_create(hash).await {
         Ok(handle) => import_bao_impl(size, rx, handle, ctx).await,
         Err(cause) => Err(cause),
@@ -706,7 +710,10 @@ async fn export_bao(cmd: ExportBao, ctx: HashContext) {
 }
 
 async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Result<()> {
-    let ExportBao { opts: ExportBaoOptions { ranges, hash }, tx } = cmd;
+    let ExportBao {
+        opts: ExportBaoOptions { ranges, hash },
+        tx,
+    } = cmd;
     trace!(
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?

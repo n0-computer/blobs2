@@ -414,7 +414,13 @@ impl Blobs {
     pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }.into())
+            .try_send(
+                ExportBao {
+                    opts: ExportBaoOptions { hash, ranges },
+                    tx,
+                }
+                .into(),
+            )
             .ok();
         ExportBaoResult { rx }
     }
@@ -489,9 +495,7 @@ impl Blobs {
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
-        let opts = ImportBaoOptions {
-            hash, size
-        };
+        let opts = ImportBaoOptions { hash, size };
         self.sender.try_send(
             ImportBao {
                 opts,
@@ -527,14 +531,7 @@ impl Blobs {
         let (tx, rx) = oneshot::channel();
         let opts = ImportBaoOptions { hash, size };
         self.sender
-            .send(
-                ImportBao {
-                    opts,
-                    rx: data,
-                    tx,
-                }
-                .into(),
-            )
+            .send(ImportBao { opts, rx: data, tx }.into())
             .await?;
         rx.await??;
         Ok(())

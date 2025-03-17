@@ -118,7 +118,10 @@ impl Actor {
                 self.unit_tasks
                     .spawn(import_bao_task(entry.clone(), size, data, tx));
             }
-            Command::Observe(Observe { opts: ObserveOptions { hash}, tx }) => {
+            Command::Observe(Observe {
+                opts: ObserveOptions { hash },
+                tx,
+            }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
                 entry.add_observer(tx);
@@ -132,7 +135,10 @@ impl Actor {
             Command::ImportPath(cmd) => {
                 self.import_tasks.spawn(import_path(cmd));
             }
-            Command::ExportBao(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }) => {
+            Command::ExportBao(ExportBao {
+                opts: ExportBaoOptions { hash, ranges },
+                tx,
+            }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
                     .spawn(export_bao_task(hash, entry.clone(), ranges, tx));

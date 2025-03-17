@@ -64,14 +64,20 @@ impl Actor {
                 })
                 .ok();
             }
-            Command::Observe(Observe { opts: ObserveOptions { hash }, tx }) => {
+            Command::Observe(Observe {
+                opts: ObserveOptions { hash },
+                tx,
+            }) => {
                 if let Some(entry) = self.data.get_mut(&hash) {
                     entry.add_observer(tx);
                 } else {
                     self.observers.add_observer(tx);
                 }
             }
-            Command::ExportBao(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }) => {
+            Command::ExportBao(ExportBao {
+                opts: ExportBaoOptions { hash, ranges },
+                tx,
+            }) => {
                 let entry = self
                     .data
                     .get(&hash)
