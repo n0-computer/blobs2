@@ -25,7 +25,7 @@ async fn set(tags: &Tags, names: impl IntoIterator<Item = &str>) -> TestResult<(
 }
 
 async fn tags_smoke(tags: &Tags) -> TestResult<()> {
-    set(&tags, ["a", "b", "c", "d", "e"]).await?;
+    set(tags, ["a", "b", "c", "d", "e"]).await?;
     let stream = tags.list().await?;
     let res = to_vec(stream).await?;
     assert_eq!(res, expected(["a", "b", "c", "d", "e"]));
@@ -56,7 +56,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
     let res = to_vec(stream).await?;
     assert_eq!(res, expected([]));
 
-    set(&tags, ["a", "aa", "aaa", "aab", "b"]).await?;
+    set(tags, ["a", "aa", "aaa", "aab", "b"]).await?;
 
     let stream = tags.list_prefix("aa").await?;
     let res = to_vec(stream).await?;
@@ -72,7 +72,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
     let res = to_vec(stream).await?;
     assert_eq!(res, expected([]));
 
-    set(&tags, ["a", "b", "c"]).await?;
+    set(tags, ["a", "b", "c"]).await?;
 
     assert_eq!(
         tags.get("b").await?,
@@ -103,7 +103,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
     );
 
     tags.delete_all().await?;
-    set(&tags, ["c"]).await?;
+    set(tags, ["c"]).await?;
     tags.rename("c", "f").await?;
     let stream = tags.list().await?;
     let res = to_vec(stream).await?;

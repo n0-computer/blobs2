@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use bao_tree::BlockSize;
 pub mod api;
 mod bitfield;
@@ -19,6 +21,14 @@ pub struct Store {
     sender: mpsc::Sender<proto::Command>,
 }
 
+impl Deref for Store {
+    type Target = Blobs;
+
+    fn deref(&self) -> &Self::Target {
+        Blobs::ref_from_sender(&self.sender)
+    }
+}
+
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
@@ -26,7 +36,19 @@ pub struct Tags {
 }
 
 impl Tags {
-    pub fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+        Self::ref_cast(sender)
+    }
+}
+
+#[derive(Debug, Clone, ref_cast::RefCast)]
+#[repr(transparent)]
+pub struct Blobs {
+    sender: mpsc::Sender<proto::Command>,
+}
+
+impl Blobs {
+    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
         Self::ref_cast(sender)
     }
 }
@@ -36,11 +58,11 @@ impl Store {
         Tags::ref_from_sender(&self.sender)
     }
 
-    pub fn from_sender(sender: mpsc::Sender<proto::Command>) -> Self {
+    fn from_sender(sender: mpsc::Sender<proto::Command>) -> Self {
         Self { sender }
     }
 
-    pub fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
         Self::ref_cast(sender)
     }
 }

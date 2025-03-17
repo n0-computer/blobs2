@@ -22,15 +22,16 @@ use n0_future::{Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
+use super::Blobs;
 use crate::{
     store::{
         bitfield::Bitfield,
         proto::*,
         util::{
             observer::{Aggregator, Observer},
-            SliceInfoExt, Tag,
+            SliceInfoExt,
         },
-        HashAndFormat, Store, IROH_BLOCK_SIZE,
+        IROH_BLOCK_SIZE,
     },
     util::channel::{mpsc, oneshot},
     Hash,
@@ -40,13 +41,13 @@ pub mod tags {
     use std::ops::{Bound, RangeBounds};
 
     use anyhow::Result;
-    use genawaiter::sync::Gen;
     use n0_future::{Stream, StreamExt};
+    use serde::{Deserialize, Serialize};
 
-    use super::{super::Tags, mpsc};
+    use super::super::Tags;
     use crate::{
         store::{
-            proto::{DeleteTags, ListTags, RenameTag, SetTag},
+            proto::{DeleteTags, ListTags, RenameOptions, RenameTag, SetTag, SetTagOptions},
             util::Tag,
         },
         util::channel::oneshot,
@@ -86,7 +87,7 @@ pub mod tags {
     }
 
     /// Options for a list operation.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ListOptions {
         /// List tags to hash seqs
         pub hash_seq: bool,
@@ -235,19 +236,8 @@ pub mod tags {
             &self,
             options: ListOptions,
         ) -> Result<impl Stream<Item = Result<TagInfo>>> {
-            let (tx, mut rx) = oneshot::channel();
-            self.sender
-                .send(
-                    ListTags {
-                        raw: options.raw,
-                        hash_seq: options.hash_seq,
-                        from: options.from,
-                        to: options.to,
-                        tx,
-                    }
-                    .into(),
-                )
-                .await?;
+            let (tx, rx) = oneshot::channel();
+            self.sender.send(ListTags { options, tx }.into()).await?;
             let res = rx.await?;
             Ok(futures_lite::stream::iter(res))
         }
@@ -260,17 +250,22 @@ pub mod tags {
             stream.next().await.transpose()
         }
 
+        pub async fn set_with_opts(&self, options: SetTagOptions) -> Result<()> {
+            let (tx, rx) = oneshot::channel();
+            self.sender.send(SetTag { options, tx }.into()).await?;
+            rx.await?
+        }
+
         pub async fn set(
             &self,
             name: impl AsRef<[u8]>,
             value: impl Into<HashAndFormat>,
         ) -> anyhow::Result<()> {
-            let tag = Tag::from(name.as_ref());
-            let value = value.into();
-            let (tx, rx) = oneshot::channel();
-            self.sender.send(SetTag { tag, value, tx }.into()).await?;
-            rx.await??;
-            Ok(())
+            self.set_with_opts(SetTagOptions {
+                name: Tag::from(name.as_ref()),
+                value: value.into(),
+            })
+            .await
         }
 
         /// List a range of tags
@@ -307,16 +302,7 @@ pub mod tags {
         /// Deletes a tag.
         pub async fn delete_with_opts(&self, options: DeleteOptions) -> Result<()> {
             let (tx, rx) = oneshot::channel();
-            self.sender
-                .send(
-                    DeleteTags {
-                        from: options.from,
-                        to: options.to,
-                        tx,
-                    }
-                    .into(),
-                )
-                .await?;
+            self.sender.send(DeleteTags { options, tx }.into()).await?;
             rx.await?
         }
 
@@ -353,26 +339,26 @@ pub mod tags {
         /// Rename a tag atomically
         ///
         /// If the tag does not exist, this will return an error.
-        pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> Result<()> {
-            let from = from.as_ref();
-            let to = to.as_ref();
+        pub async fn rename_with_opts(&self, options: RenameOptions) -> Result<()> {
             let (tx, rx) = oneshot::channel();
-            self.sender
-                .send(
-                    RenameTag {
-                        from: Tag::from(from),
-                        to: Tag::from(to),
-                        tx,
-                    }
-                    .into(),
-                )
-                .await?;
+            self.sender.send(RenameTag { options, tx }.into()).await?;
             rx.await?
+        }
+
+        /// Rename a tag atomically
+        ///
+        /// If the tag does not exist, this will return an error.
+        pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> Result<()> {
+            self.rename_with_opts(RenameOptions {
+                from: Tag::from(from.as_ref()),
+                to: Tag::from(to.as_ref()),
+            })
+            .await
         }
     }
 }
 
-impl Store {
+impl Blobs {
     pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
         self.import_bytes_impl(data.into())
     }

@@ -3,7 +3,7 @@
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
 use core::fmt;
-use std::{fmt::Debug, io, num::NonZeroU64, path::PathBuf, pin::Pin};
+use std::{fmt::Debug, io, num::NonZeroU64, ops::Deref, path::PathBuf, pin::Pin};
 
 use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
@@ -12,7 +12,10 @@ use bytes::Bytes;
 use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 
-use super::{api::tags::TagInfo, util::DD};
+use super::{
+    api::tags::{DeleteOptions, ListOptions, TagInfo},
+    util::DD,
+};
 use crate::{
     store::{
         bitfield::Bitfield,
@@ -178,54 +181,61 @@ impl fmt::Debug for ImportPath {
 /// Bulk query method: get the entire tags table    
 #[derive(derive_more::Debug)]
 pub struct ListTags {
-    /// List raw tags
-    pub raw: bool,
-    /// List hash seq tags
-    pub hash_seq: bool,
-    /// From tag (inclusive)
-    pub from: Option<Tag>,
-    /// To tag (exclusive)
-    pub to: Option<Tag>,
+    pub options: ListOptions,
     #[debug(skip)]
     pub tx: oneshot::Sender<Vec<anyhow::Result<TagInfo>>>,
 }
 
 /// Rename a tag atomically
-#[derive(derive_more::Debug)]
-pub struct RenameTag {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenameOptions {
     /// Old tag name
     pub from: Tag,
     /// New tag name
     pub to: Tag,
+}
+
+/// Rename a tag atomically
+#[derive(derive_more::Debug)]
+pub struct RenameTag {
+    pub options: RenameOptions,
     /// Return channel
     #[debug(skip)]
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
+impl Deref for RenameTag {
+    type Target = RenameOptions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.options
+    }
+}
+
 #[derive(derive_more::Debug)]
 pub struct DeleteTags {
-    /// From tag (inclusive)
-    pub from: Option<Tag>,
-    /// To tag (exclusive)
-    pub to: Option<Tag>,
-    /// return channel
+    pub options: DeleteOptions,
     #[debug(skip)]
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
-pub struct SetTag {
-    pub tag: Tag,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetTagOptions {
+    pub name: Tag,
     pub value: HashAndFormat,
+}
+
+#[derive(derive_more::Debug)]
+pub struct SetTag {
+    pub options: SetTagOptions,
+    #[debug(skip)]
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
-impl fmt::Debug for SetTag {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SetTag")
-            .field("tag", &self.tag)
-            .field("value", &self.value)
-            .finish_non_exhaustive()
-    }
+/// Debug tool to exit the process in the middle of a write transaction, for testing.
+#[derive(Debug)]
+pub struct ProcessExit {
+    pub code: i32,
 }
 
 pub struct CreateTag {

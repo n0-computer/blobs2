@@ -47,8 +47,9 @@ async fn main() -> anyhow::Result<()> {
     // .bytes()
     // .await?;
     // println!("Test: {:?} {}", test, test.len());
-    // let ranges = blobs2::get::db::get_missing(content, &store).await?;
-    // println!("Missing ranges {:?}", ranges);
+    let ranges = blobs2::get::db::get_missing(content, &store).await?;
+    println!("Missing ranges {:?}", ranges);
+    panic!();
     println!("Connected to {:?}", addr);
     // get_one_by_one(connection, content).await?;
     let stats = blobs2::get::db::get_all(connection, content, &store);

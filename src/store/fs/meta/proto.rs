@@ -3,12 +3,16 @@ use std::fmt;
 
 use bytes::Bytes;
 use nested_enum_utils::enum_conversions;
-use redb::{AccessGuard, StorageError};
+use redb::{AccessGuard, ReadableTable, StorageError};
 
-use super::ActorResult;
+use super::{Actor, ActorResult, ReadableTables, Tables};
 pub use crate::store::proto::SyncDb;
 use crate::{
-    store::{fs::entry_state::EntryState, proto::Shutdown, util::DD},
+    store::{
+        fs::entry_state::EntryState,
+        proto::{ProcessExit, Shutdown},
+        util::DD,
+    },
     util::channel::oneshot,
     Hash,
 };
@@ -126,6 +130,7 @@ pub enum ReadWriteCommand {
     DeleteTags(DeleteTags),
     RenameTag(RenameTag),
     CreateTag(CreateTag),
+    ProcessExit(ProcessExit),
 }
 
 #[derive(Debug)]

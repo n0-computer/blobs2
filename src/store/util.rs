@@ -16,14 +16,14 @@ mod mem_or_file;
 mod sparse_mem_file;
 pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;
 use tracing::info;
 pub mod observer;
 use crate::util::channel::mpsc;
 
 /// A tag
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Tag(pub Bytes);
 
 impl From<&[u8]> for Tag {

@@ -48,15 +48,15 @@ pub trait TagDrop: std::fmt::Debug + Send + Sync + 'static {
     fn on_drop(&self, inner: &HashAndFormat);
 }
 
-impl Into<HashAndFormat> for &TempTag {
-    fn into(self) -> HashAndFormat {
-        self.inner
+impl From<&TempTag> for HashAndFormat {
+    fn from(val: &TempTag) -> Self {
+        val.inner
     }
 }
 
-impl Into<HashAndFormat> for TempTag {
-    fn into(self) -> HashAndFormat {
-        self.inner
+impl From<TempTag> for HashAndFormat {
+    fn from(val: TempTag) -> Self {
+        val.inner
     }
 }
 

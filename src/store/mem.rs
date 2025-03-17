@@ -26,9 +26,10 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use super::api::tags::TagInfo;
+use super::api::tags::{ListOptions, TagInfo};
 use crate::{
     store::{
+        api::tags::DeleteOptions,
         bitfield::Bitfield,
         proto::*,
         util::{
@@ -146,7 +147,10 @@ impl Actor {
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
-                let DeleteTags { from, to, tx } = cmd;
+                let DeleteTags {
+                    options: DeleteOptions { from, to },
+                    tx,
+                } = cmd;
                 info!("deleting tags from {:?} to {:?}", from, to);
                 // state.tags.remove(&from.unwrap());
                 // todo: more efficient impl
@@ -167,7 +171,10 @@ impl Actor {
                 tx.send(Ok(()));
             }
             Command::RenameTag(cmd) => {
-                let RenameTag { from, to, tx } = cmd;
+                let RenameTag {
+                    options: RenameOptions { from, to },
+                    tx,
+                } = cmd;
                 let tags = &mut self.state.tags;
                 let value = match tags.remove(&from) {
                     Some(value) => value,
@@ -184,10 +191,13 @@ impl Actor {
             }
             Command::ListTags(cmd) => {
                 let ListTags {
-                    from,
-                    to,
-                    raw,
-                    hash_seq,
+                    options:
+                        ListOptions {
+                            from,
+                            to,
+                            raw,
+                            hash_seq,
+                        },
                     tx,
                 } = cmd;
                 let tags = self
@@ -216,8 +226,7 @@ impl Actor {
                 tx.send(tags.collect());
             }
             Command::SetTag(SetTag {
-                tag,
-                value,
+                options: SetTagOptions { name: tag, value },
                 tx: out,
             }) => {
                 self.state.tags.insert(tag, value);

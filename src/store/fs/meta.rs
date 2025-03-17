@@ -11,7 +11,10 @@ use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
-    store::api::tags::TagInfo,
+    store::{
+        api::tags::{DeleteOptions, ListOptions, TagInfo},
+        proto::{RenameOptions, SetTagOptions},
+    },
     util::channel::{mpsc, oneshot},
 };
 mod proto;
@@ -92,48 +95,9 @@ impl Db {
     }
 }
 
-#[derive(Debug)]
-pub struct Actor {
-    db: redb::Database,
-    cmds: PeekableReceiver<Command>,
-    ds: DeleteHandle,
-    options: BatchOptions,
-}
-
-impl Actor {
-    pub fn new(
-        db_path: PathBuf,
-        cmds: mpsc::Receiver<Command>,
-        mut ds: DeleteHandle,
-        options: BatchOptions,
-    ) -> anyhow::Result<Self> {
-        trace!(
-            "creating or opening meta database at {:?}",
-            db_path.display()
-        );
-        let db = match redb::Database::create(db_path) {
-            Ok(db) => db,
-            Err(DatabaseError::UpgradeRequired(1)) => {
-                return Err(anyhow::anyhow!("migration from v1 no longer supported"))
-            }
-            Err(err) => return Err(err.into()),
-        };
-        let tx = db.begin_write()?;
-        let ftx = ds.begin_write();
-        Tables::new(&tx, &ftx)?;
-        tx.commit()?;
-        drop(ftx);
-        let cmds = PeekableReceiver::new(cmds);
-        Ok(Self {
-            db,
-            cmds,
-            ds,
-            options,
-        })
-    }
-
-    fn get(tables: &impl ReadableTables, cmd: Get) -> ActorResult<()> {
-        let Get { hash, tx } = cmd;
+impl Get {
+    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
+        let Get { hash, tx } = self;
         let Some(entry) = tables.blobs().get(hash)? else {
             tx.send(GetResult { state: Ok(None) });
             return Ok(());
@@ -158,8 +122,11 @@ impl Actor {
         });
         Ok(())
     }
+}
 
-    fn dump(tables: &impl ReadableTables, cmd: Dump) -> ActorResult<()> {
+impl Dump {
+    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
+        let cmd = self;
         trace!("dumping database");
         for e in tables.blobs().iter()? {
             let (k, v) = e?;
@@ -188,15 +155,20 @@ impl Actor {
         cmd.tx.send(Ok(()));
         Ok(())
     }
+}
 
-    fn list_tags(tables: &impl ReadableTables, cmd: ListTags) -> ActorResult<()> {
+impl ListTags {
+    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
         let ListTags {
-            from,
-            to,
-            raw,
-            hash_seq,
+            options:
+                ListOptions {
+                    from,
+                    to,
+                    raw,
+                    hash_seq,
+                },
             tx,
-        } = cmd;
+        } = self;
         let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
         let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
         let mut res = Vec::new();
@@ -221,9 +193,11 @@ impl Actor {
         tx.send(res);
         Ok(())
     }
+}
 
-    fn blobs(tables: &impl ReadableTables, cmd: Blobs) -> ActorResult<()> {
-        let Blobs { filter, tx } = cmd;
+impl Blobs {
+    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
+        let Blobs { filter, tx } = self;
         let mut res = Vec::new();
         let mut index = 0u64;
         #[allow(clippy::explicit_counter_loop)]
@@ -243,20 +217,13 @@ impl Actor {
         tx.send(Ok(res));
         Ok(())
     }
+}
 
-    fn handle_readonly(tables: &impl ReadableTables, cmd: ReadOnlyCommand) -> ActorResult<()> {
-        match cmd {
-            ReadOnlyCommand::Get(cmd) => Self::get(tables, cmd),
-            ReadOnlyCommand::Dump(cmd) => Self::dump(tables, cmd),
-            ReadOnlyCommand::ListTags(cmd) => Self::list_tags(tables, cmd),
-            ReadOnlyCommand::Blobs(cmd) => Self::blobs(tables, cmd),
-        }
-    }
-
-    fn update(tables: &mut Tables, cmd: Update) -> ActorResult<()> {
+impl Update {
+    fn handle(self, tables: &mut Tables) -> ActorResult<()> {
         let Update {
             hash, state, tx, ..
-        } = cmd;
+        } = self;
         trace!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
         let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
@@ -302,11 +269,13 @@ impl Actor {
         }
         Ok(())
     }
+}
 
-    fn set(tables: &mut Tables, cmd: Set) -> ActorResult<()> {
+impl Set {
+    fn handle(self, tables: &mut Tables) -> ActorResult<()> {
         let Set {
             state, hash, tx, ..
-        } = cmd;
+        } = self;
         let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
             EntryState::Complete {
                 data_location,
@@ -334,6 +303,56 @@ impl Actor {
         }
         tx.send(Ok(()));
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Actor {
+    db: redb::Database,
+    cmds: PeekableReceiver<Command>,
+    ds: DeleteHandle,
+    options: BatchOptions,
+}
+
+impl Actor {
+    pub fn new(
+        db_path: PathBuf,
+        cmds: mpsc::Receiver<Command>,
+        mut ds: DeleteHandle,
+        options: BatchOptions,
+    ) -> anyhow::Result<Self> {
+        trace!(
+            "creating or opening meta database at {:?}",
+            db_path.display()
+        );
+        let db = match redb::Database::create(db_path) {
+            Ok(db) => db,
+            Err(DatabaseError::UpgradeRequired(1)) => {
+                return Err(anyhow::anyhow!("migration from v1 no longer supported"))
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let tx = db.begin_write()?;
+        let ftx = ds.begin_write();
+        Tables::new(&tx, &ftx)?;
+        tx.commit()?;
+        drop(ftx);
+        let cmds = PeekableReceiver::new(cmds);
+        Ok(Self {
+            db,
+            cmds,
+            ds,
+            options,
+        })
+    }
+
+    fn handle_readonly(tables: &impl ReadableTables, cmd: ReadOnlyCommand) -> ActorResult<()> {
+        match cmd {
+            ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
+            ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
+            ReadOnlyCommand::ListTags(cmd) => cmd.handle(tables),
+            ReadOnlyCommand::Blobs(cmd) => cmd.handle(tables),
+        }
     }
 
     fn delete(tables: &mut Tables, cmd: Delete) -> ActorResult<()> {
@@ -384,7 +403,10 @@ impl Actor {
     }
 
     fn set_tag(tables: &mut Tables, cmd: SetTag) -> ActorResult<()> {
-        let SetTag { tag, value, tx } = cmd;
+        let SetTag {
+            options: SetTagOptions { name: tag, value },
+            tx,
+        } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
         tx.send(res.map_err(anyhow::Error::from));
         Ok(())
@@ -404,7 +426,10 @@ impl Actor {
     }
 
     fn delete_tags(tables: &mut Tables, cmd: DeleteTags) -> ActorResult<()> {
-        let DeleteTags { from, to, tx } = cmd;
+        let DeleteTags {
+            options: DeleteOptions { from, to },
+            tx,
+        } = cmd;
         let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
         let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
         let removing = tables.tags.extract_from_if((from, to), |_, _| true)?;
@@ -417,7 +442,10 @@ impl Actor {
     }
 
     fn rename_tag(tables: &mut Tables, cmd: RenameTag) -> ActorResult<()> {
-        let RenameTag { from, to, tx } = cmd;
+        let RenameTag {
+            options: RenameOptions { from, to },
+            tx,
+        } = cmd;
         let value = match tables.tags.remove(from)? {
             Some(value) => value.value(),
             None => {
@@ -436,13 +464,16 @@ impl Actor {
 
     fn handle_readwrite(tables: &mut Tables, cmd: ReadWriteCommand) -> ActorResult<()> {
         match cmd {
-            ReadWriteCommand::Update(cmd) => Self::update(tables, cmd),
-            ReadWriteCommand::Set(cmd) => Self::set(tables, cmd),
+            ReadWriteCommand::Update(cmd) => cmd.handle(tables),
+            ReadWriteCommand::Set(cmd) => cmd.handle(tables),
             ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd),
             ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd),
             ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd),
             ReadWriteCommand::DeleteTags(cmd) => Self::delete_tags(tables, cmd),
             ReadWriteCommand::RenameTag(cmd) => Self::rename_tag(tables, cmd),
+            ReadWriteCommand::ProcessExit(cmd) => {
+                std::process::exit(cmd.code);
+            }
         }
     }
 
