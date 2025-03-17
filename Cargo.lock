@@ -338,6 +338,7 @@ dependencies = [
  "nested_enum_utils",
  "postcard",
  "proptest",
+ "quic-rpc",
  "rand 0.8.5",
  "range-collections",
  "redb",
@@ -2946,6 +2947,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quic-rpc"
+version = "0.50.0"
+source = "git+https://github.com/n0-computer/quic-rpc?branch=tabula-rasa#d6ecf837155ad56368e344761b34c0111c35aa42"
+dependencies = [
+ "serde",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4160,9 +4171,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.13"
+version = "0.7.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7fcaa8d55a2bdd6b83ace262b016eca0d79ee02818c5c1bcdf0305114081078"
+checksum = "6b9590b93e6fcc1739458317cccd391ad3955e2bde8913edf6f95f9e65a8f034"
 dependencies = [
  "bytes",
  "futures-core",

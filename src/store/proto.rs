@@ -34,14 +34,19 @@ pub trait HashSpecific {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBaoOptions {
+    pub hash: Hash,
+    pub size: NonZeroU64,
+}
+
 /// Import bao encoded data for the given hash with the iroh block size.
 ///
 /// The result is just a single item, indicating if a write error occurred.
 /// To observe the incoming data more granularly, use the `Observe` command
 /// concurrently.
 pub struct ImportBao {
-    pub hash: Hash,
-    pub size: NonZeroU64,
+    pub opts: ImportBaoOptions,
     pub rx: mpsc::Receiver<BaoContentItem>,
     pub tx: oneshot::Sender<anyhow::Result<()>>,
 }
@@ -49,15 +54,15 @@ pub struct ImportBao {
 impl fmt::Debug for ImportBao {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImportBao")
-            .field("hash", &DD(self.hash))
-            .field("size", &self.size)
+            .field("hash", &DD(self.opts.hash))
+            .field("size", &self.opts.size)
             .finish_non_exhaustive()
     }
 }
 
 impl HashSpecific for ImportBao {
     fn hash(&self) -> crate::Hash {
-        self.hash
+        self.opts.hash
     }
 }
 
@@ -71,28 +76,39 @@ impl fmt::Debug for Shutdown {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObserveOptions {
+    pub hash: Hash,
+}
+
 /// Observe the bitfield of the given hash.
 pub struct Observe {
-    pub hash: Hash,
-    pub out: Observer<Bitfield>,
+    pub opts: ObserveOptions,
+    pub tx: Observer<Bitfield>,
 }
 
 impl fmt::Debug for Observe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Observe")
-            .field("hash", &DD(self.hash))
+            .field("hash", &DD(self.opts.hash))
             .finish_non_exhaustive()
     }
 }
 
 impl HashSpecific for Observe {
     fn hash(&self) -> crate::Hash {
-        self.hash
+        self.opts.hash
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBytesOptions {
+    pub format: BlobFormat,
 }
 
 /// Import the given bytes.
 pub struct ImportBytes {
+    pub opts: ImportBytesOptions,
     pub data: Bytes,
     pub tx: mpsc::Sender<ImportProgress>,
 }
@@ -105,26 +121,30 @@ impl fmt::Debug for ImportBytes {
     }
 }
 
+pub struct ExportBaoOptions {
+    pub hash: Hash,
+    pub ranges: ChunkRanges,
+}
+
 /// Export the given sizes in bao format, with the iroh block size.
 ///
 /// The returned stream should be verified by the store.
 pub struct ExportBao {
-    pub hash: Hash,
-    pub ranges: ChunkRanges,
+    pub opts: ExportBaoOptions,
     pub tx: mpsc::Sender<EncodedItem>,
 }
 
 impl HashSpecific for ExportBao {
     fn hash(&self) -> crate::Hash {
-        self.hash
+        self.opts.hash
     }
 }
 
 impl fmt::Debug for ExportBao {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExportBao")
-            .field("hash", &DD(self.hash))
-            .field("ranges", &self.ranges)
+            .field("hash", &DD(self.opts.hash))
+            .field("ranges", &self.opts.ranges)
             .finish_non_exhaustive()
     }
 }
@@ -134,23 +154,35 @@ impl fmt::Debug for ExportBao {
 /// For an incomplete file, the size might be truncated and gaps will be filled
 /// with zeros. If possible, a store implementation should try to write as a
 /// sparse file.
+
 #[derive(Debug)]
-pub struct ExportPath {
+pub struct ExportPathOptions {
     pub hash: Hash,
     pub mode: ExportMode,
     pub target: PathBuf,
-    pub out: mpsc::Sender<ExportProgress>,
+}
+
+#[derive(Debug)]
+pub struct ExportPath {
+    pub opts: ExportPathOptions,
+    pub tx: mpsc::Sender<ExportProgress>,
 }
 
 impl HashSpecific for ExportPath {
     fn hash(&self) -> crate::Hash {
-        self.hash
+        self.opts.hash
     }
 }
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportByteStreamOptions {
+    pub format: BlobFormat,
+}
+
 pub struct ImportByteStream {
+    pub opts: ImportByteStreamOptions,
     pub data: BoxedByteStream,
     pub tx: mpsc::Sender<ImportProgress>,
 }
@@ -161,19 +193,24 @@ impl std::fmt::Debug for ImportByteStream {
     }
 }
 
-pub struct ImportPath {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportPathOptions {
     pub path: PathBuf,
     pub mode: ImportMode,
     pub format: BlobFormat,
+}
+
+pub struct ImportPath {
+    pub opts: ImportPathOptions,
     pub tx: mpsc::Sender<ImportProgress>,
 }
 
 impl fmt::Debug for ImportPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImportPath")
-            .field("path", &self.path)
-            .field("mode", &self.mode)
-            .field("format", &self.format)
+            .field("path", &self.opts.path)
+            .field("mode", &self.opts.mode)
+            .field("format", &self.opts.format)
             .finish_non_exhaustive()
     }
 }
@@ -238,21 +275,25 @@ pub struct ProcessExit {
     pub code: i32,
 }
 
+pub struct CreateTagOptions {
+    pub content: HashAndFormat,
+}
+
 pub struct CreateTag {
-    pub hash: HashAndFormat,
+    pub opts: CreateTagOptions,
     pub tx: oneshot::Sender<anyhow::Result<Tag>>,
 }
 
 impl HashSpecific for CreateTag {
     fn hash(&self) -> crate::Hash {
-        self.hash.hash
+        self.opts.content.hash
     }
 }
 
 impl fmt::Debug for CreateTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CreateTag")
-            .field("hash", &self.hash)
+            .field("hash", &self.opts.content)
             .finish_non_exhaustive()
     }
 }

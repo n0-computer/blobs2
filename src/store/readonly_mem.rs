@@ -43,54 +43,52 @@ impl Actor {
 
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::ImportBao(ImportBao { tx: out, .. }) => {
-                out.send(Err(anyhow::anyhow!("import not supported")));
+            Command::ImportBao(ImportBao { tx, .. }) => {
+                tx.send(Err(anyhow::anyhow!("import not supported")));
             }
-            Command::ImportBytes(ImportBytes { tx: out, .. }) => {
-                out.try_send(ImportProgress::Error {
+            Command::ImportBytes(ImportBytes { tx, .. }) => {
+                tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportByteStream(ImportByteStream { tx: out, .. }) => {
-                out.try_send(ImportProgress::Error {
+            Command::ImportByteStream(ImportByteStream { tx, .. }) => {
+                tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::ImportPath(ImportPath { tx: out, .. }) => {
-                out.try_send(ImportProgress::Error {
+            Command::ImportPath(ImportPath { tx, .. }) => {
+                tx.try_send(ImportProgress::Error {
                     cause: anyhow::anyhow!("import not supported"),
                 })
                 .ok();
             }
-            Command::Observe(Observe { hash, out }) => {
+            Command::Observe(Observe { opts: ObserveOptions { hash }, tx }) => {
                 if let Some(entry) = self.data.get_mut(&hash) {
-                    entry.add_observer(out);
+                    entry.add_observer(tx);
                 } else {
-                    self.observers.add_observer(out);
+                    self.observers.add_observer(tx);
                 }
             }
-            Command::ExportBao(ExportBao {
-                hash,
-                ranges,
-                tx: out,
-            }) => {
+            Command::ExportBao(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }) => {
                 let entry = self
                     .data
                     .get(&hash)
                     .map(|e| (e.data.clone(), e.outboard.clone()));
                 self.unit_tasks
-                    .spawn(export_bao_task(hash, entry, ranges, out));
+                    .spawn(export_bao_task(hash, entry, ranges, tx));
             }
             Command::ExportPath(ExportPath {
-                hash, target, out, ..
+                opts: ExportPathOptions { hash, target, .. },
+                tx,
+                ..
             }) => {
                 let entry = self
                     .data
                     .get(&hash)
                     .map(|e| (e.data.clone(), e.outboard.clone()));
-                self.unit_tasks.spawn(export_path_task(entry, target, out));
+                self.unit_tasks.spawn(export_path_task(entry, target, tx));
             }
             _ => {}
         }
@@ -168,36 +166,34 @@ impl Store {
 async fn export_path_task(
     entry: Option<(Bytes, Bytes)>,
     target: PathBuf,
-    out: mpsc::Sender<ExportProgress>,
+    tx: mpsc::Sender<ExportProgress>,
 ) {
     let Some(entry) = entry else {
-        out.send(anyhow::anyhow!("hash not found").into())
-            .await
-            .ok();
+        tx.send(anyhow::anyhow!("hash not found").into()).await.ok();
         return;
     };
-    match export_path_impl(entry, target, &out).await {
-        Ok(()) => out.send(ExportProgress::Done).await.ok(),
-        Err(cause) => out.send(cause.into()).await.ok(),
+    match export_path_impl(entry, target, &tx).await {
+        Ok(()) => tx.send(ExportProgress::Done).await.ok(),
+        Err(cause) => tx.send(cause.into()).await.ok(),
     };
 }
 
 async fn export_path_impl(
     (data, _): (Bytes, Bytes),
     target: PathBuf,
-    out: &mpsc::Sender<ExportProgress>,
+    tx: &mpsc::Sender<ExportProgress>,
 ) -> anyhow::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
     let size = data.len() as u64;
-    out.send(ExportProgress::Size { size }).await?;
+    tx.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        out.send_progress(ExportProgress::CopyProgress { offset })?;
+        tx.send_progress(ExportProgress::CopyProgress { offset })?;
         yield_now().await;
     }
     Ok(())

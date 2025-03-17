@@ -33,6 +33,7 @@ self_cell = "1.1.0"
 genawaiter = { version = "0.99.1", features = ["futures03"] }
 iroh-base = "0.33.0"
 reflink-copy = "0.1.24"
+quic-rpc = { git = "https://github.com/n0-computer/quic-rpc", branch = "tabula-rasa", default-features = false }
 
 [dev-dependencies]
 clap = { version = "4.5.31", features = ["derive"] }

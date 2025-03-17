@@ -13,7 +13,7 @@ use redb::{Database, DatabaseError, ReadableTable};
 use crate::{
     store::{
         api::tags::{DeleteOptions, ListOptions, TagInfo},
-        proto::{RenameOptions, SetTagOptions},
+        proto::{CreateTagOptions, RenameOptions, SetTagOptions},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -413,7 +413,10 @@ impl Actor {
     }
 
     fn create_tag(tables: &mut Tables, cmd: CreateTag) -> ActorResult<()> {
-        let CreateTag { hash, tx } = cmd;
+        let CreateTag {
+            opts: CreateTagOptions { content: hash },
+            tx,
+        } = cmd;
         let tag = {
             let tag = Tag::auto(SystemTime::now(), |x| {
                 matches!(tables.tags.get(Tag(Bytes::copy_from_slice(x))), Ok(Some(_)))

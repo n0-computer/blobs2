@@ -110,40 +110,35 @@ impl Actor {
     fn handle_command(&mut self, cmd: Command) -> Option<Shutdown> {
         match cmd {
             Command::ImportBao(ImportBao {
-                hash,
-                size,
+                opts: ImportBaoOptions { hash, size },
                 rx: data,
-                tx: out,
+                tx,
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
-                    .spawn(import_bao_task(entry.clone(), size, data, out));
+                    .spawn(import_bao_task(entry.clone(), size, data, tx));
             }
-            Command::Observe(Observe { hash, out }) => {
+            Command::Observe(Observe { opts: ObserveOptions { hash}, tx }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
-                entry.add_observer(out);
+                entry.add_observer(tx);
             }
-            Command::ImportBytes(ImportBytes { data, tx: out }) => {
-                self.import_tasks.spawn(import_bytes(data, out));
+            Command::ImportBytes(ImportBytes { data, opts, tx }) => {
+                self.import_tasks.spawn(import_bytes(data, tx));
             }
-            Command::ImportByteStream(ImportByteStream { data, tx: out }) => {
-                self.import_tasks.spawn(import_byte_stream(data, out));
+            Command::ImportByteStream(ImportByteStream { data, opts, tx }) => {
+                self.import_tasks.spawn(import_byte_stream(data, tx));
             }
             Command::ImportPath(cmd) => {
                 self.import_tasks.spawn(import_path(cmd));
             }
-            Command::ExportBao(ExportBao {
-                hash,
-                ranges,
-                tx: out,
-            }) => {
+            Command::ExportBao(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
-                    .spawn(export_bao_task(hash, entry.clone(), ranges, out));
+                    .spawn(export_bao_task(hash, entry.clone(), ranges, tx));
             }
             Command::ExportPath(cmd) => {
-                let entry = self.state.data.get(&cmd.hash).cloned();
+                let entry = self.state.data.get(&cmd.opts.hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
@@ -227,14 +222,17 @@ impl Actor {
             }
             Command::SetTag(SetTag {
                 options: SetTagOptions { name: tag, value },
-                tx: out,
+                tx,
             }) => {
                 self.state.tags.insert(tag, value);
-                out.send(Ok(()));
+                tx.send(Ok(()));
             }
-            Command::CreateTag(CreateTag { hash, tx }) => {
+            Command::CreateTag(CreateTag {
+                opts: CreateTagOptions { content },
+                tx,
+            }) => {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
-                self.state.tags.insert(tag.clone(), hash);
+                self.state.tags.insert(tag.clone(), content);
                 tx.send(Ok(tag));
             }
             Command::SyncDb(SyncDb { tx }) => {
@@ -417,9 +415,13 @@ async fn import_byte_stream(
     import_bytes(res.into(), tx).await
 }
 
-#[instrument(skip_all, fields(path = %cmd.path.display()))]
+#[instrument(skip_all, fields(path = %cmd.opts.path.display()))]
 async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
-    let ImportPath { path, tx, .. } = cmd;
+    let ImportPath {
+        opts: ImportPathOptions { path, .. },
+        tx,
+        ..
+    } = cmd;
     let mut res = Vec::new();
     let mut file = tokio::fs::File::open(path).await?;
     let mut buf = [0u8; 1024 * 64];
@@ -439,7 +441,7 @@ async fn import_path(cmd: ImportPath) -> anyhow::Result<ImportEntry> {
 
 async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
     let Some(entry) = entry else {
-        cmd.out
+        cmd.tx
             .send(ExportProgress::Error {
                 cause: anyhow::anyhow!("hash not found"),
             })
@@ -448,24 +450,28 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPath) {
         return;
     };
     match export_path_impl(entry, &cmd).await {
-        Ok(()) => cmd.out.send(ExportProgress::Done).await.ok(),
-        Err(e) => cmd.out.send(ExportProgress::Error { cause: e }).await.ok(),
+        Ok(()) => cmd.tx.send(ExportProgress::Done).await.ok(),
+        Err(e) => cmd.tx.send(ExportProgress::Error { cause: e }).await.ok(),
     };
 }
 
 async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPath) -> anyhow::Result<()> {
-    let ExportPath { target, out, .. } = cmd;
+    let ExportPath {
+        opts: ExportPathOptions { target, .. },
+        tx,
+        ..
+    } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
-    out.send(ExportProgress::Size { size }).await?;
+    tx.send(ExportProgress::Size { size }).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        out.send_progress(ExportProgress::CopyProgress { offset })?;
+        tx.send_progress(ExportProgress::CopyProgress { offset })?;
         yield_now().await;
     }
     Ok(())

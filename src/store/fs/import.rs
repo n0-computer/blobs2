@@ -34,7 +34,8 @@ use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     store::{
         proto::{
-            HashSpecific, ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress,
+            HashSpecific, ImportByteStream, ImportByteStreamOptions, ImportBytes, ImportMode,
+            ImportPath, ImportPathOptions, ImportProgress,
         },
         util::{MemOrFile, ProgressReader, SenderProgressExt},
         IROH_BLOCK_SIZE,
@@ -133,6 +134,9 @@ pub async fn import_bytes(cmd: ImportBytes, ctx: Arc<TaskContext>) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
         let cmd = ImportByteStream {
+            opts: ImportByteStreamOptions {
+                format: cmd.opts.format,
+            },
             data: Box::pin(n0_future::stream::once(Ok(cmd.data))),
             tx: cmd.tx,
         };
@@ -203,14 +207,14 @@ async fn import_byte_stream_impl(
     cmd: ImportByteStream,
     options: Arc<Options>,
 ) -> anyhow::Result<ImportEntry> {
-    let ImportByteStream { data, tx: out } = cmd;
-    let import_source = get_import_source(data, &out, &options).await?;
-    out.send(ImportProgress::Size {
+    let ImportByteStream { data, opts, tx } = cmd;
+    let import_source = get_import_source(data, &tx, &options).await?;
+    tx.send(ImportProgress::Size {
         size: import_source.size(),
     })
     .await?;
-    out.send(ImportProgress::CopyDone).await?;
-    compute_outboard(import_source, options, out).await
+    tx.send(ImportProgress::CopyDone).await?;
+    compute_outboard(import_source, options, tx).await
 }
 
 async fn get_import_source(
@@ -287,9 +291,8 @@ async fn compute_outboard(
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let root = bao_tree::blake3::Hash::from_bytes([0; 32]);
     let outboard_size = raw_outboard_size(size);
-    let out2 = out.clone();
-    let send_progress = move |offset| {
-        out2.send_progress(ImportProgress::OutboardProgress { offset })
+    let send_progress = |offset| {
+        out.send_progress(ImportProgress::OutboardProgress { offset })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver dropped"))
     };
     let mut data = source.read();
@@ -331,7 +334,7 @@ async fn compute_outboard(
 pub(crate) fn init_outboard<R: Read + Seek, W: WriteAt>(
     data: R,
     outboard: &mut PreOrderOutboard<W>,
-    progress: impl Fn(u64) -> std::io::Result<()> + Send + Sync + 'static,
+    progress: impl Fn(u64) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     use bao_tree::io::sync::CreateOutboard;
 
@@ -348,7 +351,7 @@ pub(crate) fn init_outboard<R: Read + Seek, W: WriteAt>(
     Ok(())
 }
 
-#[instrument(skip_all, fields(path = %cmd.path.display()))]
+#[instrument(skip_all, fields(path = %cmd.opts.path.display()))]
 pub async fn import_path(cmd: ImportPath, context: Arc<TaskContext>) {
     let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
@@ -365,9 +368,8 @@ pub async fn import_path(cmd: ImportPath, context: Arc<TaskContext>) {
 
 async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Result<ImportEntry> {
     let ImportPath {
-        path,
-        tx: out,
-        mode,
+        opts: ImportPathOptions { path, mode, format },
+        tx,
         ..
     } = cmd;
     if !path.is_absolute() {
@@ -380,10 +382,10 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
     }
 
     let size = path.metadata()?.len();
-    out.send_progress(ImportProgress::Size { size })?;
+    tx.send_progress(ImportProgress::Size { size })?;
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
-        out.send_progress(ImportProgress::CopyDone)?;
+        tx.send_progress(ImportProgress::CopyDone)?;
         ImportSource::Memory(data.into())
     } else if mode == ImportMode::TryReference {
         // reference where it is. We are going to need the file handle to
@@ -402,10 +404,10 @@ async fn import_path_impl(cmd: ImportPath, options: Arc<Options>) -> anyhow::Res
         }
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
-        out.send_progress(ImportProgress::CopyDone)?;
+        tx.send_progress(ImportProgress::CopyDone)?;
         ImportSource::TempFile(temp_path, file, size)
     };
-    compute_outboard(import_source, options, out).await
+    compute_outboard(import_source, options, tx).await
 }
 
 #[cfg(test)]
@@ -452,15 +454,19 @@ mod tests {
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
         let (tx, rx) = mpsc::channel(1024 * 1024);
-        let cmd = ImportByteStream { data: stream, tx };
+        let cmd = ImportByteStream {
+            data: stream,
+            tx,
+            opts: ImportByteStreamOptions {
+                format: BlobFormat::Raw,
+            },
+        };
         let res = import_byte_stream_impl(cmd, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };
-        let ImportEntry {
-            outboard, tx: out, ..
-        } = res;
-        drop(out);
+        let ImportEntry { outboard, tx, .. } = res;
+        drop(tx);
         let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
             MemOrFile::File(path) => std::fs::read(path)?.into(),
@@ -478,19 +484,19 @@ mod tests {
         // make the channel absurdly large, so we don't have to drain it
         let (tx, rx) = mpsc::channel(1024 * 1024);
         let cmd = ImportPath {
-            path,
-            mode: ImportMode::Copy,
-            format: BlobFormat::Raw,
+            opts: ImportPathOptions {
+                path,
+                mode: ImportMode::Copy,
+                format: BlobFormat::Raw,
+            },
             tx,
         };
         let res = import_path_impl(cmd, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };
-        let ImportEntry {
-            outboard, tx: out, ..
-        } = res;
-        drop(out);
+        let ImportEntry { outboard, tx, .. } = res;
+        drop(tx);
         let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
             MemOrFile::File(path) => std::fs::read(path)?.into(),

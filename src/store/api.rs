@@ -370,23 +370,23 @@ impl Blobs {
             data.addr_short()
         );
         let (tx, rx) = mpsc::channel(32);
-        self.sender.try_send(ImportBytes { data, tx }.into()).ok();
+        let opts = ImportBytesOptions {
+            format: crate::BlobFormat::Raw,
+        };
+        self.sender
+            .try_send(ImportBytes { data, tx, opts }.into())
+            .ok();
         ImportResult { rx }
     }
 
     pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
         let (tx, rx) = mpsc::channel(32);
-        self.sender
-            .try_send(
-                ImportPath {
-                    path: path.as_ref().to_owned(),
-                    tx,
-                    mode: ImportMode::Copy,
-                    format: crate::BlobFormat::Raw,
-                }
-                .into(),
-            )
-            .ok();
+        let opts = ImportPathOptions {
+            path: path.as_ref().to_owned(),
+            mode: ImportMode::Copy,
+            format: crate::BlobFormat::Raw,
+        };
+        self.sender.try_send(ImportPath { opts, tx }.into()).ok();
         ImportResult { rx }
     }
 
@@ -401,9 +401,12 @@ impl Blobs {
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
     ) -> ImportResult {
+        let opts = ImportByteStreamOptions {
+            format: crate::BlobFormat::Raw,
+        };
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(ImportByteStream { data, tx }.into())
+            .try_send(ImportByteStream { opts, data, tx }.into())
             .ok();
         ImportResult { rx }
     }
@@ -411,7 +414,7 @@ impl Blobs {
     pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(ExportBao { hash, ranges, tx }.into())
+            .try_send(ExportBao { opts: ExportBaoOptions { hash, ranges }, tx }.into())
             .ok();
         ExportBaoResult { rx }
     }
@@ -440,8 +443,8 @@ impl Blobs {
         self.sender
             .try_send(
                 Observe {
-                    hash,
-                    out: Observer::new(tx),
+                    opts: ObserveOptions { hash },
+                    tx: Observer::new(tx),
                 }
                 .into(),
             )
@@ -454,10 +457,12 @@ impl Blobs {
         self.sender
             .try_send(
                 ExportPath {
-                    hash,
-                    mode: ExportMode::Copy,
-                    target: target.as_ref().to_owned(),
-                    out: tx,
+                    opts: ExportPathOptions {
+                        hash,
+                        mode: ExportMode::Copy,
+                        target: target.as_ref().to_owned(),
+                    },
+                    tx,
                 }
                 .into(),
             )
@@ -473,7 +478,7 @@ impl Blobs {
         mut reader: R,
     ) -> anyhow::Result<R> {
         let (tx, rx) = mpsc::channel(32);
-        let (out, out_receiver) = oneshot::channel();
+        let (out_tx, out_rx) = oneshot::channel();
         let size = u64::from_le_bytes(reader.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
@@ -484,12 +489,14 @@ impl Blobs {
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
+        let opts = ImportBaoOptions {
+            hash, size
+        };
         self.sender.try_send(
             ImportBao {
-                hash,
-                size,
+                opts,
                 rx,
-                tx: out,
+                tx: out_tx,
             }
             .into(),
         )?;
@@ -503,7 +510,7 @@ impl Blobs {
             };
         };
         drop(tx);
-        out_receiver.await??;
+        out_rx.await??;
         Ok(reader)
     }
 
@@ -518,11 +525,11 @@ impl Blobs {
     ) -> anyhow::Result<()> {
         let hash = hash.into();
         let (tx, rx) = oneshot::channel();
+        let opts = ImportBaoOptions { hash, size };
         self.sender
             .send(
                 ImportBao {
-                    hash,
-                    size,
+                    opts,
                     rx: data,
                     tx,
                 }

@@ -347,22 +347,22 @@ impl Actor {
             }
             Command::ExportPath(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.hash);
+                let ctx = self.hash_context(cmd.opts.hash);
                 self.tasks.spawn(export_path(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.hash);
+                let ctx = self.hash_context(cmd.opts.hash);
                 self.tasks.spawn(export_bao(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.hash);
+                let ctx = self.hash_context(cmd.opts.hash);
                 self.tasks.spawn(import_bao(cmd, ctx));
             }
             Command::Observe(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.hash);
+                let ctx = self.hash_context(cmd.opts.hash);
                 self.tasks.spawn(observe(cmd, ctx));
             }
         }
@@ -616,7 +616,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn import_bao(cmd: ImportBao, ctx: HashContext) {
     trace!("{cmd:?}");
-    let ImportBao { size, rx, tx, hash } = cmd;
+    let ImportBao { opts: ImportBaoOptions { size, hash }, rx, tx } = cmd;
     let res = match ctx.get_or_create(hash).await {
         Ok(handle) => import_bao_impl(size, rx, handle, ctx).await,
         Err(cause) => Err(cause),
@@ -671,11 +671,11 @@ async fn import_bao_impl(
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn observe(cmd: Observe, ctx: HashContext) {
-    let Ok(handle) = ctx.get_or_create(cmd.hash).await else {
+    let Ok(handle) = ctx.get_or_create(cmd.opts.hash).await else {
         return;
     };
-    let receiver_dropped = cmd.out.receiver_dropped();
-    handle.add_observer(cmd.out);
+    let receiver_dropped = cmd.tx.receiver_dropped();
+    handle.add_observer(cmd.tx);
     // this keeps the handle alive until the observer is dropped
     receiver_dropped.await;
     // give the handle a chance to clean up the dropped observer
@@ -687,7 +687,7 @@ async fn export_bao(cmd: ExportBao, ctx: HashContext) {
     let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
-    match ctx.get_or_create(cmd.hash).await {
+    match ctx.get_or_create(cmd.opts.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_bao_impl(cmd, handle).await {
                 send.send(
@@ -706,11 +706,7 @@ async fn export_bao(cmd: ExportBao, ctx: HashContext) {
 }
 
 async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Result<()> {
-    let ExportBao {
-        ranges,
-        tx: out,
-        hash,
-    } = cmd;
+    let ExportBao { opts: ExportBaoOptions { ranges, hash }, tx } = cmd;
     trace!(
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
@@ -718,16 +714,16 @@ async fn export_bao_impl(cmd: ExportBao, handle: BaoFileHandle) -> anyhow::Resul
     debug_assert!(handle.hash() == hash, "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
-    traverse_ranges_validated(data, outboard, &ranges, &out).await;
+    traverse_ranges_validated(data, outboard, &ranges, &tx).await;
     Ok(())
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn export_path(cmd: ExportPath, ctx: HashContext) {
-    let Ok(send) = cmd.out.clone().reserve_owned().await else {
+    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
-    match ctx.get_or_create(cmd.hash).await {
+    match ctx.get_or_create(cmd.opts.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_path_impl(cmd, handle, ctx).await {
                 send.send(cause.into());
@@ -745,6 +741,7 @@ async fn export_path_impl(
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> anyhow::Result<()> {
+    let ExportPathOptions { hash, mode, target } = cmd.opts;
     let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
@@ -767,25 +764,25 @@ async fn export_path_impl(
     };
     match data {
         MemOrFile::Mem(data) => {
-            let mut target = fs::File::create(&cmd.target)?;
+            let mut target = fs::File::create(&target)?;
             target.write_all(&data)?;
         }
-        MemOrFile::File(file) => match cmd.mode {
+        MemOrFile::File(file) => match mode {
             ExportMode::Copy => {
-                let mut target = fs::File::create(&cmd.target)?;
-                copy_with_progress(&file, file.size, &mut target, &cmd.out).await?;
+                let mut target = fs::File::create(&target)?;
+                copy_with_progress(&file, file.size, &mut target, &cmd.tx).await?;
             }
             ExportMode::TryReference => {
                 let hash = handle.hash();
                 let owned_path = ctx.options().path.data_path(&hash);
-                match std::fs::rename(&owned_path, &cmd.target) {
+                match std::fs::rename(&owned_path, &target) {
                     Ok(()) => {}
                     Err(cause) => {
                         const ERR_CROSS: i32 = 18;
                         if cause.raw_os_error() == Some(ERR_CROSS) {
-                            let mut target = fs::File::create(&cmd.target)?;
+                            let mut target = fs::File::create(&target)?;
                             let size = file.size;
-                            copy_with_progress(&file, size, &mut target, &cmd.out).await?;
+                            copy_with_progress(&file, size, &mut target, &cmd.tx).await?;
                         } else {
                             anyhow::bail!("failed to move file: {cause}");
                         }
@@ -794,7 +791,7 @@ async fn export_path_impl(
                 ctx.set(
                     hash,
                     EntryState::Complete {
-                        data_location: DataLocation::External(vec![cmd.target], file.size),
+                        data_location: DataLocation::External(vec![target], file.size),
                         outboard_location,
                     },
                 )
@@ -802,7 +799,7 @@ async fn export_path_impl(
             }
         },
     }
-    cmd.out.send(ExportProgress::Done).await?;
+    cmd.tx.send(ExportProgress::Done).await?;
     Ok(())
 }
 
