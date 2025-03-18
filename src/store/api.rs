@@ -19,7 +19,7 @@ use bao_tree::{
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use quic_rpc::channel::none::NoReceiver;
+use quic_rpc::channel::{none::NoReceiver, oneshot, spsc};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
@@ -241,16 +241,7 @@ pub mod tags {
             options: ListTags,
         ) -> Result<impl Stream<Item = Result<TagInfo>>> {
             let (tx, rx) = quic_rpc::channel::oneshot::channel();
-            self.sender
-                .send(
-                    ListTagsMsg {
-                        inner: options,
-                        tx,
-                        rx: NoReceiver,
-                    }
-                    .into(),
-                )
-                .await?;
+            self.sender.send((options, tx)).await?;
             let res = rx.await?;
             Ok(futures_lite::stream::iter(res))
         }
@@ -264,14 +255,7 @@ pub mod tags {
         pub async fn set_with_opts(&self, options: SetTag) -> io::Result<()> {
             let (tx, rx) = quic_rpc::channel::oneshot::channel();
             self.sender
-                .send(
-                    SetTagMsg {
-                        inner: options,
-                        tx,
-                        rx: NoReceiver,
-                    }
-                    .into(),
-                )
+                .send((options, tx))
                 .await
                 .map_err(|_e| io::Error::other("error"))?;
             rx.await.map_err(|_e| io::Error::other("error"))?
@@ -323,14 +307,7 @@ pub mod tags {
         pub async fn delete_with_opts(&self, options: DeleteTags) -> io::Result<()> {
             let (tx, rx) = quic_rpc::channel::oneshot::channel();
             self.sender
-                .send(
-                    DeleteTagsMsg {
-                        inner: options,
-                        tx,
-                        rx: NoReceiver,
-                    }
-                    .into(),
-                )
+                .send((options, tx))
                 .map_err(|_e| io::Error::other("error"))
                 .await?;
             rx.await.map_err(|_e| io::Error::other("error"))?
@@ -372,14 +349,7 @@ pub mod tags {
         pub async fn rename_with_opts(&self, options: Rename) -> io::Result<()> {
             let (tx, rx) = quic_rpc::channel::oneshot::channel();
             self.sender
-                .send(
-                    RenameTagMsg {
-                        inner: options,
-                        tx,
-                        rx: NoReceiver,
-                    }
-                    .into(),
-                )
+                .send((options, tx))
                 .await
                 .map_err(|_e| io::Error::other("error"))?;
             rx.await.map_err(|_e| io::Error::other("error"))?
@@ -414,16 +384,7 @@ impl Blobs {
             data,
             format: crate::BlobFormat::Raw,
         };
-        self.sender
-            .try_send(
-                ImportBytesMsg {
-                    tx,
-                    rx: NoReceiver,
-                    inner,
-                }
-                .into(),
-            )
-            .ok();
+        self.sender.send((inner, tx)).await.ok();
         ImportResult { rx }
     }
 
@@ -434,17 +395,7 @@ impl Blobs {
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
         };
-        self.sender
-            .send(
-                ImportPathMsg {
-                    inner,
-                    rx: NoReceiver,
-                    tx,
-                }
-                .into(),
-            )
-            .await
-            .ok();
+        self.sender.send((inner, tx)).await.ok();
         ImportResult { rx }
     }
 
@@ -470,38 +421,21 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
         };
         let (tx, rx) = quic_rpc::channel::spsc::channel(32);
-        self.sender
-            .send(
-                ImportByteStreamMsg {
-                    inner,
-                    tx,
-                    rx: NoReceiver,
-                }
-                .into(),
-            )
-            .await
-            .ok();
+        self.sender.send((inner, tx)).await.ok();
         ImportResult { rx }
     }
 
-    pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
+    pub async fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
         let (tx, rx) = mpsc::channel(32);
-        self.sender
-            .try_send(
-                ExportBaoMsg {
-                    inner: ExportBao { hash, ranges },
-                    tx: tx.into(),
-                    rx: NoReceiver,
-                }
-                .into(),
-            )
-            .ok();
+        let inner = ExportBao { hash, ranges };
+        self.sender.send((inner, tx)).await.ok();
         ExportBaoResult { rx }
     }
 
     /// Helper to just export the entire blob into a Bytes
     pub async fn export_bytes(&self, hash: impl Into<Hash>) -> io::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
+            .await
             .data_to_bytes()
             .await
     }
@@ -512,41 +446,34 @@ impl Blobs {
     /// current state, and the following bitfields are updates.
     ///
     /// Once a blob is complete, there will be no more updates.
-    pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
+    pub async fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
         let hash = hash.into();
         if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
-            let (tx, rx) = mpsc::channel(1);
-            tx.try_send(Bitfield::complete(0)).ok();
-            return ObserveResult { rx };
+            let (mut tx, rx) = spsc::channel(1);
+            tx.send(Bitfield::complete(0)).await.ok();
+            return ObserveResult {
+                rx: rx.try_into().unwrap(),
+            };
         }
-        let (tx, rx) = mpsc::channel(32);
-        self.sender
-            .try_send(
-                ObserveMsg {
-                    inner: Observe { hash },
-                    tx,
-                }
-                .into(),
-            )
-            .ok();
-        ObserveResult { rx }
+        let (tx, rx) = spsc::channel(32);
+        self.sender.send((Observe { hash }, tx)).await.ok();
+        ObserveResult {
+            rx: rx.try_into().unwrap(),
+        }
     }
 
-    pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
+    pub async fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(
-                ExportPathMsg {
-                    inner: ExportPath {
-                        hash,
-                        mode: ExportMode::Copy,
-                        target: target.as_ref().to_owned(),
-                    },
-                    tx: tx.into(),
-                    rx: NoReceiver,
-                }
-                .into(),
-            )
+            .send((
+                ExportPath {
+                    hash,
+                    mode: ExportMode::Copy,
+                    target: target.as_ref().to_owned(),
+                },
+                tx,
+            ))
+            .await
             .ok();
         ExportPathResult { rx }
     }
@@ -558,8 +485,8 @@ impl Blobs {
         ranges: ChunkRanges,
         mut reader: R,
     ) -> anyhow::Result<R> {
-        let (tx, rx) = mpsc::channel(32);
-        let (out_tx, out_rx) = quic_rpc::channel::oneshot::channel();
+        let (mut tx, rx) = spsc::channel(32);
+        let (out_tx, out_rx) = oneshot::channel();
         let size = u64::from_le_bytes(reader.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
@@ -571,14 +498,7 @@ impl Blobs {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let inner = ImportBao { hash, size };
-        self.sender.try_send(
-            ImportBaoMsg {
-                inner,
-                rx: rx.into(),
-                tx: out_tx,
-            }
-            .into(),
-        )?;
+        self.sender.send((inner, out_tx, rx)).await?;
         let reader = loop {
             match decoder.next().await {
                 ResponseDecoderNext::More((rest, item)) => {
@@ -605,16 +525,7 @@ impl Blobs {
         let hash = hash.into();
         let (tx, rx) = quic_rpc::channel::oneshot::channel();
         let inner = ImportBao { hash, size };
-        self.sender
-            .send(
-                ImportBaoMsg {
-                    inner,
-                    rx: data.into(),
-                    tx,
-                }
-                .into(),
-            )
-            .await?;
+        self.sender.send((inner, tx, data)).await?;
         rx.await??;
         Ok(())
     }
@@ -642,32 +553,14 @@ impl Blobs {
 
     pub async fn sync_db(&self) -> anyhow::Result<()> {
         let (tx, rx) = quic_rpc::channel::oneshot::channel();
-        self.sender
-            .send(
-                SyncDbMsg {
-                    tx,
-                    rx: NoReceiver,
-                    inner: SyncDb,
-                }
-                .into(),
-            )
-            .await?;
+        self.sender.send((SyncDb, tx)).await?;
         rx.await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         let (tx, rx) = quic_rpc::channel::oneshot::channel();
-        self.sender
-            .send(
-                ShutdownMsg {
-                    inner: Shutdown,
-                    tx,
-                    rx: NoReceiver,
-                }
-                .into(),
-            )
-            .await?;
+        self.sender.send((Shutdown, tx)).await?;
         rx.await?;
         Ok(())
     }
@@ -693,7 +586,7 @@ impl ImportResult {
 /// and all following are updates. Once a blob is complete, there will be no
 /// more updates.
 pub struct ObserveResult {
-    rx: mpsc::Receiver<Bitfield>,
+    rx: tokio::sync::mpsc::Receiver<Bitfield>,
 }
 
 impl ObserveResult {

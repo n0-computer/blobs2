@@ -36,6 +36,7 @@ pub async fn get_missing(
 pub async fn get_missing_blob(hash: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
     let local_ranges = store
         .observe(hash)
+        .await
         .next()
         .await
         .map(|x| x.ranges)
@@ -47,11 +48,12 @@ pub async fn get_missing_blob(hash: Hash, store: &Store) -> anyhow::Result<Range
 pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
     let local_bitmap = store
         .observe(root)
+        .await
         .next()
         .await
         .expect("observe stream stopped");
     let root_ranges = ChunkRanges::all() - local_bitmap.ranges.clone();
-    let mut stream = store.export_bao(root, local_bitmap.ranges);
+    let mut stream = store.export_bao(root, local_bitmap.ranges).await;
     let mut hashes = HashSet::new();
     hashes.insert(root);
     let mut ranges = BTreeMap::new();
@@ -64,7 +66,7 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
                 if !hashes.insert(hash) {
                     continue;
                 }
-                let local_bitmap = store.observe(hash).next().await.unwrap();
+                let local_bitmap = store.observe(hash).await.next().await.unwrap();
                 let missing = ChunkRanges::all() - local_bitmap.ranges;
                 let missing = RangeSpec::new(missing);
                 ranges.insert(offset + i as u64, missing);
@@ -100,6 +102,7 @@ async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::R
     trace!("get blob: {}", hash);
     let local_ranges = store
         .observe(hash)
+        .await
         .next()
         .await
         .map(|x| x.ranges)
@@ -168,6 +171,7 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
     trace!("get hash seq: {}", root);
     let local_ranges = store
         .observe(root)
+        .await
         .next()
         .await
         .map(|x| x.ranges)

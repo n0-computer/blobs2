@@ -64,19 +64,7 @@ pub struct Observe {
     pub hash: Hash,
 }
 
-/// Observe the bitfield of the given hash.
-pub struct ObserveMsg {
-    pub inner: Observe,
-    pub tx: tokio::sync::mpsc::Sender<Bitfield>,
-}
-
-impl fmt::Debug for ObserveMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Observe")
-            .field("hash", &DD(self.inner.hash))
-            .finish_non_exhaustive()
-    }
-}
+pub type ObserveMsg = WithChannels<Observe, StoreService>;
 
 impl HashSpecific for ObserveMsg {
     fn hash(&self) -> crate::Hash {
@@ -204,7 +192,7 @@ pub struct StoreService;
 impl quic_rpc::Service for StoreService {}
 
 #[allow(dead_code)]
-#[rpc_requests(StoreService, Command2)]
+#[rpc_requests(StoreService, Command)]
 #[derive(Debug)]
 pub enum Request {
     #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<io::Result<()>>)]
@@ -237,8 +225,9 @@ pub enum Request {
     Shutdown(Shutdown),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, derive_more::From)]
-pub enum Command {
+pub enum Command2 {
     ImportBao(ImportBaoMsg),
     ExportBao(ExportBaoMsg),
 

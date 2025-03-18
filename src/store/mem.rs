@@ -97,7 +97,7 @@ impl Store {
             }
             .run(),
         );
-        Self::from_sender(sender)
+        Self::from_sender(sender.into())
     }
 }
 
@@ -123,10 +123,11 @@ impl Actor {
             Command::Observe(ObserveMsg {
                 inner: Observe { hash },
                 tx,
+                ..
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
-                let tx = Observer::new(tx);
+                let tx = Observer::new(tx.try_into().unwrap());
                 entry.add_observer(tx);
             }
             Command::ImportBytes(ImportBytesMsg {
@@ -737,15 +738,15 @@ mod tests {
             .hash()
             .await?;
         println!("hash: {:?}", hash);
-        let mut stream = store.export_bao(hash, ChunkRanges::all());
+        let mut stream = store.export_bao(hash, ChunkRanges::all()).await;
         while let Some(item) = stream.next().await {
             println!("item: {:?}", item);
         }
-        let stream = store.export_bao(hash, ChunkRanges::all());
+        let stream = store.export_bao(hash, ChunkRanges::all()).await;
         let exported = stream.bao_to_vec().await?;
 
         let store2 = Store::memory();
-        let mut or = store2.observe(hash);
+        let mut or = store2.observe(hash).await;
         tokio::spawn(async move {
             while let Some(event) = or.next().await {
                 println!("event: {:?}", event);
@@ -757,6 +758,7 @@ mod tests {
 
         let exported2 = store2
             .export_bao(hash, ChunkRanges::all())
+            .await
             .bao_to_vec()
             .await?;
         assert_eq!(exported, exported2);

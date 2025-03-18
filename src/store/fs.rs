@@ -86,7 +86,7 @@ use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 
 use super::{
-    proto::*,
+    proto::{self, *},
     util::{observer::Observer, QuicRpcSenderProgressExt},
     Store,
 };
@@ -680,7 +680,7 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.inner.hash).await else {
         return;
     };
-    let tx = Observer::new(cmd.tx);
+    let tx = Observer::new(cmd.tx.try_into().unwrap());
     let receiver_dropped = tx.receiver_dropped();
     handle.add_observer(tx);
     // this keeps the handle alive until the observer is dropped
@@ -867,12 +867,12 @@ impl FsStore {
             ))
             .await??;
         handle.spawn(actor.run());
-        Ok(FsStore::new(commands_tx, fs_commands_tx))
+        Ok(FsStore::new(commands_tx.into(), fs_commands_tx))
     }
 }
 
 pub struct FsStore {
-    sender: mpsc::Sender<Command>,
+    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
     db: mpsc::Sender<InternalCommand>,
 }
 
@@ -891,7 +891,10 @@ impl AsRef<Store> for FsStore {
 }
 
 impl FsStore {
-    fn new(sender: mpsc::Sender<Command>, db: mpsc::Sender<InternalCommand>) -> Self {
+    fn new(
+        sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+        db: mpsc::Sender<InternalCommand>,
+    ) -> Self {
         Self { sender, db }
     }
 
@@ -982,7 +985,7 @@ pub mod tests {
             let data = test_data(size);
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
-            let obs = store.observe(hash);
+            let obs = store.observe(hash).await;
             let task = tokio::spawn(async move {
                 let mut agg = obs.aggregated();
                 while let Some(_delta) = agg.next().await {
@@ -1036,7 +1039,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
-            let obs = store.observe(expected_hash).aggregated();
+            let obs = store.observe(expected_hash).await.aggregated();
             let actual_hash = store.import_byte_stream(stream).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1060,7 +1063,7 @@ pub mod tests {
         for size in sizes {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).aggregated();
+            let obs = store.observe(expected_hash).await.aggregated();
             let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1088,7 +1091,7 @@ pub mod tests {
         {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).aggregated();
+            let obs = store.observe(expected_hash).await.aggregated();
             let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let actual = store.export_bytes(expected_hash).await?;
@@ -1121,7 +1124,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
-            let obs = store.observe(expected_hash).aggregated();
+            let obs = store.observe(expected_hash).await.aggregated();
             let actual_hash = store.import_path(&path).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1147,7 +1150,7 @@ pub mod tests {
             let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let out_path = testdir.path().join(format!("out-{}", size));
-            store.export_path(expected_hash, &out_path).await?;
+            store.export_path(expected_hash, &out_path).await.await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
         }
@@ -1200,6 +1203,7 @@ pub mod tests {
                 let hash = Hash::new(&expected);
                 let actual = store
                     .export_bao(hash, ChunkRanges::all())
+                    .await
                     .data_to_vec()
                     .await?;
                 assert_eq!(&expected, &actual);
@@ -1244,7 +1248,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &just_size)?;
-                let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
+                let actual = match store.export_bao(hash, ranges).await.bao_to_vec().await {
                     Ok(actual) => actual,
                     Err(cause) => panic!("failed to export size={size}: {cause}"),
                 };
@@ -1312,7 +1316,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &ChunkRanges::all())?;
-                let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
+                let actual = match store.export_bao(hash, ranges).await.bao_to_vec().await {
                     Ok(actual) => actual,
                     Err(cause) => panic!("failed to export size={size}: {cause}"),
                 };
@@ -1367,7 +1371,7 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).aggregated();
+                let mut stream = store.observe(hash).await.aggregated();
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };
@@ -1419,7 +1423,7 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).aggregated();
+                let mut stream = store.observe(hash).await.aggregated();
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };
@@ -1460,6 +1464,7 @@ pub mod tests {
                 let hash = Hash::new(&expected);
                 let Ok(actual) = store
                     .export_bao(hash, ChunkRanges::all())
+                    .await
                     .data_to_vec()
                     .await
                 else {
@@ -1496,17 +1501,19 @@ pub mod tests {
         store.sync_db().await?;
         for hash in &hashes {
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export_path(*hash, path).await?;
+            store.export_path(*hash, path).await.await?;
         }
         for hash in &hashes {
             let data = store
                 .export_bao(*hash, ChunkRanges::all())
+                .await
                 .data_to_vec()
                 .await
                 .unwrap();
             assert_eq!(data, data_by_hash[hash].to_vec());
             let bao = store
                 .export_bao(*hash, ChunkRanges::all())
+                .await
                 .bao_to_vec()
                 .await
                 .unwrap();

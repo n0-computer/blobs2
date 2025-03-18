@@ -10,6 +10,7 @@ mod readonly_mem;
 mod test;
 pub(crate) mod util;
 
+use proto::StoreService;
 use ref_cast::RefCast;
 
 pub use crate::hash::{BlobFormat, Hash, HashAndFormat};
@@ -18,7 +19,7 @@ use crate::util::channel::mpsc;
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
-    sender: mpsc::Sender<proto::Command>,
+    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
 }
 
 impl Deref for Store {
@@ -32,11 +33,11 @@ impl Deref for Store {
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
-    sender: mpsc::Sender<proto::Command>,
+    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
 }
 
 impl Tags {
-    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
         Self::ref_cast(sender)
     }
 }
@@ -44,11 +45,11 @@ impl Tags {
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Blobs {
-    sender: mpsc::Sender<proto::Command>,
+    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
 }
 
 impl Blobs {
-    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
         Self::ref_cast(sender)
     }
 }
@@ -58,11 +59,11 @@ impl Store {
         Tags::ref_from_sender(&self.sender)
     }
 
-    fn from_sender(sender: mpsc::Sender<proto::Command>) -> Self {
+    fn from_sender(sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> Self {
         Self { sender }
     }
 
-    fn ref_from_sender(sender: &mpsc::Sender<proto::Command>) -> &Self {
+    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
         Self::ref_cast(sender)
     }
 }

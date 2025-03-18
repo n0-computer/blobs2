@@ -70,8 +70,9 @@ impl Actor {
             Command::Observe(ObserveMsg {
                 inner: Observe { hash },
                 tx,
+                ..
             }) => {
-                let tx = Observer::new(tx);
+                let tx = Observer::new(tx.try_into().unwrap());
                 if let Some(entry) = self.data.get_mut(&hash) {
                     entry.add_observer(tx);
                 } else {
@@ -173,7 +174,7 @@ impl Store {
         let (sender, receiver) = mpsc::channel(1);
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
-        Store::from_sender(sender)
+        Store::from_sender(sender.into())
     }
 }
 
