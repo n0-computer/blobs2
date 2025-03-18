@@ -60,7 +60,7 @@ impl From<ActorError> for io::Error {
     fn from(e: ActorError) -> Self {
         match e {
             ActorError::Io(e) => e,
-            e => io::Error::new(io::ErrorKind::Other, e),
+            e => io::Error::other(e),
         }
     }
 }
@@ -467,8 +467,7 @@ impl Actor {
                 tx.send(Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "tag not found",
-                )
-                .into()));
+                )));
                 return Ok(());
             }
         };

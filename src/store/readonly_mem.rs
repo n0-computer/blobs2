@@ -117,7 +117,7 @@ impl Actor {
                     let Some(cmd) = command else {
                         break;
                     };
-                    self.handle_command(cmd);
+                    self.handle_command(cmd).await;
                 },
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);

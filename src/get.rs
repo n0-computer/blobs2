@@ -214,9 +214,9 @@ pub mod fsm {
                 ConnectedNextError::Write(cause) => cause.into(),
                 ConnectedNextError::Io(cause) => cause,
                 ConnectedNextError::PostcardSer(cause) => {
-                    io::Error::new(io::ErrorKind::Other, cause)
+                    io::Error::other(cause)
                 }
-                _ => io::Error::new(io::ErrorKind::Other, cause),
+                _ => io::Error::other(cause),
             }
         }
     }
@@ -579,7 +579,7 @@ pub mod fsm {
                 DecodeError::LeafNotFound(_) => io::Error::new(io::ErrorKind::UnexpectedEof, cause),
                 DecodeError::Read(cause) => cause.into(),
                 DecodeError::Io(cause) => cause,
-                _ => io::Error::new(io::ErrorKind::Other, cause),
+                _ => io::Error::other(cause),
             }
         }
     }
@@ -893,6 +893,6 @@ impl From<anyhow::Error> for GetResponseError {
 
 impl From<GetResponseError> for std::io::Error {
     fn from(cause: GetResponseError) -> Self {
-        Self::new(std::io::ErrorKind::Other, cause)
+        Self::other(cause)
     }
 }

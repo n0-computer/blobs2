@@ -582,7 +582,7 @@ impl ReadBytesAt for DataReader {
             Some(BaoFileStorage::PartialMem(x)) => x.data.read_bytes_at(offset, size),
             Some(BaoFileStorage::Partial(x)) => x.data.read_bytes_at(offset, size),
             Some(BaoFileStorage::Complete(x)) => x.data.read_bytes_at(offset, size),
-            None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
+            None => Err(io::Error::other("handle poisoned")),
         }
     }
 }
@@ -598,7 +598,7 @@ impl ReadAt for OutboardReader {
             Some(BaoFileStorage::Complete(x)) => x.outboard.read_at(offset, buf),
             Some(BaoFileStorage::PartialMem(x)) => x.outboard.read_at(offset, buf),
             Some(BaoFileStorage::Partial(x)) => x.outboard.read_at(offset, buf),
-            None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
+            None => Err(io::Error::other("handle poisoned")),
         }
     }
 }
@@ -706,7 +706,7 @@ impl BaoFileHandle {
             Some(BaoFileStorage::Complete(mem)) => Ok(mem.size()),
             Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.current_size()),
             Some(BaoFileStorage::Partial(file)) => file.current_size(),
-            None => Err(io::Error::new(io::ErrorKind::Other, "handle poisoned")),
+            None => Err(io::Error::other("handle poisoned")),
         }
     }
 
@@ -762,7 +762,7 @@ impl BaoFileHandle {
                 Err(e) => Err(e),
             }
         } else {
-            Err(io::Error::new(io::ErrorKind::Other, "handle poisoned"))
+            Err(io::Error::other("handle poisoned"))
         }
     }
 }

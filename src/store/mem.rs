@@ -41,7 +41,6 @@ use crate::{
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
-    util::channel::oneshot,
     Hash,
 };
 
@@ -177,7 +176,7 @@ impl Actor {
                     info!("    removing {:?}", tag);
                     false
                 });
-                tx.send(Ok(()));
+                tx.send(Ok(())).await.ok();
             }
             Command::RenameTag(cmd) => {
                 let RenameTagMsg {
@@ -192,8 +191,7 @@ impl Actor {
                         tx.send(Err(io::Error::new(
                             io::ErrorKind::NotFound,
                             format!("tag not found: {:?}", from),
-                        )
-                        .into()))
+                        )))
                             .await
                             .ok();
                         return None;

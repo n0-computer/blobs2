@@ -412,7 +412,7 @@ impl Blobs {
         self.sender
             .try_send(
                 ImportBytesMsg {
-                    tx: tx.into(),
+                    tx,
                     inner,
                 }
                 .into(),

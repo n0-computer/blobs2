@@ -206,7 +206,7 @@ impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for quic_rpc::channel
         match self {
             quic_rpc::channel::spsc::Sender::Tokio(tx) => tx
                 .send_progress(value)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+                .map_err(io::Error::other),
             quic_rpc::channel::spsc::Sender::Boxed(tx) => {
                 tx.try_send(value.into()).await?;
                 Ok(())
@@ -265,7 +265,7 @@ pub fn write_checksummed<P: AsRef<Path>, T: Serialize>(path: P, data: &T) -> io:
     buffer.extend_from_slice(&[0u8; 32]);
 
     // Serialize directly into buffer
-    postcard::to_io(data, &mut buffer).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    postcard::to_io(data, &mut buffer).map_err(io::Error::other)?;
 
     // Compute hash over data (skip first 32 bytes)
     let data_slice = &buffer[32..];
@@ -314,7 +314,7 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
     }
 
     let deserialized =
-        postcard::from_bytes(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        postcard::from_bytes(data).map_err(io::Error::other)?;
 
     Ok(deserialized)
 }
@@ -347,7 +347,7 @@ pub fn read_checksummed<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Resu
     }
 
     let deserialized =
-        postcard::from_bytes(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        postcard::from_bytes(data).map_err(|e| io::Error::other(e))?;
 
     Ok(deserialized)
 }

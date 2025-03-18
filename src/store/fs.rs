@@ -189,7 +189,7 @@ impl HashContext {
         self.db()
             .send(meta::Set { hash, state, tx }.into())
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         rx.await.map_err(|e| io::Error::other(""))??;
         Ok(())
     }
@@ -206,7 +206,7 @@ impl HashContext {
                     .db()
                     .get(hash)
                     .await
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
                 match res {
                     Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
                     None => Ok(BaoFileHandle::new_partial_mem(
@@ -384,7 +384,7 @@ impl Actor {
             InternalCommand::Dump(cmd) => {
                 self.db().send(cmd.into()).await.ok();
             }
-            InternalCommand::FinishImport(mut cmd) => {
+            InternalCommand::FinishImport(cmd) => {
                 if cmd.hash.as_bytes() == Hash::EMPTY.as_bytes() {
                     cmd.tx
                         .send(ImportProgress::Done { hash: cmd.hash })
@@ -658,11 +658,9 @@ async fn import_bao_impl(
             ranges = ChunkRanges::empty();
         }
         if let BaoContentItem::Leaf(leaf) = &item {
-            let leaf_range = chunk_range(&leaf);
-            if is_validated(size, &leaf_range) {
-                if size.get() != leaf.offset + leaf.data.len() as u64 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid size"));
-                }
+            let leaf_range = chunk_range(leaf);
+            if is_validated(size, &leaf_range) && size.get() != leaf.offset + leaf.data.len() as u64 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid size"));
             }
             ranges |= leaf_range;
         }
@@ -694,7 +692,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
             if let Err(cause) = export_bao_impl(cmd.inner, &cmd.tx, handle).await {
                 cmd.tx
                     .send(
-                        bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause))
+                        bao_tree::io::EncodeError::Io(io::Error::other(cause))
                             .into(),
                     )
                     .await
@@ -705,7 +703,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
             let cause = anyhow::anyhow!("failed to open file: {cause}");
             cmd.tx
                 .send(
-                    bao_tree::io::EncodeError::Io(io::Error::new(io::ErrorKind::Other, cause))
+                    bao_tree::io::EncodeError::Io(io::Error::other(cause))
                         .into(),
                 )
                 .await

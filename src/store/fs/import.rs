@@ -384,11 +384,11 @@ async fn import_path_impl(cmd: ImportPathMsg, options: Arc<Options>) -> io::Resu
         ..
     } = cmd;
     if !path.is_absolute() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute").into());
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path must be absolute"));
     }
     if !path.is_file() && !path.is_symlink() {
         return Err(
-            io::Error::new(io::ErrorKind::InvalidInput, "path is not a file or symlink").into(),
+            io::Error::new(io::ErrorKind::InvalidInput, "path is not a file or symlink"),
         );
     }
 
@@ -452,7 +452,7 @@ mod tests {
             .any(|x| matches!(&x, ImportProgress::Size { .. })));
         assert!(progress
             .iter()
-            .any(|x| matches!(&x, ImportProgress::CopyDone { .. })));
+            .any(|x| matches!(&x, ImportProgress::CopyDone)));
     }
 
     fn chunk_bytes(data: Bytes, chunk_size: usize) -> impl Iterator<Item = Bytes> {

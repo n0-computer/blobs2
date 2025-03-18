@@ -38,7 +38,7 @@ pub mod serde {
                 {
                     // For simplicity, create a generic error
                     // In a real app, you might want to parse the kind from the string
-                    Ok(io::Error::new(io::ErrorKind::Other, value))
+                    Ok(io::Error::other(value))
                 }
             }
 
