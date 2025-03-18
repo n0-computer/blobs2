@@ -15,7 +15,7 @@ use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    api::tags::{DeleteTags, ListOptions, TagInfo},
+    api::tags::{DeleteTags, ListTags, TagInfo},
     util::DD,
 };
 use crate::{
@@ -190,14 +190,7 @@ impl fmt::Debug for ImportPathMsg {
     }
 }
 
-/// Bulk query method: get the entire tags table    
-#[derive(derive_more::Debug)]
-pub struct ListTags {
-    pub options: ListOptions,
-    #[debug(skip)]
-    pub tx: oneshot::Sender<Vec<anyhow::Result<TagInfo>>>,
-}
-
+pub type ListTagsMsg = WithChannels<ListTags, StoreService>;
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Rename {
@@ -275,8 +268,8 @@ pub enum Request {
     ImportPath(ImportPath),
     #[rpc(tx = quic_rpc::channel::spsc::Sender<ExportProgress>)]
     ExportPath(ExportPath),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<anyhow::Result<TagInfo>>)]
-    ListTags(ListOptions),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<Vec<anyhow::Result<TagInfo>>>)]
+    ListTags(ListTags),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
     SetTag(SetTag),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
@@ -302,7 +295,7 @@ pub enum Command {
     ImportPath(ImportPathMsg),
     ExportPath(ExportPathMsg),
 
-    ListTags(ListTags),
+    ListTags(ListTagsMsg),
     RenameTag(RenameTagMsg),
     DeleteTags(DeleteTagsMsg),
     SetTag(SetTagMsg),

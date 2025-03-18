@@ -105,7 +105,7 @@ pub use crate::store::proto::CreateTagMsg;
 /// Modification method: remove a range of tags.
 pub use crate::store::proto::DeleteTagsMsg;
 /// Read method: list a range of tags.
-pub use crate::store::proto::ListTags;
+pub use crate::store::proto::ListTagsMsg;
 /// Modification method: rename a tag.
 pub use crate::store::proto::RenameTagMsg;
 /// Modification method: set a tag to a value, or remove it.
@@ -116,7 +116,7 @@ pub use crate::store::proto::SetTagMsg;
 pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
-    ListTags(ListTags),
+    ListTags(ListTagsMsg),
     Blobs(Blobs),
 }
 

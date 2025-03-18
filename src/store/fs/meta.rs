@@ -13,7 +13,7 @@ use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
     store::{
-        api::tags::{DeleteTags, ListOptions, TagInfo},
+        api::tags::{DeleteTags, ListTags, TagInfo},
         proto::{CreateTag, Rename, SetTag},
     },
     util::channel::{mpsc, oneshot},
@@ -162,18 +162,18 @@ impl Dump {
     }
 }
 
-impl ListTags {
-    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
-        let ListTags {
-            options:
-                ListOptions {
+    async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> ActorResult<()> {
+        let ListTagsMsg {
+            inner:
+                ListTags {
                     from,
                     to,
                     raw,
                     hash_seq,
                 },
             tx,
-        } = self;
+            ..
+        } = msg;
         let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
         let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
         let mut res = Vec::new();
@@ -195,10 +195,9 @@ impl ListTags {
                 }
             }
         }
-        tx.send(res);
+        tx.send(res).await.ok();
         Ok(())
     }
-}
 
 impl Blobs {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
@@ -358,8 +357,8 @@ impl Actor {
         match cmd {
             ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
             ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
-            ReadOnlyCommand::ListTags(cmd) => cmd.handle(tables),
             ReadOnlyCommand::Blobs(cmd) => cmd.handle(tables),
+            ReadOnlyCommand::ListTags(cmd) => handle_list_tags(cmd, tables).await,
         }
     }
 

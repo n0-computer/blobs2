@@ -27,7 +27,7 @@ use tokio::{
 use tracing::{error, info, instrument};
 
 use super::{
-    api::tags::{ListOptions, TagInfo},
+    api::tags::{ListTags, TagInfo},
     util::QuicRpcSenderProgressExt,
 };
 use crate::{
@@ -200,15 +200,16 @@ impl Actor {
                 tags.insert(to, value);
             }
             Command::ListTags(cmd) => {
-                let ListTags {
-                    options:
-                        ListOptions {
+                let ListTagsMsg {
+                    inner:
+                        ListTags {
                             from,
                             to,
                             raw,
                             hash_seq,
                         },
                     tx,
+                    ..
                 } = cmd;
                 let tags = self
                     .state
@@ -233,7 +234,7 @@ impl Actor {
                         format: value.format,
                     })
                     .map(Ok);
-                tx.send(tags.collect());
+                tx.send(tags.collect()).await.ok();
             }
             Command::SetTag(SetTagMsg {
                 inner: SetTag { name: tag, value },
