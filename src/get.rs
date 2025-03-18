@@ -213,9 +213,7 @@ pub mod fsm {
             match cause {
                 ConnectedNextError::Write(cause) => cause.into(),
                 ConnectedNextError::Io(cause) => cause,
-                ConnectedNextError::PostcardSer(cause) => {
-                    io::Error::other(cause)
-                }
+                ConnectedNextError::PostcardSer(cause) => io::Error::other(cause),
                 _ => io::Error::other(cause),
             }
         }

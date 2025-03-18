@@ -259,6 +259,7 @@ impl fmt::Debug for SyncDbMsg {
 pub struct StoreService;
 impl quic_rpc::Service for StoreService {}
 
+#[allow(dead_code)]
 #[rpc_requests(StoreService, RequestMsg)]
 #[derive(Debug)]
 pub enum Request {

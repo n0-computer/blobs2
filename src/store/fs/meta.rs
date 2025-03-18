@@ -1,4 +1,5 @@
 //! The metadata database
+#![allow(clippy::result_large_err)]
 use std::{
     io,
     ops::{Bound, Deref, DerefMut},
@@ -36,6 +37,7 @@ use crate::store::{proto::ShutdownMsg, util::Tag, Hash, IROH_BLOCK_SIZE};
 ///
 /// What can go wrong are various things with redb, as well as io errors related
 /// to files other than redb.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, thiserror::Error)]
 pub enum ActorError {
     #[error("table error: {0}")]
@@ -93,7 +95,7 @@ impl Db {
         self.sender
             .send(cmd)
             .await
-            .map_err(|e| io::Error::other("actor down"))?;
+            .map_err(|_e| io::Error::other("actor down"))?;
         Ok(())
     }
 }
@@ -412,7 +414,7 @@ impl Actor {
         let SetTagMsg {
             inner: SetTag { name: tag, value },
             tx,
-            rx,
+            ..
         } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
         tx.send(res.map_err(|_| io::Error::other("storage")))
@@ -467,7 +469,9 @@ impl Actor {
                 tx.send(Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "tag not found",
-                ))).await.ok();
+                )))
+                .await
+                .ok();
                 return Ok(());
             }
         };

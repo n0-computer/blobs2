@@ -68,7 +68,7 @@ use tracing::{error, instrument, trace};
 use crate::{
     store::{
         bitfield::is_validated,
-        util::{FixedSize, MemOrFile, SenderProgressExt, ValueOrPoisioned},
+        util::{FixedSize, MemOrFile, ValueOrPoisioned},
         Hash,
     },
     util::channel::{mpsc, oneshot},
@@ -178,7 +178,7 @@ impl HashContext {
                 .into(),
             )
             .await?;
-        rx.await.map_err(|e| io::Error::other(""))??;
+        rx.await.map_err(|_e| io::Error::other(""))??;
         Ok(())
     }
 
@@ -190,7 +190,7 @@ impl HashContext {
             .send(meta::Set { hash, state, tx }.into())
             .await
             .map_err(io::Error::other)?;
-        rx.await.map_err(|e| io::Error::other(""))??;
+        rx.await.map_err(|_e| io::Error::other(""))??;
         Ok(())
     }
 
@@ -202,11 +202,7 @@ impl HashContext {
         let res = self
             .slot
             .get_or_create(|| async {
-                let res = self
-                    .db()
-                    .get(hash)
-                    .await
-                    .map_err(io::Error::other)?;
+                let res = self.db().get(hash).await.map_err(io::Error::other)?;
                 match res {
                     Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
                     None => Ok(BaoFileHandle::new_partial_mem(
@@ -659,7 +655,8 @@ async fn import_bao_impl(
         }
         if let BaoContentItem::Leaf(leaf) = &item {
             let leaf_range = chunk_range(leaf);
-            if is_validated(size, &leaf_range) && size.get() != leaf.offset + leaf.data.len() as u64 {
+            if is_validated(size, &leaf_range) && size.get() != leaf.offset + leaf.data.len() as u64
+            {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid size"));
             }
             ranges |= leaf_range;
@@ -691,10 +688,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
         Ok(handle) => {
             if let Err(cause) = export_bao_impl(cmd.inner, &cmd.tx, handle).await {
                 cmd.tx
-                    .send(
-                        bao_tree::io::EncodeError::Io(io::Error::other(cause))
-                            .into(),
-                    )
+                    .send(bao_tree::io::EncodeError::Io(io::Error::other(cause)).into())
                     .await
                     .ok();
             }
@@ -702,10 +696,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
         Err(cause) => {
             let cause = anyhow::anyhow!("failed to open file: {cause}");
             cmd.tx
-                .send(
-                    bao_tree::io::EncodeError::Io(io::Error::other(cause))
-                        .into(),
-                )
+                .send(bao_tree::io::EncodeError::Io(io::Error::other(cause)).into())
                 .await
                 .ok();
         }
@@ -833,7 +824,7 @@ async fn copy_with_progress(
         target.write_all(buf)?;
         tx.send_progress(ExportProgress::CopyProgress { offset })
             .await
-            .map_err(|e| io::Error::other(""))?;
+            .map_err(|_e| io::Error::other(""))?;
         yield_now().await;
         offset += buf.len() as u64;
     }

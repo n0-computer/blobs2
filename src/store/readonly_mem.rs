@@ -15,11 +15,8 @@ use tokio::task::{JoinError, JoinSet};
 use super::util::QuicRpcSenderProgressExt;
 use crate::{
     store::{
-        bitfield::Bitfield,
-        mem::CompleteStorage,
-        proto::*,
-        util::{observer::Observable, SenderProgressExt},
-        Store, IROH_BLOCK_SIZE,
+        bitfield::Bitfield, mem::CompleteStorage, proto::*, util::observer::Observable, Store,
+        IROH_BLOCK_SIZE,
     },
     util::channel::mpsc,
     Hash,
@@ -80,7 +77,7 @@ impl Actor {
             Command::ExportBao(ExportBaoMsg {
                 inner: ExportBao { hash, ranges },
                 tx,
-                rx,
+                ..
             }) => {
                 let entry = self
                     .data
@@ -210,7 +207,7 @@ async fn export_path_impl(
         file.write_all(buf)?;
         tx.send_progress(ExportProgress::CopyProgress { offset })
             .await
-            .map_err(|e| io::Error::other("error"))?;
+            .map_err(|_e| io::Error::other("error"))?;
         yield_now().await;
     }
     Ok(())

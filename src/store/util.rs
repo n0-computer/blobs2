@@ -204,9 +204,9 @@ pub trait QuicRpcSenderProgressExt<T> {
 impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for quic_rpc::channel::spsc::Sender<T> {
     async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()> {
         match self {
-            quic_rpc::channel::spsc::Sender::Tokio(tx) => tx
-                .send_progress(value)
-                .map_err(io::Error::other),
+            quic_rpc::channel::spsc::Sender::Tokio(tx) => {
+                tx.send_progress(value).map_err(io::Error::other)
+            }
             quic_rpc::channel::spsc::Sender::Boxed(tx) => {
                 tx.try_send(value.into()).await?;
                 Ok(())
@@ -313,8 +313,7 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
     }
 
-    let deserialized =
-        postcard::from_bytes(data).map_err(io::Error::other)?;
+    let deserialized = postcard::from_bytes(data).map_err(io::Error::other)?;
 
     Ok(deserialized)
 }
@@ -346,8 +345,7 @@ pub fn read_checksummed<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Resu
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Hash mismatch"));
     }
 
-    let deserialized =
-        postcard::from_bytes(data).map_err(io::Error::other)?;
+    let deserialized = postcard::from_bytes(data).map_err(io::Error::other)?;
 
     Ok(deserialized)
 }

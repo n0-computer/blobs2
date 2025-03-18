@@ -267,8 +267,8 @@ pub mod tags {
                     .into(),
                 )
                 .await
-                .map_err(|e| io::Error::other("error"))?;
-            rx.await.map_err(|e| io::Error::other("error"))?
+                .map_err(|_e| io::Error::other("error"))?;
+            rx.await.map_err(|_e| io::Error::other("error"))?
         }
 
         pub async fn set(
@@ -326,9 +326,9 @@ pub mod tags {
                     }
                     .into(),
                 )
-                .map_err(|e| io::Error::other("error"))
+                .map_err(|_e| io::Error::other("error"))
                 .await?;
-            rx.await.map_err(|e| io::Error::other("error"))?
+            rx.await.map_err(|_e| io::Error::other("error"))?
         }
 
         /// Deletes a tag.
@@ -376,8 +376,8 @@ pub mod tags {
                     .into(),
                 )
                 .await
-                .map_err(|e| io::Error::other("error"))?;
-            rx.await.map_err(|e| io::Error::other("error"))?
+                .map_err(|_e| io::Error::other("error"))?;
+            rx.await.map_err(|_e| io::Error::other("error"))?
         }
 
         /// Rename a tag atomically
@@ -410,13 +410,7 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
         };
         self.sender
-            .try_send(
-                ImportBytesMsg {
-                    tx,
-                    inner,
-                }
-                .into(),
-            )
+            .try_send(ImportBytesMsg { tx, inner }.into())
             .ok();
         ImportResult { rx }
     }

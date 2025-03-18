@@ -143,7 +143,7 @@ impl Actor {
             Command::ExportBao(ExportBaoMsg {
                 inner: ExportBao { hash, ranges },
                 tx,
-                rx,
+                ..
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks
@@ -157,7 +157,7 @@ impl Actor {
                 let DeleteTagsMsg {
                     inner: DeleteTags { from, to },
                     tx,
-                    rx,
+                    ..
                 } = cmd;
                 info!("deleting tags from {:?} to {:?}", from, to);
                 // state.tags.remove(&from.unwrap());
@@ -192,8 +192,8 @@ impl Actor {
                             io::ErrorKind::NotFound,
                             format!("tag not found: {:?}", from),
                         )))
-                            .await
-                            .ok();
+                        .await
+                        .ok();
                         return None;
                     }
                 };
@@ -238,7 +238,7 @@ impl Actor {
             Command::SetTag(SetTagMsg {
                 inner: SetTag { name: tag, value },
                 tx,
-                rx,
+                ..
             }) => {
                 self.state.tags.insert(tag, value);
                 tx.send(Ok(())).await.ok();
@@ -493,7 +493,7 @@ async fn export_path_impl(
         file.write_all(buf)?;
         tx.send_progress(ExportProgress::CopyProgress { offset })
             .await
-            .map_err(|e| io::Error::other(""))?;
+            .map_err(|_e| io::Error::other(""))?;
         yield_now().await;
     }
     Ok(())

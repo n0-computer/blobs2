@@ -751,7 +751,7 @@ impl BaoFileHandle {
             .sender
             .reserve()
             .await
-            .map_err(|e| io::Error::other("reserve"))?;
+            .map_err(|_e| io::Error::other("reserve"))?;
         let mut guard = self.storage.write().unwrap();
         if let Some(state) = guard.take() {
             match state.write_batch(size, batch, ranges, ctx, &self.hash, permit) {
