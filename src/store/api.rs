@@ -30,6 +30,7 @@ use tracing::trace;
 
 use super::{BlobFormat, Blobs};
 use crate::{
+    get::request,
     store::{
         api,
         bitfield::Bitfield,
@@ -447,28 +448,46 @@ impl Blobs {
             data.len(),
             data.addr_short()
         );
-        let (tx, rx) = spsc::channel(32);
         let inner = ImportBytes {
             data,
             format: crate::BlobFormat::Raw,
         };
-        let fut = self.sender.local().unwrap().send((inner, tx));
+        let request = self.sender.request();
         ImportResult::new(async move {
-            fut.await?;
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((inner, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(inner).await?;
+                    rx.into()
+                }
+            };
             Ok(rx)
         })
     }
 
     pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        let (tx, rx) = spsc::channel(32);
         let inner = ImportPath {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
         };
-        let res = self.sender.local().unwrap().send((inner, tx));
+        let request = self.sender.request();
         ImportResult::new(async move {
-            res.await?;
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((inner, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(inner).await?;
+                    rx.into()
+                }
+            };
             Ok(rx)
         })
     }
@@ -494,20 +513,38 @@ impl Blobs {
             data,
             format: crate::BlobFormat::Raw,
         };
-        let (tx, rx) = spsc::channel(32);
-        let res = self.sender.local().unwrap().send((inner, tx));
+        let request = self.sender.request();
         ImportResult::new(async move {
-            res.await?;
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((inner, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(inner).await?;
+                    rx.into()
+                }
+            };
             Ok(rx)
         })
     }
 
     pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
-        let (tx, rx) = mpsc::channel(32);
         let inner = ExportBao { hash, ranges };
-        let fut = self.sender.local().unwrap().send((inner, tx));
+        let request = self.sender.request();
         ExportBaoResult::new(async move {
-            fut.await?;
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((inner, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(inner).await?;
+                    rx.into()
+                }
+            };
             io::Result::Ok(rx)
         })
     }
@@ -547,15 +584,24 @@ impl Blobs {
     }
 
     pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
-        let (tx, rx) = mpsc::channel(32);
         let cmd = ExportPath {
             hash,
             mode: ExportMode::Copy,
             target: target.as_ref().to_owned(),
         };
-        let res = self.sender.local().unwrap().send((cmd, tx));
+        let request = self.sender.request();
         ExportPathResult::new(async move {
-            res.await?;
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((cmd, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(cmd).await?;
+                    rx.into()
+                }
+            };
             Ok(rx)
         })
     }
@@ -610,8 +656,8 @@ impl Blobs {
     ) -> anyhow::Result<()> {
         let hash = hash.into();
         let (tx, rx) = oneshot::channel();
-        let inner = ImportBao { hash, size };
-        self.sender.local().unwrap().send((inner, tx, data)).await?;
+        let msg = ImportBao { hash, size };
+        self.sender.local().unwrap().send((msg, tx, data)).await?;
         rx.await??;
         Ok(())
     }
@@ -721,12 +767,12 @@ impl Stream for ObserveResult {
 }
 
 pub struct ExportPathResult {
-    inner: n0_future::future::Boxed<io::Result<mpsc::Receiver<ExportProgress>>>,
+    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<ExportProgress>>>,
 }
 
 impl ExportPathResult {
     fn new(
-        fut: impl Future<Output = io::Result<mpsc::Receiver<ExportProgress>>> + Send + 'static,
+        fut: impl Future<Output = io::Result<spsc::Receiver<ExportProgress>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -736,7 +782,7 @@ impl ExportPathResult {
     pub async fn finish(self) -> api::Result<()> {
         let mut rx = self.inner.await?;
         loop {
-            match rx.recv().await {
+            match rx.recv().await? {
                 Some(ExportProgress::Done) => break Ok(()),
                 Some(ExportProgress::Error { cause }) => break Err(cause),
                 _ => {}
@@ -746,12 +792,12 @@ impl ExportPathResult {
 }
 
 pub struct ExportBaoResult {
-    inner: n0_future::future::Boxed<io::Result<mpsc::Receiver<EncodedItem>>>,
+    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoResult {
     fn new(
-        fut: impl Future<Output = io::Result<mpsc::Receiver<EncodedItem>>> + Send + 'static,
+        fut: impl Future<Output = io::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -770,7 +816,7 @@ impl ExportBaoResult {
     pub async fn data_to_bytes(self) -> io::Result<Bytes> {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
-        while let Some(item) = rx.recv().await {
+        while let Some(item) = rx.recv().await? {
             match item {
                 EncodedItem::Leaf(leaf) => {
                     data.push(leaf.data);
@@ -795,7 +841,7 @@ impl ExportBaoResult {
     pub async fn data_to_vec(self) -> io::Result<Vec<u8>> {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
-        while let Some(item) = rx.recv().await {
+        while let Some(item) = rx.recv().await? {
             match item {
                 EncodedItem::Leaf(leaf) => {
                     data.extend_from_slice(&leaf.data);
@@ -811,7 +857,7 @@ impl ExportBaoResult {
 
     pub async fn write_quinn(self, target: &mut quinn::SendStream) -> io::Result<()> {
         let mut rx = self.inner.await?;
-        while let Some(item) = rx.recv().await {
+        while let Some(item) = rx.recv().await? {
             match item {
                 EncodedItem::Size(size) => {
                     target.write_u64_le(size).await?;
@@ -859,7 +905,7 @@ impl ExportBaoResult {
                     return;
                 }
             };
-            while let Some(item) = rx.recv().await {
+            while let Ok(Some(item)) = rx.recv().await {
                 co.yield_(item).await;
             }
         })

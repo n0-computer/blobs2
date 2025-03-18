@@ -33,7 +33,7 @@ self_cell = "1.1.0"
 genawaiter = { version = "0.99.1", features = ["futures03"] }
 iroh-base = "0.33.0"
 reflink-copy = "0.1.24"
-quic-rpc = { path = "../quic-rpc", features = ["rpc"], default-features = false }
+quic-rpc = { path = "../quic-rpc", features = ["rpc", "test"], default-features = false }
 quic-rpc-derive = { path = "../quic-rpc/quic-rpc-derive", default-features = false }
 
 [dev-dependencies]

@@ -2952,8 +2952,12 @@ dependencies = [
 name = "quic-rpc"
 version = "0.50.0"
 dependencies = [
+ "anyhow",
+ "futures-buffered",
  "iroh-quinn",
  "postcard",
+ "rcgen",
+ "rustls",
  "serde",
  "smallvec",
  "tokio",

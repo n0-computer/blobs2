@@ -1,9 +1,13 @@
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
 use blobs2::{
-    store::{api::tags::TagInfo, fs::FsStore, Tags},
+    store::{api::tags::TagInfo, fs::FsStore, Store, Tags},
     BlobFormat, Hash, HashAndFormat,
 };
 use futures_lite::StreamExt;
 use n0_future::Stream;
+use quinn::rustls::{quic, server};
+use serde::ser;
 use testresult::TestResult;
 
 async fn to_vec<T>(
@@ -136,4 +140,23 @@ async fn tags_smoke_fs() -> TestResult<()> {
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
     tags_smoke(store.tags()).await
+}
+
+#[tokio::test]
+async fn tags_smoke_fs_rpc() -> TestResult<()> {
+    let server_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345));
+    let (server, cert) = quic_rpc::util::make_server_endpoint(server_addr)?;
+    let client = quic_rpc::util::make_client_endpoint(
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)),
+        &[cert.as_ref()],
+    )?;
+    let td = tempfile::tempdir()?;
+    let store = FsStore::load(td.path().join("blobs.db")).await?;
+    let store2 = store.clone();
+    tokio::spawn(store2.listen(server));
+    let api = Store::connect(client, server_addr);
+    api.tags().set("test", Hash::new("test")).await?;
+    let res = api.tags().get("test").await?;
+    assert_eq!(res, Some(TagInfo::new("test", Hash::new("test"))));
+    Ok(())
 }
