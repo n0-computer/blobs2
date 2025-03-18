@@ -12,31 +12,66 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        BaoContentItem, EncodeError,
+        BaoContentItem,
     },
     BaoTree, ChunkRanges,
 };
 use bytes::Bytes;
+use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use quic_rpc::channel::{none::NoReceiver, oneshot, spsc};
+use quic_rpc::{
+    channel::{oneshot, spsc},
+    ServiceRequest,
+};
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
 use super::{BlobFormat, Blobs};
 use crate::{
     store::{
+        api,
         bitfield::Bitfield,
         proto::*,
-        util::{
-            observer::{Aggregator, Observer},
-            SliceInfoExt,
-        },
+        util::{observer::Aggregator, SliceInfoExt},
         IROH_BLOCK_SIZE,
     },
     util::channel::mpsc,
     Hash,
 };
+
+#[derive(Debug, derive_more::Display, derive_more::From, Serialize, Deserialize)]
+pub enum Error {
+    #[serde(with = "crate::util::serde::io_error_serde")]
+    Io(io::Error),
+}
+
+impl Error {
+    pub fn io(
+        kind: io::ErrorKind,
+        msg: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        Self::Io(io::Error::new(kind, msg.into()))
+    }
+
+    pub fn other<E>(msg: E) -> Self
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self::Io(io::Error::other(msg.into()))
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(e) => Some(e),
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod tags {
     use std::{
@@ -44,22 +79,22 @@ pub mod tags {
         ops::{Bound, RangeBounds},
     };
 
-    use anyhow::Result;
     use n0_future::{Stream, StreamExt, TryFutureExt};
-    use quic_rpc::channel::none::NoReceiver;
+    use quic_rpc::{channel::oneshot, ServiceRequest};
     use serde::{Deserialize, Serialize};
 
     use super::super::Tags;
     use crate::{
         store::{
-            proto::{DeleteTagsMsg, ListTagsMsg, Rename, RenameTagMsg, SetTag, SetTagMsg},
+            api,
+            proto::{Rename, SetTag},
             util::Tag,
         },
         BlobFormat, Hash, HashAndFormat,
     };
 
     /// Information about a tag.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TagInfo {
         /// Name of the tag
         pub name: Tag,
@@ -239,33 +274,48 @@ pub mod tags {
         pub async fn list_with_opts(
             &self,
             options: ListTags,
-        ) -> Result<impl Stream<Item = Result<TagInfo>>> {
-            let (tx, rx) = quic_rpc::channel::oneshot::channel();
-            self.sender.send((options, tx)).await?;
+        ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+            let (tx, rx) = oneshot::channel();
+            let rx = match self.sender.request().await? {
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+                ServiceRequest::Local(l) => {
+                    l.send((options, tx)).await?;
+                    rx
+                }
+            };
             let res = rx.await?;
             Ok(futures_lite::stream::iter(res))
         }
 
         /// Get the value of a single tag
-        pub async fn get(&self, name: impl AsRef<[u8]>) -> Result<Option<TagInfo>> {
+        pub async fn get(&self, name: impl AsRef<[u8]>) -> super::Result<Option<TagInfo>> {
             let mut stream = self.list_with_opts(ListTags::single(name.as_ref())).await?;
             stream.next().await.transpose()
         }
 
-        pub async fn set_with_opts(&self, options: SetTag) -> io::Result<()> {
-            let (tx, rx) = quic_rpc::channel::oneshot::channel();
-            self.sender
-                .send((options, tx))
-                .await
-                .map_err(|_e| io::Error::other("error"))?;
-            rx.await.map_err(|_e| io::Error::other("error"))?
+        pub async fn set_with_opts(&self, msg: SetTag) -> super::Result<()> {
+            let rx = match self.sender.request().await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = oneshot::channel();
+                    c.send((msg, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(msg).await?;
+                    rx.into()
+                }
+            };
+            Ok(rx.await??)
         }
 
         pub async fn set(
             &self,
             name: impl AsRef<[u8]>,
             value: impl Into<HashAndFormat>,
-        ) -> io::Result<()> {
+        ) -> super::Result<()> {
             self.set_with_opts(SetTag {
                 name: Tag::from(name.as_ref()),
                 value: value.into(),
@@ -277,7 +327,7 @@ pub mod tags {
         pub async fn list_range<R, E>(
             &self,
             range: R,
-        ) -> Result<impl Stream<Item = Result<TagInfo>>>
+        ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>>
         where
             R: RangeBounds<E>,
             E: AsRef<[u8]>,
@@ -289,38 +339,46 @@ pub mod tags {
         pub async fn list_prefix(
             &self,
             prefix: impl AsRef<[u8]>,
-        ) -> Result<impl Stream<Item = Result<TagInfo>>> {
+        ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
             self.list_with_opts(ListTags::prefix(prefix.as_ref())).await
         }
 
         /// Lists all tags.
-        pub async fn list(&self) -> Result<impl Stream<Item = Result<TagInfo>>> {
+        pub async fn list(&self) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
             self.list_with_opts(ListTags::all()).await
         }
 
         /// Lists all tags with a hash_seq format.
-        pub async fn list_hash_seq(&self) -> Result<impl Stream<Item = Result<TagInfo>>> {
+        pub async fn list_hash_seq(
+            &self,
+        ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
             self.list_with_opts(ListTags::hash_seq()).await
         }
 
         /// Deletes a tag.
-        pub async fn delete_with_opts(&self, options: DeleteTags) -> io::Result<()> {
-            let (tx, rx) = quic_rpc::channel::oneshot::channel();
-            self.sender
-                .send((options, tx))
-                .map_err(|_e| io::Error::other("error"))
-                .await?;
+        pub async fn delete_with_opts(&self, options: DeleteTags) -> api::Result<()> {
+            let rx = match self.sender.request().await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            };
             rx.await.map_err(|_e| io::Error::other("error"))?
         }
 
         /// Deletes a tag.
-        pub async fn delete(&self, name: impl AsRef<[u8]>) -> io::Result<()> {
+        pub async fn delete(&self, name: impl AsRef<[u8]>) -> api::Result<()> {
             self.delete_with_opts(DeleteTags::single(name.as_ref()))
                 .await
         }
 
         /// Deletes a range of tags.
-        pub async fn delete_range<R, E>(&self, range: R) -> io::Result<()>
+        pub async fn delete_range<R, E>(&self, range: R) -> api::Result<()>
         where
             R: RangeBounds<E>,
             E: AsRef<[u8]>,
@@ -329,13 +387,13 @@ pub mod tags {
         }
 
         /// Delete all tags with the given prefix.
-        pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> io::Result<()> {
+        pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> api::Result<()> {
             self.delete_with_opts(DeleteTags::prefix(prefix.as_ref()))
                 .await
         }
 
         /// Delete all tags. Use with care. After this, all data will be garbage collected.
-        pub async fn delete_all(&self) -> io::Result<()> {
+        pub async fn delete_all(&self) -> api::Result<()> {
             self.delete_with_opts(DeleteTags {
                 from: None,
                 to: None,
@@ -346,19 +404,29 @@ pub mod tags {
         /// Rename a tag atomically
         ///
         /// If the tag does not exist, this will return an error.
-        pub async fn rename_with_opts(&self, options: Rename) -> io::Result<()> {
-            let (tx, rx) = quic_rpc::channel::oneshot::channel();
-            self.sender
-                .send((options, tx))
-                .await
-                .map_err(|_e| io::Error::other("error"))?;
-            rx.await.map_err(|_e| io::Error::other("error"))?
+        pub async fn rename_with_opts(&self, options: Rename) -> api::Result<()> {
+            let rx = match self.sender.request().await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            };
+            rx.await?
         }
 
         /// Rename a tag atomically
         ///
         /// If the tag does not exist, this will return an error.
-        pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> io::Result<()> {
+        pub async fn rename(
+            &self,
+            from: impl AsRef<[u8]>,
+            to: impl AsRef<[u8]>,
+        ) -> api::Result<()> {
             self.rename_with_opts(Rename {
                 from: Tag::from(from.as_ref()),
                 to: Tag::from(to.as_ref()),
@@ -369,34 +437,40 @@ pub mod tags {
 }
 
 impl Blobs {
-    pub async fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
-        self.import_bytes_impl(data.into()).await
+    pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
+        self.import_bytes_impl(data.into())
     }
 
-    async fn import_bytes_impl(&self, data: bytes::Bytes) -> ImportResult {
+    fn import_bytes_impl(&self, data: bytes::Bytes) -> ImportResult {
         trace!(
             "import_bytes size={} addr={}",
             data.len(),
             data.addr_short()
         );
-        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
+        let (tx, rx) = spsc::channel(32);
         let inner = ImportBytes {
             data,
             format: crate::BlobFormat::Raw,
         };
-        self.sender.send((inner, tx)).await.ok();
-        ImportResult { rx }
+        let fut = self.sender.local().unwrap().send((inner, tx));
+        ImportResult::new(async move {
+            fut.await?;
+            Ok(rx)
+        })
     }
 
-    pub async fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
+    pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
+        let (tx, rx) = spsc::channel(32);
         let inner = ImportPath {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
         };
-        self.sender.send((inner, tx)).await.ok();
-        ImportResult { rx }
+        let res = self.sender.local().unwrap().send((inner, tx));
+        ImportResult::new(async move {
+            res.await?;
+            Ok(rx)
+        })
     }
 
     pub async fn import_byte_stream(
@@ -420,22 +494,27 @@ impl Blobs {
             data,
             format: crate::BlobFormat::Raw,
         };
-        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
-        self.sender.send((inner, tx)).await.ok();
-        ImportResult { rx }
+        let (tx, rx) = spsc::channel(32);
+        let res = self.sender.local().unwrap().send((inner, tx));
+        ImportResult::new(async move {
+            res.await?;
+            Ok(rx)
+        })
     }
 
-    pub async fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
+    pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
         let (tx, rx) = mpsc::channel(32);
         let inner = ExportBao { hash, ranges };
-        self.sender.send((inner, tx)).await.ok();
-        ExportBaoResult { rx }
+        let fut = self.sender.local().unwrap().send((inner, tx));
+        ExportBaoResult::new(async move {
+            fut.await?;
+            io::Result::Ok(rx)
+        })
     }
 
     /// Helper to just export the entire blob into a Bytes
     pub async fn export_bytes(&self, hash: impl Into<Hash>) -> io::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
-            .await
             .data_to_bytes()
             .await
     }
@@ -456,26 +535,29 @@ impl Blobs {
             };
         }
         let (tx, rx) = spsc::channel(32);
-        self.sender.send((Observe { hash }, tx)).await.ok();
+        self.sender
+            .local()
+            .unwrap()
+            .send((Observe { hash }, tx))
+            .await
+            .ok();
         ObserveResult {
             rx: rx.try_into().unwrap(),
         }
     }
 
-    pub async fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
+    pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
         let (tx, rx) = mpsc::channel(32);
-        self.sender
-            .send((
-                ExportPath {
-                    hash,
-                    mode: ExportMode::Copy,
-                    target: target.as_ref().to_owned(),
-                },
-                tx,
-            ))
-            .await
-            .ok();
-        ExportPathResult { rx }
+        let cmd = ExportPath {
+            hash,
+            mode: ExportMode::Copy,
+            target: target.as_ref().to_owned(),
+        };
+        let res = self.sender.local().unwrap().send((cmd, tx));
+        ExportPathResult::new(async move {
+            res.await?;
+            Ok(rx)
+        })
     }
 
     // todo: export_path_with_opts
@@ -498,7 +580,11 @@ impl Blobs {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let inner = ImportBao { hash, size };
-        self.sender.send((inner, out_tx, rx)).await?;
+        self.sender
+            .local()
+            .unwrap()
+            .send((inner, out_tx, rx))
+            .await?;
         let reader = loop {
             match decoder.next().await {
                 ResponseDecoderNext::More((rest, item)) => {
@@ -523,9 +609,9 @@ impl Blobs {
         data: mpsc::Receiver<BaoContentItem>,
     ) -> anyhow::Result<()> {
         let hash = hash.into();
-        let (tx, rx) = quic_rpc::channel::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         let inner = ImportBao { hash, size };
-        self.sender.send((inner, tx, data)).await?;
+        self.sender.local().unwrap().send((inner, tx, data)).await?;
         rx.await??;
         Ok(())
     }
@@ -552,28 +638,56 @@ impl Blobs {
     }
 
     pub async fn sync_db(&self) -> anyhow::Result<()> {
-        let (tx, rx) = quic_rpc::channel::oneshot::channel();
-        self.sender.send((SyncDb, tx)).await?;
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = oneshot::channel();
+                c.send((SyncDb, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(SyncDb).await?;
+                rx.into()
+            }
+        };
         rx.await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        let (tx, rx) = quic_rpc::channel::oneshot::channel();
-        self.sender.send((Shutdown, tx)).await?;
+        let msg = Shutdown;
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                c.send((msg, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(msg).await?;
+                rx.into()
+            }
+        };
         rx.await?;
         Ok(())
     }
 }
 
 pub struct ImportResult {
-    rx: quic_rpc::channel::spsc::Receiver<ImportProgress>,
+    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<ImportProgress>>>,
 }
 
 impl ImportResult {
-    pub async fn hash(mut self) -> io::Result<Hash> {
+    fn new(
+        fut: impl Future<Output = io::Result<spsc::Receiver<ImportProgress>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn hash(self) -> io::Result<Hash> {
+        let mut rx = self.inner.await?;
         loop {
-            match self.rx.recv().await? {
+            match rx.recv().await? {
                 Some(ImportProgress::Done { hash }) => break Ok(hash),
                 Some(ImportProgress::Error { cause }) => break Err(cause),
                 _ => {}
@@ -607,49 +721,43 @@ impl Stream for ObserveResult {
 }
 
 pub struct ExportPathResult {
-    rx: mpsc::Receiver<ExportProgress>,
+    inner: n0_future::future::Boxed<io::Result<mpsc::Receiver<ExportProgress>>>,
 }
 
-impl Stream for ExportPathResult {
-    type Item = ExportProgress;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+impl ExportPathResult {
+    fn new(
+        fut: impl Future<Output = io::Result<mpsc::Receiver<ExportProgress>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
         }
     }
-}
 
-impl Future for ExportPathResult {
-    type Output = io::Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    pub async fn finish(self) -> api::Result<()> {
+        let mut rx = self.inner.await?;
         loop {
-            match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(ExportProgress::Done)) => break Poll::Ready(Ok(())),
-                Poll::Ready(Some(ExportProgress::Error { cause })) => {
-                    break Poll::Ready(Err(cause))
-                }
-                Poll::Ready(Some(_)) => continue,
-                Poll::Ready(None) => {
-                    break Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "export task ended unexpectedly",
-                    )))
-                }
-                Poll::Pending => break Poll::Pending,
+            match rx.recv().await {
+                Some(ExportProgress::Done) => break Ok(()),
+                Some(ExportProgress::Error { cause }) => break Err(cause),
+                _ => {}
             }
         }
     }
 }
 
 pub struct ExportBaoResult {
-    rx: mpsc::Receiver<EncodedItem>,
+    inner: n0_future::future::Boxed<io::Result<mpsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoResult {
+    fn new(
+        fut: impl Future<Output = io::Result<mpsc::Receiver<EncodedItem>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
     pub async fn bao_to_vec(self) -> io::Result<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
@@ -659,9 +767,10 @@ impl ExportBaoResult {
         Ok(data)
     }
 
-    pub async fn data_to_bytes(mut self) -> io::Result<Bytes> {
+    pub async fn data_to_bytes(self) -> io::Result<Bytes> {
+        let mut rx = self.inner.await?;
         let mut data = Vec::new();
-        while let Some(item) = self.rx.recv().await {
+        while let Some(item) = rx.recv().await {
             match item {
                 EncodedItem::Leaf(leaf) => {
                     data.push(leaf.data);
@@ -683,9 +792,10 @@ impl ExportBaoResult {
         }
     }
 
-    pub async fn data_to_vec(mut self) -> io::Result<Vec<u8>> {
+    pub async fn data_to_vec(self) -> io::Result<Vec<u8>> {
+        let mut rx = self.inner.await?;
         let mut data = Vec::new();
-        while let Some(item) = self.rx.recv().await {
+        while let Some(item) = rx.recv().await {
             match item {
                 EncodedItem::Leaf(leaf) => {
                     data.extend_from_slice(&leaf.data);
@@ -699,8 +809,9 @@ impl ExportBaoResult {
         Ok(data)
     }
 
-    pub async fn write_quinn(mut self, target: &mut quinn::SendStream) -> io::Result<()> {
-        while let Some(item) = self.rx.recv().await {
+    pub async fn write_quinn(self, target: &mut quinn::SendStream) -> io::Result<()> {
+        let mut rx = self.inner.await?;
+        while let Some(item) = rx.recv().await {
             match item {
                 EncodedItem::Size(size) => {
                     target.write_u64_le(size).await?;
@@ -722,7 +833,7 @@ impl ExportBaoResult {
     }
 
     pub fn into_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
-        self.filter_map(|item| match item {
+        self.stream().filter_map(|item| match item {
             EncodedItem::Size(size) => {
                 let size = size.to_le_bytes().to_vec().into();
                 Some(Ok(size))
@@ -738,37 +849,19 @@ impl ExportBaoResult {
             EncodedItem::Error(cause) => Some(Err(io::Error::from(cause))),
         })
     }
-}
 
-impl Future for ExportBaoResult {
-    type Output = Result<(), EncodeError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(EncodedItem::Done)) => break Poll::Ready(Ok(())),
-                Poll::Ready(Some(EncodedItem::Error(cause))) => break Poll::Ready(Err(cause)),
-                Poll::Ready(Some(_)) => continue,
-                Poll::Ready(None) => {
-                    break Poll::Ready(Err(EncodeError::Io(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "export task ended unexpectedly",
-                    ))))
+    pub fn stream(self) -> impl Stream<Item = EncodedItem> {
+        Gen::new(|co| async move {
+            let mut rx = match self.inner.await {
+                Ok(rx) => rx,
+                Err(cause) => {
+                    co.yield_(EncodedItem::Error(cause.into())).await;
+                    return;
                 }
-                Poll::Pending => break Poll::Pending,
+            };
+            while let Some(item) = rx.recv().await {
+                co.yield_(item).await;
             }
-        }
-    }
-}
-
-impl Stream for ExportBaoResult {
-    type Item = EncodedItem;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
+        })
     }
 }

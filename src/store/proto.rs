@@ -18,7 +18,10 @@ use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    api::tags::{DeleteTags, ListTags, TagInfo},
+    api::{
+        self,
+        tags::{DeleteTags, ListTags, TagInfo},
+    },
     util::DD,
 };
 use crate::{
@@ -84,9 +87,10 @@ pub type ImportBytesMsg = WithChannels<ImportBytes, StoreService>;
 /// Export the given ranges in bao format, with the iroh block size.
 ///
 /// The returned stream should be verified by the store.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExportBao {
     pub hash: Hash,
+    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
     pub ranges: ChunkRanges,
 }
 
@@ -104,7 +108,7 @@ impl HashSpecific for ExportBaoMsg {
 /// with zeros. If possible, a store implementation should try to write as a
 /// sparse file.
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExportPath {
     pub hash: Hash,
     pub mode: ExportMode,
@@ -191,11 +195,10 @@ pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 pub struct StoreService;
 impl quic_rpc::Service for StoreService {}
 
-#[allow(dead_code)]
 #[rpc_requests(StoreService, Command)]
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
-    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<io::Result<()>>)]
+    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<api::Result<()>>)]
     ImportBao(ImportBao),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
     ExportBao(ExportBao),
@@ -209,17 +212,17 @@ pub enum Request {
     ImportPath(ImportPath),
     #[rpc(tx = spsc::Sender<ExportProgress>)]
     ExportPath(ExportPath),
-    #[rpc(tx = oneshot::Sender<Vec<anyhow::Result<TagInfo>>>)]
+    #[rpc(tx = oneshot::Sender<Vec<api::Result<TagInfo>>>)]
     ListTags(ListTags),
-    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     SetTag(SetTag),
-    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     DeleteTags(DeleteTags),
-    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     RenameTag(Rename),
-    #[rpc(tx = oneshot::Sender<io::Result<Tag>>)]
+    #[rpc(tx = oneshot::Sender<api::Result<Tag>>)]
     CreateTag(CreateTag),
-    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]
     Shutdown(Shutdown),
@@ -276,21 +279,14 @@ impl From<io::Error> for ImportProgress {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ExportProgress {
-    Size {
-        size: u64,
-    },
-    CopyProgress {
-        offset: u64,
-    },
+    Size { size: u64 },
+    CopyProgress { offset: u64 },
     Done,
-    Error {
-        #[serde(with = "crate::util::serde::io_error_serde")]
-        cause: io::Error,
-    },
+    Error { cause: api::Error },
 }
 
-impl From<io::Error> for ExportProgress {
-    fn from(e: io::Error) -> Self {
+impl From<api::Error> for ExportProgress {
+    fn from(e: api::Error) -> Self {
         Self::Error { cause: e }
     }
 }

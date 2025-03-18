@@ -53,7 +53,7 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
         .await
         .expect("observe stream stopped");
     let root_ranges = ChunkRanges::all() - local_bitmap.ranges.clone();
-    let mut stream = store.export_bao(root, local_bitmap.ranges).await;
+    let mut stream = store.export_bao(root, local_bitmap.ranges).stream();
     let mut hashes = HashSet::new();
     hashes.insert(root);
     let mut ranges = BTreeMap::new();

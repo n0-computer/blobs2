@@ -13,7 +13,10 @@ use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
     store::{
-        api::tags::{DeleteTags, ListTags, TagInfo},
+        api::{
+            self,
+            tags::{DeleteTags, ListTags, TagInfo},
+        },
         proto::{CreateTag, Rename, SetTag},
     },
     util::channel::{mpsc, oneshot},
@@ -187,11 +190,11 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
                         hash: v.hash,
                         format: v.format,
                     };
-                    res.push(anyhow::Ok(info));
+                    res.push(crate::store::api::Result::Ok(info));
                 }
             }
             Err(e) => {
-                res.push(Err(e.into()));
+                res.push(Err(crate::store::api::Error::other(e)));
             }
         }
     }
@@ -416,7 +419,7 @@ impl Actor {
             ..
         } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
-        tx.send(res.map_err(|_| io::Error::other("storage")))
+        tx.send(res.map_err(|_| crate::store::api::Error::other("storage")))
             .await
             .ok();
         Ok(())
@@ -465,7 +468,7 @@ impl Actor {
         let value = match tables.tags.remove(from)? {
             Some(value) => value.value(),
             None => {
-                tx.send(Err(io::Error::new(
+                tx.send(Err(api::Error::io(
                     io::ErrorKind::NotFound,
                     "tag not found",
                 )))

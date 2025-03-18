@@ -62,6 +62,7 @@ use entry_state::{DataLocation, OutboardLocation};
 use import::{ImportEntry, ImportSource};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
+use quic_rpc::channel::spsc;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
@@ -86,6 +87,7 @@ use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 
 use super::{
+    api,
     proto::{self, *},
     util::{observer::Observer, QuicRpcSenderProgressExt},
     Store,
@@ -198,7 +200,7 @@ impl HashContext {
         Ok(())
     }
 
-    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> io::Result<BaoFileHandle> {
+    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> api::Result<BaoFileHandle> {
         let hash = hash.into();
         if hash == Hash::EMPTY {
             return Ok(self.ctx.empty.clone());
@@ -215,7 +217,8 @@ impl HashContext {
                     )),
                 }
             })
-            .await;
+            .await
+            .map_err(api::Error::from);
         trace!("{res:?}");
         res
     }
@@ -641,10 +644,10 @@ fn chunk_range(leaf: &Leaf) -> ChunkRanges {
 
 async fn import_bao_impl(
     size: NonZeroU64,
-    mut rx: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
+    mut rx: spsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     ctx: HashContext,
-) -> io::Result<()> {
+) -> api::Result<()> {
     trace!(
         "importing bao: {} {} bytes",
         handle.hash().fmt_short(),
@@ -663,7 +666,7 @@ async fn import_bao_impl(
             let leaf_range = chunk_range(leaf);
             if is_validated(size, &leaf_range) && size.get() != leaf.offset + leaf.data.len() as u64
             {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid size"));
+                return Err(api::Error::io(io::ErrorKind::InvalidData, "invalid size"));
             }
             ranges |= leaf_range;
         }
@@ -712,7 +715,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
 
 async fn export_bao_impl(
     cmd: ExportBao,
-    tx: &quic_rpc::channel::spsc::Sender<EncodedItem>,
+    tx: &spsc::Sender<EncodedItem>,
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
     let ExportBao { ranges, hash } = cmd;
@@ -723,7 +726,7 @@ async fn export_bao_impl(
     debug_assert!(handle.hash() == hash, "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
-    let quic_rpc::channel::spsc::Sender::Tokio(tx) = tx else {
+    let spsc::Sender::Tokio(tx) = tx else {
         panic!();
     };
     traverse_ranges_validated(data, outboard, &ranges, tx).await;
@@ -747,15 +750,15 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
 
 async fn export_path_impl(
     cmd: ExportPath,
-    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgress>,
     handle: BaoFileHandle,
     ctx: HashContext,
-) -> io::Result<()> {
+) -> api::Result<()> {
     let ExportPath { mode, target, .. } = cmd;
     let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
-            return Err(io::Error::new(
+            return Err(api::Error::io(
                 io::ErrorKind::NotFound,
                 "no complete entry found",
             ));
@@ -797,7 +800,7 @@ async fn export_path_impl(
                             let size = file.size;
                             copy_with_progress(&file, size, &mut target, tx).await?;
                         } else {
-                            return Err(cause);
+                            return Err(cause.into());
                         }
                     }
                 }
@@ -812,7 +815,9 @@ async fn export_path_impl(
             }
         },
     }
-    tx.send(ExportProgress::Done).await?;
+    tx.send(ExportProgress::Done)
+        .await
+        .map_err(|e| api::Error::other(e))?;
     Ok(())
 }
 
@@ -820,7 +825,7 @@ async fn copy_with_progress(
     file: impl ReadAt,
     size: u64,
     target: &mut impl Write,
-    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgress>,
 ) -> io::Result<()> {
     let mut offset = 0;
     let mut buf = vec![0u8; 1024 * 1024];
@@ -872,7 +877,7 @@ impl FsStore {
 }
 
 pub struct FsStore {
-    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
     db: mpsc::Sender<InternalCommand>,
 }
 
@@ -895,7 +900,10 @@ impl FsStore {
         sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
         db: mpsc::Sender<InternalCommand>,
     ) -> Self {
-        Self { sender, db }
+        Self {
+            sender: sender.into(),
+            db,
+        }
     }
 
     pub async fn dump(&self) -> anyhow::Result<()> {
@@ -1064,7 +1072,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).await.aggregated();
-            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
+            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1092,7 +1100,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).await.aggregated();
-            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
+            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
@@ -1125,7 +1133,7 @@ pub mod tests {
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).await.aggregated();
-            let actual_hash = store.import_path(&path).await.hash().await?;
+            let actual_hash = store.import_path(&path).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1147,10 +1155,10 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
+            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let out_path = testdir.path().join(format!("out-{}", size));
-            store.export_path(expected_hash, &out_path).await.await?;
+            store.export_path(expected_hash, &out_path).finish().await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
         }
@@ -1203,7 +1211,6 @@ pub mod tests {
                 let hash = Hash::new(&expected);
                 let actual = store
                     .export_bao(hash, ChunkRanges::all())
-                    .await
                     .data_to_vec()
                     .await?;
                 assert_eq!(&expected, &actual);
@@ -1248,7 +1255,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &just_size)?;
-                let actual = match store.export_bao(hash, ranges).await.bao_to_vec().await {
+                let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
                     Ok(actual) => actual,
                     Err(cause) => panic!("failed to export size={size}: {cause}"),
                 };
@@ -1316,7 +1323,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, expected) = create_n0_bao_full(&data, &ChunkRanges::all())?;
-                let actual = match store.export_bao(hash, ranges).await.bao_to_vec().await {
+                let actual = match store.export_bao(hash, ranges).bao_to_vec().await {
                     Ok(actual) => actual,
                     Err(cause) => panic!("failed to export size={size}: {cause}"),
                 };
@@ -1451,7 +1458,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let data = data;
-                store.import_bytes(data.clone()).await.hash().await?;
+                store.import_bytes(data.clone()).hash().await?;
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1464,7 +1471,6 @@ pub mod tests {
                 let hash = Hash::new(&expected);
                 let Ok(actual) = store
                     .export_bao(hash, ChunkRanges::all())
-                    .await
                     .data_to_vec()
                     .await
                 else {
@@ -1494,26 +1500,24 @@ pub mod tests {
         for size in sizes {
             let data = vec![0u8; size];
             let data = Bytes::from(data);
-            let hash = store.import_bytes(data.clone()).await.hash().await?;
+            let hash = store.import_bytes(data.clone()).hash().await?;
             data_by_hash.insert(hash, data);
             hashes.push(hash);
         }
         store.sync_db().await?;
         for hash in &hashes {
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export_path(*hash, path).await.await?;
+            store.export_path(*hash, path).finish().await?;
         }
         for hash in &hashes {
             let data = store
                 .export_bao(*hash, ChunkRanges::all())
-                .await
                 .data_to_vec()
                 .await
                 .unwrap();
             assert_eq!(data, data_by_hash[hash].to_vec());
             let bao = store
                 .export_bao(*hash, ChunkRanges::all())
-                .await
                 .bao_to_vec()
                 .await
                 .unwrap();

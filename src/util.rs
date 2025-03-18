@@ -45,4 +45,59 @@ pub mod serde {
             deserializer.deserialize_str(IoErrorVisitor)
         }
     }
+
+    // Module that handles io::Error serialization/deserialization
+    pub mod chunk_ranges_serde {
+
+        use std::{fmt, io};
+
+        use bao_tree::ChunkRanges;
+        use serde::{
+            de::{self, Visitor},
+            ser::SerializeSeq,
+            Deserializer, Serializer,
+        };
+        use smallvec::SmallVec;
+
+        pub fn serialize<S>(value: &ChunkRanges, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let value = value.boundaries();
+            let mut seq = serializer.serialize_seq(Some(value.len()))?;
+            for boundary in value {
+                seq.serialize_element(&boundary.0)?;
+            }
+            seq.end()
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<ChunkRanges, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct ChunkRangesVisitor;
+
+            impl<'de> Visitor<'de> for ChunkRangesVisitor {
+                type Value = ChunkRanges;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a list of chunk boundaries")
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    let mut boundaries = SmallVec::new();
+                    while let Some(boundary) = seq.next_element()? {
+                        boundaries.push(boundary);
+                    }
+                    ChunkRanges::new(boundaries)
+                        .ok_or_else(|| de::Error::custom("invalid chunk ranges"))
+                }
+            }
+
+            deserializer.deserialize_seq(ChunkRangesVisitor)
+        }
+    }
 }

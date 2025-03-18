@@ -28,7 +28,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
-use quic_rpc::channel::none::NoReceiver;
+use quic_rpc::channel::{none::NoReceiver, spsc};
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
 
@@ -105,7 +105,7 @@ pub struct ImportEntry {
 
 pub struct ImportEntryMsg {
     pub inner: ImportEntry,
-    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
+    pub tx: spsc::Sender<ImportProgress>,
 }
 
 impl Deref for ImportEntryMsg {
@@ -175,7 +175,7 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
 
 async fn import_bytes_tiny_impl(
     cmd: ImportBytes,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
     // send the required progress events
@@ -227,7 +227,7 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
 
 async fn import_byte_stream_impl(
     cmd: ImportByteStream,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let data = futures_lite::stream::iter(cmd.data).map(io::Result::Ok);
@@ -245,7 +245,7 @@ async fn import_byte_stream_impl(
 
 async fn get_import_source(
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<ImportProgress>,
     options: &Options,
 ) -> io::Result<ImportSource> {
     let mut stream = stream.fuse();
@@ -314,7 +314,7 @@ async fn get_import_source(
 async fn compute_outboard(
     source: ImportSource,
     options: Arc<Options>,
-    _tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    _tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
@@ -395,7 +395,7 @@ pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
 
 async fn import_path_impl(
     cmd: ImportPath,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let ImportPath { path, mode, format } = cmd;
@@ -462,9 +462,7 @@ mod tests {
         BlobFormat,
     };
 
-    async fn drain<T: RpcMessage>(
-        mut recv: quic_rpc::channel::spsc::Receiver<T>,
-    ) -> TestResult<Vec<T>> {
+    async fn drain<T: RpcMessage>(mut recv: spsc::Receiver<T>) -> TestResult<Vec<T>> {
         let mut res = Vec::new();
         while let Some(item) = recv.recv().await? {
             res.push(item);
@@ -493,7 +491,7 @@ mod tests {
             Box::pin(stream::iter(chunk_bytes(data.clone(), 999).map(Ok)));
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (mut tx, rx) = quic_rpc::channel::spsc::channel(1024 * 1024);
+        let (mut tx, rx) = spsc::channel(1024 * 1024);
         let data = stream.collect::<Vec<_>>().await;
         let data = data.into_iter().collect::<io::Result<Vec<_>>>()?;
         let cmd = ImportByteStream {
@@ -521,7 +519,7 @@ mod tests {
         std::fs::write(&path, &data)?;
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (mut tx, rx) = quic_rpc::channel::spsc::channel(1024 * 1024);
+        let (mut tx, rx) = spsc::channel(1024 * 1024);
         let cmd = ImportPath {
             path,
             mode: ImportMode::Copy,

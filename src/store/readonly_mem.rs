@@ -10,9 +10,13 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::future::yield_now;
+use quic_rpc::channel::spsc;
 use tokio::task::{JoinError, JoinSet};
 
-use super::util::{observer::Observer, QuicRpcSenderProgressExt};
+use super::{
+    api,
+    util::{observer::Observer, QuicRpcSenderProgressExt},
+};
 use crate::{
     store::{
         bitfield::Bitfield, mem::CompleteStorage, proto::*, util::observer::Observable, Store,
@@ -42,7 +46,7 @@ impl Actor {
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::ImportBao(ImportBaoMsg { tx, .. }) => {
-                tx.send(Err(io::Error::other("import not supported")))
+                tx.send(Err(api::Error::other("import not supported")))
                     .await
                     .ok();
             }
@@ -133,7 +137,7 @@ async fn export_bao_task(
     hash: Hash,
     entry: Option<(Bytes, Bytes)>,
     ranges: ChunkRanges,
-    mut sender: quic_rpc::channel::spsc::Sender<EncodedItem>,
+    mut sender: spsc::Sender<EncodedItem>,
 ) {
     let (data, outboard) = match entry {
         Some(entry) => entry,
@@ -157,7 +161,7 @@ async fn export_bao_task(
         tree,
         data: outboard,
     };
-    let quic_rpc::channel::spsc::Sender::Tokio(sender) = sender else {
+    let spsc::Sender::Tokio(sender) = sender else {
         panic!();
     };
     traverse_ranges_validated(data.as_ref(), outboard, &ranges, &sender).await;
@@ -174,31 +178,32 @@ impl Store {
         let (sender, receiver) = mpsc::channel(1);
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
-        Store::from_sender(sender.into())
+        let local = quic_rpc::LocalMpscChannel::from(sender);
+        Store::from_sender(local.into())
     }
 }
 
 async fn export_path_task(
     entry: Option<(Bytes, Bytes)>,
     target: PathBuf,
-    mut tx: quic_rpc::channel::spsc::Sender<ExportProgress>,
+    mut tx: spsc::Sender<ExportProgress>,
 ) {
     let Some(entry) = entry else {
-        tx.send(io::Error::new(io::ErrorKind::NotFound, "hash not found").into())
+        tx.send(api::Error::io(io::ErrorKind::NotFound, "hash not found").into())
             .await
             .ok();
         return;
     };
     match export_path_impl(entry, target, &mut tx).await {
         Ok(()) => tx.send(ExportProgress::Done).await.ok(),
-        Err(cause) => tx.send(cause.into()).await.ok(),
+        Err(cause) => tx.send(api::Error::from(cause).into()).await.ok(),
     };
 }
 
 async fn export_path_impl(
     (data, _): (Bytes, Bytes),
     target: PathBuf,
-    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgress>,
 ) -> io::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;

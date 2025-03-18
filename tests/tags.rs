@@ -6,9 +6,12 @@ use futures_lite::StreamExt;
 use n0_future::Stream;
 use testresult::TestResult;
 
-async fn to_vec<T>(stream: impl Stream<Item = anyhow::Result<T>>) -> anyhow::Result<Vec<T>> {
+async fn to_vec<T>(
+    stream: impl Stream<Item = blobs2::store::api::Result<T>>,
+) -> blobs2::store::api::Result<Vec<T>> {
     let res = stream.collect::<Vec<_>>().await;
-    res.into_iter().collect::<anyhow::Result<Vec<_>>>()
+    res.into_iter()
+        .collect::<blobs2::store::api::Result<Vec<_>>>()
 }
 
 fn expected(tags: impl IntoIterator<Item = &'static str>) -> Vec<TagInfo> {

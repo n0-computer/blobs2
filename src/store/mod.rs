@@ -14,12 +14,11 @@ use proto::StoreService;
 use ref_cast::RefCast;
 
 pub use crate::hash::{BlobFormat, Hash, HashAndFormat};
-use crate::util::channel::mpsc;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
-    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
 }
 
 impl Deref for Store {
@@ -33,11 +32,13 @@ impl Deref for Store {
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
-    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
 }
 
 impl Tags {
-    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
+    fn ref_from_sender(
+        sender: &quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
+    ) -> &Self {
         Self::ref_cast(sender)
     }
 }
@@ -45,11 +46,13 @@ impl Tags {
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Blobs {
-    sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
 }
 
 impl Blobs {
-    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
+    fn ref_from_sender(
+        sender: &quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
+    ) -> &Self {
         Self::ref_cast(sender)
     }
 }
@@ -59,11 +62,15 @@ impl Store {
         Tags::ref_from_sender(&self.sender)
     }
 
-    fn from_sender(sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> Self {
+    fn from_sender(
+        sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
+    ) -> Self {
         Self { sender }
     }
 
-    fn ref_from_sender(sender: &quic_rpc::LocalMpscChannel<proto::Command, StoreService>) -> &Self {
+    fn ref_from_sender(
+        sender: &quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
+    ) -> &Self {
         Self::ref_cast(sender)
     }
 }

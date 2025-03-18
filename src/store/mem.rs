@@ -19,6 +19,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
+use quic_rpc::channel::spsc;
 use tokio::{
     io::AsyncReadExt,
     sync::mpsc,
@@ -27,7 +28,10 @@ use tokio::{
 use tracing::{error, info, instrument};
 
 use super::{
-    api::tags::{ListTags, TagInfo},
+    api::{
+        self,
+        tags::{ListTags, TagInfo},
+    },
     util::QuicRpcSenderProgressExt,
 };
 use crate::{
@@ -192,7 +196,7 @@ impl Actor {
                 let value = match tags.remove(&from) {
                     Some(value) => value,
                     None => {
-                        tx.send(Err(io::Error::new(
+                        tx.send(Err(api::Error::io(
                             io::ErrorKind::NotFound,
                             format!("tag not found: {:?}", from),
                         )))
@@ -339,8 +343,8 @@ impl Actor {
 async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
-    mut stream: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
-    tx: quic_rpc::channel::oneshot::Sender<io::Result<()>>,
+    mut stream: spsc::Receiver<BaoContentItem>,
+    tx: quic_rpc::channel::oneshot::Sender<api::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
@@ -396,7 +400,7 @@ async fn export_bao_task(
     hash: Hash,
     entry: Arc<RwLock<Entry>>,
     ranges: ChunkRanges,
-    sender: quic_rpc::channel::spsc::Sender<EncodedItem>,
+    sender: spsc::Sender<EncodedItem>,
 ) {
     let size = entry.read().unwrap().size();
     let data = ExportData {
@@ -408,7 +412,7 @@ async fn export_bao_task(
         tree,
         data: entry.clone(),
     };
-    let quic_rpc::channel::spsc::Sender::Tokio(sender) = sender else {
+    let spsc::Sender::Tokio(sender) = sender else {
         panic!();
     };
     traverse_ranges_validated(data, outboard, &ranges, &sender).await
@@ -416,7 +420,7 @@ async fn export_bao_task(
 
 async fn import_bytes(
     data: Bytes,
-    mut tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
+    mut tx: spsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     tx.send(ImportProgress::Size {
         size: data.len() as u64,
@@ -429,7 +433,7 @@ async fn import_bytes(
 
 async fn import_byte_stream(
     mut data: BoxedByteStream,
-    mut tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
+    mut tx: spsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     while let Some(item) = data.next().await {
@@ -471,7 +475,7 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg)
     let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
         tx.send(ExportProgress::Error {
-            cause: io::Error::new(io::ErrorKind::NotFound, "hash not found"),
+            cause: api::Error::io(io::ErrorKind::NotFound, "hash not found"),
         })
         .await
         .ok();
@@ -479,14 +483,17 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg)
     };
     match export_path_impl(entry, inner, &mut tx).await {
         Ok(()) => tx.send(ExportProgress::Done).await.ok(),
-        Err(e) => tx.send(ExportProgress::Error { cause: e }).await.ok(),
+        Err(e) => tx
+            .send(ExportProgress::Error { cause: e.into() })
+            .await
+            .ok(),
     };
 }
 
 async fn export_path_impl(
     entry: Arc<RwLock<Entry>>,
     cmd: ExportPath,
-    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgress>,
 ) -> io::Result<()> {
     let ExportPath { target, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
@@ -510,7 +517,7 @@ async fn export_path_impl(
 struct ImportEntry {
     data: Bytes,
     outboard: PreOrderMemOutboard,
-    tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
+    tx: spsc::Sender<ImportProgress>,
 }
 
 struct ExportOutboard {
@@ -732,17 +739,13 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let hash = store
-            .import_bytes(vec![0u8; 1024 * 64])
-            .await
-            .hash()
-            .await?;
+        let hash = store.import_bytes(vec![0u8; 1024 * 64]).hash().await?;
         println!("hash: {:?}", hash);
-        let mut stream = store.export_bao(hash, ChunkRanges::all()).await;
+        let mut stream = store.export_bao(hash, ChunkRanges::all()).stream();
         while let Some(item) = stream.next().await {
             println!("item: {:?}", item);
         }
-        let stream = store.export_bao(hash, ChunkRanges::all()).await;
+        let stream = store.export_bao(hash, ChunkRanges::all());
         let exported = stream.bao_to_vec().await?;
 
         let store2 = Store::memory();
@@ -758,7 +761,6 @@ mod tests {
 
         let exported2 = store2
             .export_bao(hash, ChunkRanges::all())
-            .await
             .bao_to_vec()
             .await?;
         assert_eq!(exported, exported2);
