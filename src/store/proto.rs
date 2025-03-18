@@ -15,7 +15,7 @@ use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    api::tags::{DeleteOptions, ListOptions, TagInfo},
+    api::tags::{DeleteTags, ListOptions, TagInfo},
     util::DD,
 };
 use crate::{
@@ -91,13 +91,13 @@ impl HashSpecific for ObserveMsg {
     }
 }
 
+/// Import the given bytes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportBytes {
     pub data: Bytes,
     pub format: BlobFormat,
 }
 
-/// Import the given bytes.
 pub struct ImportBytesMsg {
     pub inner: ImportBytes,
     pub tx: mpsc::Sender<ImportProgress>,
@@ -200,49 +200,24 @@ pub struct ListTags {
 
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RenameOptions {
+pub struct Rename {
     /// Old tag name
     pub from: Tag,
     /// New tag name
     pub to: Tag,
 }
 
-/// Rename a tag atomically
-#[derive(derive_more::Debug)]
-pub struct RenameTag {
-    pub options: RenameOptions,
-    /// Return channel
-    #[debug(skip)]
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
-}
+pub type RenameTagMsg = WithChannels<Rename, StoreService>;
 
-impl Deref for RenameTag {
-    type Target = RenameOptions;
-
-    fn deref(&self) -> &Self::Target {
-        &self.options
-    }
-}
-
-#[derive(derive_more::Debug)]
-pub struct DeleteTags {
-    pub options: DeleteOptions,
-    #[debug(skip)]
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
-}
+pub type DeleteTagsMsg = WithChannels<DeleteTags, StoreService>;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetTagOptions {
+pub struct SetTag {
     pub name: Tag,
     pub value: HashAndFormat,
 }
 
-#[derive(derive_more::Debug)]
-pub struct SetTag {
-    pub options: SetTagOptions,
-    #[debug(skip)]
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
-}
+pub type SetTagMsg = WithChannels<SetTag, StoreService>;
 
 /// Debug tool to exit the process in the middle of a write transaction, for testing.
 #[derive(Debug)]
@@ -255,22 +230,11 @@ pub struct CreateTag {
     pub content: HashAndFormat,
 }
 
-pub struct CreateTagMsg {
-    pub inner: CreateTag,
-    pub tx: oneshot::Sender<anyhow::Result<Tag>>,
-}
+pub type CreateTagMsg = WithChannels<CreateTag, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.content.hash
-    }
-}
-
-impl fmt::Debug for CreateTagMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CreateTag")
-            .field("hash", &self.inner.content)
-            .finish_non_exhaustive()
     }
 }
 
@@ -313,12 +277,12 @@ pub enum Request {
     #[rpc(tx = quic_rpc::channel::spsc::Sender<anyhow::Result<TagInfo>>)]
     ListTags(ListOptions),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
-    SetTag(SetTagOptions),
+    SetTag(SetTag),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
-    DeleteTags(DeleteOptions),
+    DeleteTags(DeleteTags),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
-    RenameTag(RenameOptions),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    RenameTag(Rename),
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<Tag>>)]
     CreateTag(CreateTag),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
     SyncDb(SyncDb),
@@ -338,9 +302,9 @@ pub enum Command {
     ExportPath(ExportPathMsg),
 
     ListTags(ListTags),
-    RenameTag(RenameTag),
-    DeleteTags(DeleteTags),
-    SetTag(SetTag),
+    RenameTag(RenameTagMsg),
+    DeleteTags(DeleteTagsMsg),
+    SetTag(SetTagMsg),
     CreateTag(CreateTagMsg),
 
     SyncDb(SyncDbMsg),

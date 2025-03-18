@@ -12,8 +12,8 @@ use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
     store::{
-        api::tags::{DeleteOptions, ListOptions, TagInfo},
-        proto::{CreateTag, RenameOptions, SetTagOptions},
+        api::tags::{DeleteTags, ListOptions, TagInfo},
+        proto::{CreateTag, Rename, SetTag},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -349,7 +349,10 @@ impl Actor {
         })
     }
 
-    fn handle_readonly(tables: &impl ReadableTables, cmd: ReadOnlyCommand) -> ActorResult<()> {
+    async fn handle_readonly(
+        tables: &impl ReadableTables,
+        cmd: ReadOnlyCommand,
+    ) -> ActorResult<()> {
         match cmd {
             ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
             ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
@@ -358,7 +361,7 @@ impl Actor {
         }
     }
 
-    fn delete(tables: &mut Tables, cmd: Delete) -> ActorResult<()> {
+    async fn delete(tables: &mut Tables<'_>, cmd: Delete) -> ActorResult<()> {
         let Delete { hashes, .. } = cmd;
         for hash in hashes {
             if let Some(entry) = tables.blobs.remove(hash)? {
@@ -405,20 +408,24 @@ impl Actor {
         Ok(())
     }
 
-    fn set_tag(tables: &mut Tables, cmd: SetTag) -> ActorResult<()> {
-        let SetTag {
-            options: SetTagOptions { name: tag, value },
+    async fn set_tag(tables: &mut Tables<'_>, cmd: SetTagMsg) -> ActorResult<()> {
+        let SetTagMsg {
+            inner: SetTag { name: tag, value },
             tx,
+            rx,
         } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
-        tx.send(res.map_err(anyhow::Error::from));
+        tx.send(res.map_err(|_| io::Error::other("storage")))
+            .await
+            .ok();
         Ok(())
     }
 
-    fn create_tag(tables: &mut Tables, cmd: CreateTagMsg) -> ActorResult<()> {
+    async fn create_tag(tables: &mut Tables<'_>, cmd: CreateTagMsg) -> ActorResult<()> {
         let CreateTagMsg {
             inner: CreateTag { content: hash },
             tx,
+            ..
         } = cmd;
         let tag = {
             let tag = Tag::auto(SystemTime::now(), |x| {
@@ -427,14 +434,15 @@ impl Actor {
             tables.tags.insert(tag.clone(), hash)?;
             tag
         };
-        tx.send(Ok(tag.clone()));
+        tx.send(Ok(tag.clone())).await.ok();
         Ok(())
     }
 
-    fn delete_tags(tables: &mut Tables, cmd: DeleteTags) -> ActorResult<()> {
-        let DeleteTags {
-            options: DeleteOptions { from, to },
+    async fn delete_tags(tables: &mut Tables<'_>, cmd: DeleteTagsMsg) -> ActorResult<()> {
+        let DeleteTagsMsg {
+            inner: DeleteTags { from, to },
             tx,
+            ..
         } = cmd;
         let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
         let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
@@ -443,14 +451,15 @@ impl Actor {
         for res in removing {
             res?;
         }
-        tx.send(Ok(()));
+        tx.send(Ok(())).await.ok();
         Ok(())
     }
 
-    fn rename_tag(tables: &mut Tables, cmd: RenameTag) -> ActorResult<()> {
-        let RenameTag {
-            options: RenameOptions { from, to },
+    async fn rename_tag(tables: &mut Tables<'_>, cmd: RenameTagMsg) -> ActorResult<()> {
+        let RenameTagMsg {
+            inner: Rename { from, to },
             tx,
+            ..
         } = cmd;
         let value = match tables.tags.remove(from)? {
             Some(value) => value.value(),
@@ -464,29 +473,32 @@ impl Actor {
             }
         };
         tables.tags.insert(to, value)?;
-        tx.send(Ok(()));
+        tx.send(Ok(())).await.ok();
         Ok(())
     }
 
-    fn handle_readwrite(tables: &mut Tables, cmd: ReadWriteCommand) -> ActorResult<()> {
+    async fn handle_readwrite(tables: &mut Tables<'_>, cmd: ReadWriteCommand) -> ActorResult<()> {
         match cmd {
             ReadWriteCommand::Update(cmd) => cmd.handle(tables),
             ReadWriteCommand::Set(cmd) => cmd.handle(tables),
-            ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd),
-            ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd),
-            ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd),
-            ReadWriteCommand::DeleteTags(cmd) => Self::delete_tags(tables, cmd),
-            ReadWriteCommand::RenameTag(cmd) => Self::rename_tag(tables, cmd),
+            ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd).await,
+            ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd).await,
+            ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd).await,
+            ReadWriteCommand::DeleteTags(cmd) => Self::delete_tags(tables, cmd).await,
+            ReadWriteCommand::RenameTag(cmd) => Self::rename_tag(tables, cmd).await,
             ReadWriteCommand::ProcessExit(cmd) => {
                 std::process::exit(cmd.code);
             }
         }
     }
 
-    fn handle_non_toplevel(tables: &mut Tables, cmd: NonTopLevelCommand) -> ActorResult<()> {
+    async fn handle_non_toplevel(
+        tables: &mut Tables<'_>,
+        cmd: NonTopLevelCommand,
+    ) -> ActorResult<()> {
         match cmd {
-            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd),
-            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd),
+            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd).await,
+            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd).await,
         }
     }
 
@@ -534,7 +546,7 @@ impl Actor {
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::read_only).await {
-                        Self::handle_readonly(&tables, cmd)?;
+                        Self::handle_readonly(&tables, cmd).await?;
                         n += 1;
                         if t0.elapsed() > options.max_read_duration {
                             break;
@@ -553,7 +565,7 @@ impl Actor {
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
-                        Self::handle_non_toplevel(&mut tables, cmd)?;
+                        Self::handle_non_toplevel(&mut tables, cmd).await?;
                         n += 1;
                         if t0.elapsed() > options.max_write_duration {
                             break;

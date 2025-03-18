@@ -394,7 +394,7 @@ async fn import_path_impl(cmd: ImportPathMsg, options: Arc<Options>) -> io::Resu
 
     let size = path.metadata()?.len();
     tx.send_progress(ImportProgress::Size { size })
-        .map_err(|e| io::Error::other("error"));
+        .map_err(|e| io::Error::other("error"))?;
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
         tx.send_progress(ImportProgress::CopyDone)
@@ -418,7 +418,7 @@ async fn import_path_impl(cmd: ImportPathMsg, options: Arc<Options>) -> io::Resu
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
         tx.send_progress(ImportProgress::CopyDone)
-            .map_err(|e| io::Error::other("error"))?;
+            .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
     };
     compute_outboard(import_source, options, tx).await

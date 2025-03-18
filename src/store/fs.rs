@@ -178,7 +178,7 @@ impl HashContext {
                 .into(),
             )
             .await?;
-        rx.await.map_err(|e| io::Error::other(""))?;
+        rx.await.map_err(|e| io::Error::other(""))??;
         Ok(())
     }
 
@@ -384,7 +384,7 @@ impl Actor {
             InternalCommand::Dump(cmd) => {
                 self.db().send(cmd.into()).await.ok();
             }
-            InternalCommand::FinishImport(cmd) => {
+            InternalCommand::FinishImport(mut cmd) => {
                 if cmd.hash.as_bytes() == Hash::EMPTY.as_bytes() {
                     cmd.tx
                         .send(ImportProgress::Done { hash: cmd.hash })
@@ -744,7 +744,7 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
             }
         }
         Err(cause) => {
-            tx.send(cause.into());
+            tx.send(cause.into()).await.ok();
         }
     }
 }

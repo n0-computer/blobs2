@@ -42,10 +42,12 @@ impl Actor {
         }
     }
 
-    fn handle_command(&mut self, cmd: Command) {
+    async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::ImportBao(ImportBaoMsg { tx, .. }) => {
-                tx.send(Err(io::Error::other("import not supported")));
+                tx.send(Err(io::Error::other("import not supported")))
+                    .await
+                    .ok();
             }
             Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
@@ -89,7 +91,7 @@ impl Actor {
             }
             Command::ExportPath(ExportPathMsg {
                 inner: ExportPath { hash, target, .. },
-                mut tx,
+                tx,
                 ..
             }) => {
                 let entry = self

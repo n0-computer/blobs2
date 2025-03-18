@@ -19,7 +19,7 @@ use bao_tree::{
 use bytes::Bytes;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use quic_rpc::channel::none::{NoReceiver, NoSender};
+use quic_rpc::channel::none::NoReceiver;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
@@ -39,16 +39,20 @@ use crate::{
 };
 
 pub mod tags {
-    use std::ops::{Bound, RangeBounds};
+    use std::{
+        io,
+        ops::{Bound, RangeBounds},
+    };
 
     use anyhow::Result;
-    use n0_future::{Stream, StreamExt};
+    use n0_future::{Stream, StreamExt, TryFutureExt};
+    use quic_rpc::channel::none::NoReceiver;
     use serde::{Deserialize, Serialize};
 
     use super::super::Tags;
     use crate::{
         store::{
-            proto::{DeleteTags, ListTags, RenameOptions, RenameTag, SetTag, SetTagOptions},
+            proto::{DeleteTagsMsg, ListTags, Rename, RenameTagMsg, SetTag, SetTagMsg},
             util::Tag,
         },
         util::channel::oneshot,
@@ -172,14 +176,14 @@ pub mod tags {
 
     /// Options for a delete operation.
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct DeleteOptions {
+    pub struct DeleteTags {
         /// Optional from tag (inclusive)
         pub from: Option<Tag>,
         /// Optional to tag (exclusive)
         pub to: Option<Tag>,
     }
 
-    impl DeleteOptions {
+    impl DeleteTags {
         /// Delete a single tag
         pub fn single(name: &[u8]) -> Self {
             let name = Tag::from(name);
@@ -251,18 +255,28 @@ pub mod tags {
             stream.next().await.transpose()
         }
 
-        pub async fn set_with_opts(&self, options: SetTagOptions) -> Result<()> {
-            let (tx, rx) = oneshot::channel();
-            self.sender.send(SetTag { options, tx }.into()).await?;
-            rx.await?
+        pub async fn set_with_opts(&self, options: SetTag) -> io::Result<()> {
+            let (tx, rx) = quic_rpc::channel::oneshot::channel();
+            self.sender
+                .send(
+                    SetTagMsg {
+                        inner: options,
+                        tx,
+                        rx: NoReceiver,
+                    }
+                    .into(),
+                )
+                .await
+                .map_err(|e| io::Error::other("error"))?;
+            rx.await.map_err(|e| io::Error::other("error"))?
         }
 
         pub async fn set(
             &self,
             name: impl AsRef<[u8]>,
             value: impl Into<HashAndFormat>,
-        ) -> anyhow::Result<()> {
-            self.set_with_opts(SetTagOptions {
+        ) -> io::Result<()> {
+            self.set_with_opts(SetTag {
                 name: Tag::from(name.as_ref()),
                 value: value.into(),
             })
@@ -301,36 +315,46 @@ pub mod tags {
         }
 
         /// Deletes a tag.
-        pub async fn delete_with_opts(&self, options: DeleteOptions) -> Result<()> {
-            let (tx, rx) = oneshot::channel();
-            self.sender.send(DeleteTags { options, tx }.into()).await?;
-            rx.await?
+        pub async fn delete_with_opts(&self, options: DeleteTags) -> io::Result<()> {
+            let (tx, rx) = quic_rpc::channel::oneshot::channel();
+            self.sender
+                .send(
+                    DeleteTagsMsg {
+                        inner: options,
+                        tx,
+                        rx: NoReceiver,
+                    }
+                    .into(),
+                )
+                .map_err(|e| io::Error::other("error"))
+                .await?;
+            rx.await.map_err(|e| io::Error::other("error"))?
         }
 
         /// Deletes a tag.
-        pub async fn delete(&self, name: impl AsRef<[u8]>) -> Result<()> {
-            self.delete_with_opts(DeleteOptions::single(name.as_ref()))
+        pub async fn delete(&self, name: impl AsRef<[u8]>) -> io::Result<()> {
+            self.delete_with_opts(DeleteTags::single(name.as_ref()))
                 .await
         }
 
         /// Deletes a range of tags.
-        pub async fn delete_range<R, E>(&self, range: R) -> Result<()>
+        pub async fn delete_range<R, E>(&self, range: R) -> io::Result<()>
         where
             R: RangeBounds<E>,
             E: AsRef<[u8]>,
         {
-            self.delete_with_opts(DeleteOptions::range(range)).await
+            self.delete_with_opts(DeleteTags::range(range)).await
         }
 
         /// Delete all tags with the given prefix.
-        pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<()> {
-            self.delete_with_opts(DeleteOptions::prefix(prefix.as_ref()))
+        pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> io::Result<()> {
+            self.delete_with_opts(DeleteTags::prefix(prefix.as_ref()))
                 .await
         }
 
         /// Delete all tags. Use with care. After this, all data will be garbage collected.
-        pub async fn delete_all(&self) -> Result<()> {
-            self.delete_with_opts(DeleteOptions {
+        pub async fn delete_all(&self) -> io::Result<()> {
+            self.delete_with_opts(DeleteTags {
                 from: None,
                 to: None,
             })
@@ -340,17 +364,27 @@ pub mod tags {
         /// Rename a tag atomically
         ///
         /// If the tag does not exist, this will return an error.
-        pub async fn rename_with_opts(&self, options: RenameOptions) -> Result<()> {
-            let (tx, rx) = oneshot::channel();
-            self.sender.send(RenameTag { options, tx }.into()).await?;
-            rx.await?
+        pub async fn rename_with_opts(&self, options: Rename) -> io::Result<()> {
+            let (tx, rx) = quic_rpc::channel::oneshot::channel();
+            self.sender
+                .send(
+                    RenameTagMsg {
+                        inner: options,
+                        tx,
+                        rx: NoReceiver,
+                    }
+                    .into(),
+                )
+                .await
+                .map_err(|e| io::Error::other("error"))?;
+            rx.await.map_err(|e| io::Error::other("error"))?
         }
 
         /// Rename a tag atomically
         ///
         /// If the tag does not exist, this will return an error.
-        pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> Result<()> {
-            self.rename_with_opts(RenameOptions {
+        pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> io::Result<()> {
+            self.rename_with_opts(Rename {
                 from: Tag::from(from.as_ref()),
                 to: Tag::from(to.as_ref()),
             })

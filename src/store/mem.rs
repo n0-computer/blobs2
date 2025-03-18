@@ -32,7 +32,7 @@ use super::{
 };
 use crate::{
     store::{
-        api::tags::DeleteOptions,
+        api::tags::DeleteTags,
         bitfield::Bitfield,
         proto::*,
         util::{
@@ -110,7 +110,7 @@ struct Actor {
 }
 
 impl Actor {
-    fn handle_command(&mut self, cmd: Command) -> Option<ShutdownMsg> {
+    async fn handle_command(&mut self, cmd: Command) -> Option<ShutdownMsg> {
         match cmd {
             Command::ImportBao(ImportBaoMsg {
                 inner: ImportBao { hash, size },
@@ -155,9 +155,10 @@ impl Actor {
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
-                let DeleteTags {
-                    options: DeleteOptions { from, to },
+                let DeleteTagsMsg {
+                    inner: DeleteTags { from, to },
                     tx,
+                    rx,
                 } = cmd;
                 info!("deleting tags from {:?} to {:?}", from, to);
                 // state.tags.remove(&from.unwrap());
@@ -179,9 +180,10 @@ impl Actor {
                 tx.send(Ok(()));
             }
             Command::RenameTag(cmd) => {
-                let RenameTag {
-                    options: RenameOptions { from, to },
+                let RenameTagMsg {
+                    inner: Rename { from, to },
                     tx,
+                    ..
                 } = cmd;
                 let tags = &mut self.state.tags;
                 let value = match tags.remove(&from) {
@@ -191,7 +193,9 @@ impl Actor {
                             io::ErrorKind::NotFound,
                             format!("tag not found: {:?}", from),
                         )
-                        .into()));
+                        .into()))
+                            .await
+                            .ok();
                         return None;
                     }
                 };
@@ -233,20 +237,22 @@ impl Actor {
                     .map(Ok);
                 tx.send(tags.collect());
             }
-            Command::SetTag(SetTag {
-                options: SetTagOptions { name: tag, value },
+            Command::SetTag(SetTagMsg {
+                inner: SetTag { name: tag, value },
                 tx,
+                rx,
             }) => {
                 self.state.tags.insert(tag, value);
-                tx.send(Ok(()));
+                tx.send(Ok(())).await.ok();
             }
             Command::CreateTag(CreateTagMsg {
                 inner: CreateTag { content },
                 tx,
+                ..
             }) => {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
                 self.state.tags.insert(tag.clone(), content);
-                tx.send(Ok(tag));
+                tx.send(Ok(tag)).await.ok();
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
                 tx.send(Ok(()));
@@ -302,7 +308,7 @@ impl Actor {
                         // exit immediately.
                         break None;
                     };
-                    if let Some(cmd) = self.handle_command(cmd) {
+                    if let Some(cmd) = self.handle_command(cmd).await {
                         break Some(cmd);
                     }
                 }

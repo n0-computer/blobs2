@@ -3,9 +3,9 @@ use std::fmt;
 
 use bytes::Bytes;
 use nested_enum_utils::enum_conversions;
-use redb::{AccessGuard, ReadableTable, StorageError};
+use redb::{AccessGuard, StorageError};
 
-use super::{Actor, ActorResult, ReadableTables, Tables};
+use super::ActorResult;
 pub use crate::store::proto::SyncDbMsg;
 use crate::{
     store::{
@@ -103,13 +103,13 @@ pub struct Blobs {
 /// Modification method: create a new unique tag and set it to a value.
 pub use crate::store::proto::CreateTagMsg;
 /// Modification method: remove a range of tags.
-pub use crate::store::proto::DeleteTags;
+pub use crate::store::proto::DeleteTagsMsg;
 /// Read method: list a range of tags.
 pub use crate::store::proto::ListTags;
 /// Modification method: rename a tag.
-pub use crate::store::proto::RenameTag;
+pub use crate::store::proto::RenameTagMsg;
 /// Modification method: set a tag to a value, or remove it.
-pub use crate::store::proto::SetTag;
+pub use crate::store::proto::SetTagMsg;
 
 #[derive(Debug)]
 #[enum_conversions(Command)]
@@ -126,9 +126,9 @@ pub enum ReadWriteCommand {
     Update(Update),
     Set(Set),
     Delete(Delete),
-    SetTag(SetTag),
-    DeleteTags(DeleteTags),
-    RenameTag(RenameTag),
+    SetTag(SetTagMsg),
+    DeleteTags(DeleteTagsMsg),
+    RenameTag(RenameTagMsg),
     CreateTag(CreateTagMsg),
     ProcessExit(ProcessExit),
 }
