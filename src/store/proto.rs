@@ -24,9 +24,9 @@ use crate::{
         util::{observer::Observer, Tag},
         BlobFormat, HashAndFormat,
     },
-    util::channel::mpsc,
     Hash,
 };
+use quic_rpc::channel::{spsc, oneshot};
 
 pub trait HashSpecific {
     fn hash(&self) -> Hash;
@@ -89,18 +89,7 @@ pub struct ImportBytes {
     pub format: BlobFormat,
 }
 
-pub struct ImportBytesMsg {
-    pub inner: ImportBytes,
-    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
-}
-
-impl fmt::Debug for ImportBytesMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImportBytes")
-            .field("data", &self.inner.data.len())
-            .finish_non_exhaustive()
-    }
-}
+pub type ImportBytesMsg = WithChannels<ImportBytes, StoreService>;
 
 /// Export the given ranges in bao format, with the iroh block size.
 ///
@@ -148,16 +137,7 @@ pub struct ImportByteStream {
     pub data: Vec<Bytes>,
 }
 
-pub struct ImportByteStreamMsg {
-    pub inner: ImportByteStream,
-    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
-}
-
-impl std::fmt::Debug for ImportByteStreamMsg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportByteStream").finish_non_exhaustive()
-    }
-}
+pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportPath {
@@ -166,20 +146,7 @@ pub struct ImportPath {
     pub format: BlobFormat,
 }
 
-pub struct ImportPathMsg {
-    pub inner: ImportPath,
-    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
-}
-
-impl fmt::Debug for ImportPathMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImportPath")
-            .field("path", &self.inner.path)
-            .field("mode", &self.inner.mode)
-            .field("format", &self.inner.format)
-            .finish_non_exhaustive()
-    }
-}
+pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
 
 pub type ListTagsMsg = WithChannels<ListTags, StoreService>;
 /// Rename a tag atomically
@@ -235,34 +202,36 @@ pub struct StoreService;
 impl quic_rpc::Service for StoreService {}
 
 #[allow(dead_code)]
-#[rpc_requests(StoreService, RequestMsg)]
+#[rpc_requests(StoreService, Command2)]
 #[derive(Debug)]
 pub enum Request {
-    #[rpc(rx = quic_rpc::channel::spsc::Receiver<BaoContentItem>, tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<io::Result<()>>)]
     ImportBao(ImportBao),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<EncodedItem>)]
+    #[rpc(tx = spsc::Sender<EncodedItem>)]
     ExportBao(ExportBao),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<Bitfield>)]
+    #[rpc(tx = spsc::Sender<Bitfield>)]
     Observe(Observe),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<ImportProgress>)]
+    #[rpc(tx = spsc::Sender<ImportProgress>)]
     ImportBytes(ImportBytes),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<ImportProgress>)]
+    #[rpc(tx = spsc::Sender<ImportProgress>)]
+    ImportByteStream(ImportByteStream),
+    #[rpc(tx = spsc::Sender<ImportProgress>)]
     ImportPath(ImportPath),
-    #[rpc(tx = quic_rpc::channel::spsc::Sender<ExportProgress>)]
+    #[rpc(tx = spsc::Sender<ExportProgress>)]
     ExportPath(ExportPath),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<Vec<anyhow::Result<TagInfo>>>)]
+    #[rpc(tx = oneshot::Sender<Vec<anyhow::Result<TagInfo>>>)]
     ListTags(ListTags),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
     SetTag(SetTag),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
     DeleteTags(DeleteTags),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
     RenameTag(Rename),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<Tag>>)]
+    #[rpc(tx = oneshot::Sender<io::Result<Tag>>)]
     CreateTag(CreateTag),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<io::Result<()>>)]
     SyncDb(SyncDb),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<()>)]
+    #[rpc(tx = oneshot::Sender<()>)]
     Shutdown(Shutdown),
 }
 

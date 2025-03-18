@@ -28,6 +28,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
+use quic_rpc::channel::none::NoReceiver;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
 
@@ -38,10 +39,9 @@ use crate::{
             HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
             ImportMode, ImportPath, ImportPathMsg, ImportProgress,
         },
-        util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt, SenderProgressExt},
+        util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
     },
-    util::channel::mpsc,
     Hash,
 };
 
@@ -152,6 +152,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
                 data: vec![cmd.inner.data],
             },
             tx: cmd.tx,
+            rx: NoReceiver,
         };
         import_byte_stream_outer(cmd, ctx).await;
     }
@@ -173,7 +174,7 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
 }
 
 async fn import_bytes_tiny_impl(
-    mut cmd: ImportBytes,
+    cmd: ImportBytes,
     tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
@@ -313,7 +314,7 @@ async fn get_import_source(
 async fn compute_outboard(
     source: ImportSource,
     options: Arc<Options>,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    _tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);

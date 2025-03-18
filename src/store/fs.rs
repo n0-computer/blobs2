@@ -501,7 +501,7 @@ impl Drop for RtWrapper {
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn finish_import(mut cmd: ImportEntryMsg, ctx: HashContext) {
     let hash = cmd.hash;
-    let res = match finish_import_impl(cmd.inner, &mut cmd.tx, ctx).await {
+    let res = match finish_import_impl(cmd.inner, ctx).await {
         Ok(()) => ImportProgress::Done { hash },
         Err(cause) => ImportProgress::Error { cause },
     };
@@ -510,7 +510,6 @@ async fn finish_import(mut cmd: ImportEntryMsg, ctx: HashContext) {
 
 async fn finish_import_impl(
     import_data: ImportEntry,
-    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
     ctx: HashContext,
 ) -> io::Result<()> {
     let ImportEntry {
@@ -1036,7 +1035,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
             let obs = store.observe(expected_hash).aggregated();
-            let actual_hash = store.import_byte_stream(stream).await.await?;
+            let actual_hash = store.import_byte_stream(stream).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1060,7 +1059,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated();
-            let actual_hash = store.import_bytes(expected.clone()).await?;
+            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1088,7 +1087,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated();
-            let actual_hash = store.import_bytes(expected.clone()).await?;
+            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
@@ -1121,7 +1120,7 @@ pub mod tests {
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).aggregated();
-            let actual_hash = store.import_path(&path).await?;
+            let actual_hash = store.import_path(&path).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1143,7 +1142,7 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let actual_hash = store.import_bytes(expected.clone()).await?;
+            let actual_hash = store.import_bytes(expected.clone()).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let out_path = testdir.path().join(format!("out-{}", size));
             store.export_path(expected_hash, &out_path).await?;
@@ -1446,7 +1445,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let data = data;
-                store.import_bytes(data.clone()).await?;
+                store.import_bytes(data.clone()).await.hash().await?;
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1488,7 +1487,7 @@ pub mod tests {
         for size in sizes {
             let data = vec![0u8; size];
             let data = Bytes::from(data);
-            let hash = store.import_bytes(data.clone()).await?;
+            let hash = store.import_bytes(data.clone()).await.hash().await?;
             data_by_hash.insert(hash, data);
             hashes.push(hash);
         }

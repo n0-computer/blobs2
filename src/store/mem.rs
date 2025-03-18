@@ -21,7 +21,7 @@ use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{
     io::AsyncReadExt,
-    sync::mpsc::{self, OwnedPermit},
+    sync::mpsc,
     task::{JoinError, JoinSet},
 };
 use tracing::{error, info, instrument};
@@ -37,7 +37,7 @@ use crate::{
         proto::*,
         util::{
             observer::{Observable, Observer},
-            SenderProgressExt, SparseMemFile, Tag,
+            SparseMemFile, Tag,
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
@@ -131,10 +131,11 @@ impl Actor {
             Command::ImportBytes(ImportBytesMsg {
                 inner: ImportBytes { data, .. },
                 tx,
+                ..
             }) => {
                 self.import_tasks.spawn(import_bytes(data, tx));
             }
-            Command::ImportByteStream(ImportByteStreamMsg { inner, tx }) => {
+            Command::ImportByteStream(ImportByteStreamMsg { inner, tx, .. }) => {
                 let stream = Box::pin(futures_lite::stream::iter(inner.data).map(io::Result::Ok));
                 self.import_tasks.spawn(import_byte_stream(stream, tx));
             }
@@ -729,7 +730,7 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let hash = store.import_bytes(vec![0u8; 1024 * 64]).await?;
+        let hash = store.import_bytes(vec![0u8; 1024 * 64]).await.hash().await?;
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all());
         while let Some(item) = stream.next().await {

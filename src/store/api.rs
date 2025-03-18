@@ -23,7 +23,7 @@ use quic_rpc::channel::none::NoReceiver;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
-use super::Blobs;
+use super::{BlobFormat, Blobs};
 use crate::{
     store::{
         bitfield::Bitfield,
@@ -399,17 +399,17 @@ pub mod tags {
 }
 
 impl Blobs {
-    pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
-        self.import_bytes_impl(data.into())
+    pub async fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
+        self.import_bytes_impl(data.into()).await
     }
 
-    fn import_bytes_impl(&self, data: bytes::Bytes) -> ImportResult {
+    async fn import_bytes_impl(&self, data: bytes::Bytes) -> ImportResult {
         trace!(
             "import_bytes size={} addr={}",
             data.len(),
             data.addr_short()
         );
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
         let inner = ImportBytes {
             data,
             format: crate::BlobFormat::Raw,
@@ -417,7 +417,8 @@ impl Blobs {
         self.sender
             .try_send(
                 ImportBytesMsg {
-                    tx: tx.into(),
+                    tx,
+                    rx: NoReceiver,
                     inner,
                 }
                 .into(),
@@ -426,21 +427,23 @@ impl Blobs {
         ImportResult { rx }
     }
 
-    pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        let (tx, rx) = mpsc::channel(32);
+    pub async fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
+        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
         let inner = ImportPath {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
-            format: crate::BlobFormat::Raw,
+            format: BlobFormat::Raw,
         };
         self.sender
-            .try_send(
+            .send(
                 ImportPathMsg {
                     inner,
-                    tx: tx.into(),
+                    rx: NoReceiver,
+                    tx,
                 }
                 .into(),
             )
+            .await
             .ok();
         ImportResult { rx }
     }
@@ -466,15 +469,17 @@ impl Blobs {
             data,
             format: crate::BlobFormat::Raw,
         };
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = quic_rpc::channel::spsc::channel(32);
         self.sender
-            .try_send(
+            .send(
                 ImportByteStreamMsg {
                     inner,
-                    tx: tx.into(),
+                    tx,
+                    rx: NoReceiver,
                 }
                 .into(),
             )
+            .await
             .ok();
         ImportResult { rx }
     }
@@ -669,41 +674,17 @@ impl Blobs {
 }
 
 pub struct ImportResult {
-    rx: mpsc::Receiver<ImportProgress>,
+    rx: quic_rpc::channel::spsc::Receiver<ImportProgress>,
 }
 
-impl Future for ImportResult {
-    type Output = anyhow::Result<Hash>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+impl ImportResult {
+    pub async fn hash(mut self) -> io::Result<Hash> {
         loop {
-            match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(ImportProgress::Done { hash })) => break Poll::Ready(Ok(hash)),
-                Poll::Ready(Some(ImportProgress::Error { cause })) => {
-                    break Poll::Ready(Err(anyhow::anyhow!(
-                        "import task ended unexpectedly {}",
-                        cause
-                    )))
-                }
-                Poll::Ready(Some(_)) => continue,
-                Poll::Ready(None) => {
-                    break Poll::Ready(Err(anyhow::anyhow!("import task ended unexpectedly")))
-                }
-                Poll::Pending => break Poll::Pending,
+            match self.rx.recv().await? {
+                Some(ImportProgress::Done { hash }) => break Ok(hash),
+                Some(ImportProgress::Error { cause }) => break Err(cause),
+                _ => {}
             }
-        }
-    }
-}
-
-impl Stream for ImportResult {
-    type Item = io::Result<ImportProgress>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(ImportProgress::Error { cause })) => Poll::Ready(Some(Err(cause))),
-            Poll::Ready(Some(item)) => Poll::Ready(Some(Ok(item))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
         }
     }
 }

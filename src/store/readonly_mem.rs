@@ -41,7 +41,7 @@ impl Actor {
 
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::ImportBao(ImportBaoMsg { mut tx, .. }) => {
+            Command::ImportBao(ImportBaoMsg { tx, .. }) => {
                 tx.send(Err(io::Error::other("import not supported")))
                     .await
                     .ok();
