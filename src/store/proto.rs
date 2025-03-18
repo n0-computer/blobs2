@@ -91,7 +91,7 @@ pub struct ImportBytes {
 
 pub struct ImportBytesMsg {
     pub inner: ImportBytes,
-    pub tx: mpsc::Sender<ImportProgress>,
+    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 }
 
 impl fmt::Debug for ImportBytesMsg {
@@ -145,12 +145,12 @@ pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send +
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportByteStream {
     pub format: BlobFormat,
+    pub data: Vec<Bytes>,
 }
 
 pub struct ImportByteStreamMsg {
     pub inner: ImportByteStream,
-    pub data: BoxedByteStream,
-    pub tx: mpsc::Sender<ImportProgress>,
+    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 }
 
 impl std::fmt::Debug for ImportByteStreamMsg {
@@ -168,7 +168,7 @@ pub struct ImportPath {
 
 pub struct ImportPathMsg {
     pub inner: ImportPath,
-    pub tx: mpsc::Sender<ImportProgress>,
+    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 }
 
 impl fmt::Debug for ImportPathMsg {
@@ -287,14 +287,25 @@ pub enum Command {
     Shutdown(ShutdownMsg),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ImportProgress {
-    CopyProgress { offset: u64 },
-    Size { size: u64 },
+    CopyProgress {
+        offset: u64,
+    },
+    Size {
+        size: u64,
+    },
     CopyDone,
-    OutboardProgress { offset: u64 },
-    Done { hash: Hash },
-    Error { cause: io::Error },
+    OutboardProgress {
+        offset: u64,
+    },
+    Done {
+        hash: Hash,
+    },
+    Error {
+        #[serde(with = "crate::util::serde::io_error_serde")]
+        cause: io::Error,
+    },
 }
 
 impl From<io::Error> for ImportProgress {

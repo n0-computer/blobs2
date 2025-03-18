@@ -134,8 +134,9 @@ impl Actor {
             }) => {
                 self.import_tasks.spawn(import_bytes(data, tx));
             }
-            Command::ImportByteStream(ImportByteStreamMsg { data, inner, tx }) => {
-                self.import_tasks.spawn(import_byte_stream(data, tx));
+            Command::ImportByteStream(ImportByteStreamMsg { inner, tx }) => {
+                let stream = Box::pin(futures_lite::stream::iter(inner.data).map(io::Result::Ok));
+                self.import_tasks.spawn(import_byte_stream(stream, tx));
             }
             Command::ImportPath(cmd) => {
                 self.import_tasks.spawn(import_path(cmd));
@@ -263,8 +264,8 @@ impl Actor {
         None
     }
 
-    fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
-        let import_data = match res {
+    async fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
+        let mut import_data = match res {
             Ok(Ok(entry)) => entry,
             Ok(Err(e)) => {
                 tracing::error!("import failed: {e}");
@@ -282,14 +283,21 @@ impl Actor {
         let hash = import_data.outboard.root().into();
         let size = import_data.data.len() as u64;
         let entry = self.state.data.entry(hash).or_default();
-        let mut entry = entry.write().unwrap();
-        let Entry::Partial(incomplete) = entry.deref_mut() else {
-            import_data.out.send(ImportProgress::Done { hash });
-            return;
-        };
-        incomplete.update(Bitfield::complete(size));
-        import_data.out.send(ImportProgress::Done { hash });
-        *entry = CompleteStorage::new(import_data.data, import_data.outboard.data.into()).into();
+        {
+            let mut entry = entry.write().unwrap();
+            let Entry::Partial(incomplete) = entry.deref_mut() else {
+                drop(entry);
+                return;
+            };
+            incomplete.update(Bitfield::complete(size));
+            *entry =
+                CompleteStorage::new(import_data.data, import_data.outboard.data.into()).into();
+        }
+        import_data
+            .tx
+            .send(ImportProgress::Done { hash })
+            .await
+            .ok();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -312,7 +320,7 @@ impl Actor {
                     }
                 }
                 Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
-                    self.finish_import(res);
+                    self.finish_import(res).await;
                 }
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);
@@ -405,7 +413,7 @@ async fn export_bao_task(
 
 async fn import_bytes(
     data: Bytes,
-    tx: mpsc::Sender<ImportProgress>,
+    mut tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     tx.send(ImportProgress::Size {
         size: data.len() as u64,
@@ -413,17 +421,12 @@ async fn import_bytes(
     .await?;
     tx.send(ImportProgress::CopyDone).await?;
     let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
-    let out = tx.reserve_owned().await?;
-    Ok(ImportEntry {
-        data,
-        outboard,
-        out,
-    })
+    Ok(ImportEntry { data, outboard, tx })
 }
 
 async fn import_byte_stream(
     mut data: BoxedByteStream,
-    tx: mpsc::Sender<ImportProgress>,
+    mut tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     while let Some(item) = data.next().await {
@@ -431,7 +434,8 @@ async fn import_byte_stream(
         res.extend_from_slice(&item);
         tx.send_progress(ImportProgress::CopyProgress {
             offset: res.len() as u64,
-        })?;
+        })
+        .await?;
     }
     import_bytes(res.into(), tx).await
 }
@@ -440,7 +444,7 @@ async fn import_byte_stream(
 async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
     let ImportPathMsg {
         inner: ImportPath { path, .. },
-        tx,
+        mut tx,
         ..
     } = cmd;
     let mut res = Vec::new();
@@ -503,7 +507,7 @@ async fn export_path_impl(
 struct ImportEntry {
     data: Bytes,
     outboard: PreOrderMemOutboard,
-    out: OwnedPermit<ImportProgress>,
+    tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 }
 
 struct ExportOutboard {

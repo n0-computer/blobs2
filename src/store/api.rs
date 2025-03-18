@@ -415,7 +415,13 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
         };
         self.sender
-            .try_send(ImportBytesMsg { tx, inner }.into())
+            .try_send(
+                ImportBytesMsg {
+                    tx: tx.into(),
+                    inner,
+                }
+                .into(),
+            )
             .ok();
         ImportResult { rx }
     }
@@ -428,28 +434,47 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
         };
         self.sender
-            .try_send(ImportPathMsg { inner, tx }.into())
+            .try_send(
+                ImportPathMsg {
+                    inner,
+                    tx: tx.into(),
+                }
+                .into(),
+            )
             .ok();
         ImportResult { rx }
     }
 
-    pub fn import_byte_stream(
+    pub async fn import_byte_stream(
         &self,
         data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
     ) -> ImportResult {
-        self.import_byte_stream_impl(Box::pin(data))
+        self.import_byte_stream_impl(Box::pin(data)).await
     }
 
-    fn import_byte_stream_impl(
+    async fn import_byte_stream_impl(
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
     ) -> ImportResult {
+        let data = data
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
         let inner = ImportByteStream {
+            data,
             format: crate::BlobFormat::Raw,
         };
         let (tx, rx) = mpsc::channel(32);
         self.sender
-            .try_send(ImportByteStreamMsg { inner, data, tx }.into())
+            .try_send(
+                ImportByteStreamMsg {
+                    inner,
+                    tx: tx.into(),
+                }
+                .into(),
+            )
             .ok();
         ImportResult { rx }
     }

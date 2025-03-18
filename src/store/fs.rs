@@ -380,7 +380,7 @@ impl Actor {
             InternalCommand::Dump(cmd) => {
                 self.db().send(cmd.into()).await.ok();
             }
-            InternalCommand::FinishImport(cmd) => {
+            InternalCommand::FinishImport(mut cmd) => {
                 if cmd.hash.as_bytes() == Hash::EMPTY.as_bytes() {
                     cmd.tx
                         .send(ImportProgress::Done { hash: cmd.hash })
@@ -499,28 +499,25 @@ impl Drop for RtWrapper {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(cmd: ImportEntryMsg, ctx: HashContext) {
-    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
-        return;
-    };
+async fn finish_import(mut cmd: ImportEntryMsg, ctx: HashContext) {
     let hash = cmd.hash;
-    let res = match finish_import_impl(cmd, ctx).await {
+    let res = match finish_import_impl(cmd.inner, &mut cmd.tx, ctx).await {
         Ok(()) => ImportProgress::Done { hash },
         Err(cause) => ImportProgress::Error { cause },
     };
-    send.send(res);
+    cmd.tx.send(res).await.ok();
 }
 
-async fn finish_import_impl(import_data: ImportEntryMsg, ctx: HashContext) -> io::Result<()> {
-    let ImportEntryMsg {
-        inner:
-            ImportEntry {
-                source,
-                hash,
-                outboard,
-                ..
-            },
-        tx,
+async fn finish_import_impl(
+    import_data: ImportEntry,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+    ctx: HashContext,
+) -> io::Result<()> {
+    let ImportEntry {
+        source,
+        hash,
+        outboard,
+        ..
     } = import_data;
     let options = ctx.options();
     match &source {
@@ -1039,7 +1036,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
             let obs = store.observe(expected_hash).aggregated();
-            let actual_hash = store.import_byte_stream(stream).await?;
+            let actual_hash = store.import_byte_stream(stream).await.await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;

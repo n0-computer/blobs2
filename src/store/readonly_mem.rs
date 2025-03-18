@@ -41,27 +41,30 @@ impl Actor {
 
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::ImportBao(ImportBaoMsg { tx, .. }) => {
+            Command::ImportBao(ImportBaoMsg { mut tx, .. }) => {
                 tx.send(Err(io::Error::other("import not supported")))
                     .await
                     .ok();
             }
-            Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
-                tx.try_send(ImportProgress::Error {
+            Command::ImportBytes(ImportBytesMsg { mut tx, .. }) => {
+                tx.send(ImportProgress::Error {
                     cause: io::Error::other("import not supported"),
                 })
+                .await
                 .ok();
             }
-            Command::ImportByteStream(ImportByteStreamMsg { tx, .. }) => {
-                tx.try_send(ImportProgress::Error {
+            Command::ImportByteStream(ImportByteStreamMsg { mut tx, .. }) => {
+                tx.send(ImportProgress::Error {
                     cause: io::Error::other("import not supported"),
                 })
+                .await
                 .ok();
             }
-            Command::ImportPath(ImportPathMsg { tx, .. }) => {
-                tx.try_send(ImportProgress::Error {
+            Command::ImportPath(ImportPathMsg { mut tx, .. }) => {
+                tx.send(ImportProgress::Error {
                     cause: io::Error::other("import not supported"),
                 })
+                .await
                 .ok();
             }
             Command::Observe(ObserveMsg {

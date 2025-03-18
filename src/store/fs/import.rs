@@ -35,8 +35,8 @@ use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     store::{
         proto::{
-            HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytesMsg, ImportMode,
-            ImportPath, ImportPathMsg, ImportProgress,
+            HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
+            ImportMode, ImportPath, ImportPathMsg, ImportProgress,
         },
         util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt, SenderProgressExt},
         IROH_BLOCK_SIZE,
@@ -105,7 +105,7 @@ pub struct ImportEntry {
 
 pub struct ImportEntryMsg {
     pub inner: ImportEntry,
-    pub tx: mpsc::Sender<ImportProgress>,
+    pub tx: quic_rpc::channel::spsc::Sender<ImportProgress>,
 }
 
 impl Deref for ImportEntryMsg {
@@ -149,60 +149,57 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStream {
                 format: cmd.inner.format,
+                data: vec![cmd.inner.data],
             },
-            data: Box::pin(n0_future::stream::once(Ok(cmd.inner.data))),
             tx: cmd.tx,
         };
         import_byte_stream_outer(cmd, ctx).await;
     }
 }
 
-async fn import_bytes_tiny_outer(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
-    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
-        return;
-    };
-    match import_bytes_tiny_impl(cmd).await {
+async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
+    match import_bytes_tiny_impl(cmd.inner, &mut cmd.tx).await {
         Ok(entry) => {
+            let entry = ImportEntryMsg {
+                inner: entry,
+                tx: cmd.tx,
+            };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
         Err(cause) => {
-            send.send(cause.into());
+            cmd.tx.send(cause.into()).await.ok();
         }
     }
 }
 
-async fn import_bytes_tiny_impl(cmd: ImportBytesMsg) -> io::Result<ImportEntryMsg> {
-    let size = cmd.inner.data.len() as u64;
+async fn import_bytes_tiny_impl(
+    mut cmd: ImportBytes,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
+) -> io::Result<ImportEntry> {
+    let size = cmd.data.len() as u64;
     // send the required progress events
     // ImportProgress::Done will be sent when finishing the import!
-    cmd.tx
-        .send(ImportProgress::Size { size })
+    tx.send(ImportProgress::Size { size })
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    cmd.tx
-        .send(ImportProgress::CopyDone)
+    tx.send(ImportProgress::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
     Ok(if raw_outboard_size(size) == 0 {
         // the thing is so small that it does not even need an outboard
-        ImportEntryMsg {
-            inner: ImportEntry {
-                hash: Hash::new(&cmd.inner.data),
-                source: ImportSource::Memory(cmd.inner.data),
-                outboard: MemOrFile::empty(),
-            },
-            tx: cmd.tx,
+
+        ImportEntry {
+            hash: Hash::new(&cmd.data),
+            source: ImportSource::Memory(cmd.data),
+            outboard: MemOrFile::empty(),
         }
     } else {
         // we still know that computing the outboard will be super fast
-        let outboard = PreOrderMemOutboard::create(&cmd.inner.data, IROH_BLOCK_SIZE);
-        ImportEntryMsg {
-            inner: ImportEntry {
-                hash: outboard.root.into(),
-                source: ImportSource::Memory(cmd.inner.data),
-                outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
-            },
-            tx: cmd.tx,
+        let outboard = PreOrderMemOutboard::create(&cmd.data, IROH_BLOCK_SIZE);
+        ImportEntry {
+            hash: outboard.root.into(),
+            source: ImportSource::Memory(cmd.data),
+            outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
         }
     })
 }
@@ -212,30 +209,28 @@ pub async fn import_byte_stream(cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>)
     import_byte_stream_outer(cmd, ctx).await;
 }
 
-pub async fn import_byte_stream_outer(cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>) {
-    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
-        return;
-    };
-    match import_byte_stream_impl(cmd, ctx.options.clone()).await {
+pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>) {
+    match import_byte_stream_impl(cmd.inner, &mut cmd.tx, ctx.options.clone()).await {
         Ok(entry) => {
+            let entry = ImportEntryMsg {
+                inner: entry,
+                tx: cmd.tx,
+            };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
         Err(cause) => {
-            send.send(cause.into());
+            cmd.tx.send(cause.into()).await.ok();
         }
     }
 }
 
 async fn import_byte_stream_impl(
-    cmd: ImportByteStreamMsg,
+    cmd: ImportByteStream,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
     options: Arc<Options>,
-) -> io::Result<ImportEntryMsg> {
-    let ImportByteStreamMsg {
-        data,
-        inner,
-        mut tx,
-    } = cmd;
-    let import_source = get_import_source(data, &tx, &options).await?;
+) -> io::Result<ImportEntry> {
+    let data = futures_lite::stream::iter(cmd.data).map(io::Result::Ok);
+    let import_source = get_import_source(data, tx, &options).await?;
     tx.send(ImportProgress::Size {
         size: import_source.size(),
     })
@@ -244,13 +239,12 @@ async fn import_byte_stream_impl(
     tx.send(ImportProgress::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    let inner = compute_outboard(import_source, options, &mut tx).await?;
-    Ok(ImportEntryMsg { inner, tx })
+    compute_outboard(import_source, options, tx).await
 }
 
 async fn get_import_source(
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
-    out: &mpsc::Sender<ImportProgress>,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
     options: &Options,
 ) -> io::Result<ImportSource> {
     let mut stream = stream.fuse();
@@ -297,7 +291,8 @@ async fn get_import_source(
             data.extend_from_slice(&chunk);
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        out.send_progress(ImportProgress::CopyProgress { offset: size })
+        tx.send_progress(ImportProgress::CopyProgress { offset: size })
+            .await
             .map_err(|_e| io::Error::other("error"))?;
     }
     Ok(if let Some((mut file, temp_path)) = disk {
@@ -305,7 +300,7 @@ async fn get_import_source(
             let chunk = chunk?;
             file.write_all(&chunk)?;
             size += chunk.len() as u64;
-            out.send(ImportProgress::CopyProgress { offset: size })
+            tx.send(ImportProgress::CopyProgress { offset: size })
                 .await
                 .map_err(|_e| io::Error::other("error"))?;
         }
@@ -318,15 +313,16 @@ async fn get_import_source(
 async fn compute_outboard(
     source: ImportSource,
     options: Arc<Options>,
-    tx: &mut mpsc::Sender<ImportProgress>,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let root = bao_tree::blake3::Hash::from_bytes([0; 32]);
     let outboard_size = raw_outboard_size(size);
     let send_progress = |offset| {
-        tx.send_progress(ImportProgress::OutboardProgress { offset })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver dropped"))
+        // tx.send_progress(ImportProgress::OutboardProgress { offset })
+        //     .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver dropped"))
+        Ok(())
     };
     let mut data = source.read();
     data.rewind()?;
@@ -391,14 +387,14 @@ pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
             context.internal_cmd_tx.send(res.into()).await.ok();
         }
         Err(cause) => {
-            cmd.tx.send(cause.into()).await;
+            cmd.tx.send(cause.into()).await.ok();
         }
     }
 }
 
 async fn import_path_impl(
     cmd: ImportPath,
-    tx: &mut tokio::sync::mpsc::Sender<ImportProgress>,
+    tx: &mut quic_rpc::channel::spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let ImportPath { path, mode, format } = cmd;
@@ -417,10 +413,12 @@ async fn import_path_impl(
 
     let size = path.metadata()?.len();
     tx.send_progress(ImportProgress::Size { size })
+        .await
         .map_err(|_e| io::Error::other("error"))?;
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
         tx.send_progress(ImportProgress::CopyDone)
+            .await
             .map_err(|_e| io::Error::other("error"))?;
         ImportSource::Memory(data.into())
     } else if mode == ImportMode::TryReference {
@@ -441,6 +439,7 @@ async fn import_path_impl(
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
         tx.send_progress(ImportProgress::CopyDone)
+            .await
             .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
     };
@@ -452,6 +451,7 @@ mod tests {
 
     use bao_tree::io::outboard::PreOrderMemOutboard;
     use n0_future::stream;
+    use quic_rpc::RpcMessage;
     use testresult::TestResult;
 
     use super::*;
@@ -461,9 +461,11 @@ mod tests {
         BlobFormat,
     };
 
-    async fn drain<T>(mut recv: mpsc::Receiver<T>) -> TestResult<Vec<T>> {
+    async fn drain<T: RpcMessage>(
+        mut recv: quic_rpc::channel::spsc::Receiver<T>,
+    ) -> TestResult<Vec<T>> {
         let mut res = Vec::new();
-        while let Some(item) = recv.recv().await {
+        while let Some(item) = recv.recv().await? {
             res.push(item);
         }
         Ok(res)
@@ -490,23 +492,18 @@ mod tests {
             Box::pin(stream::iter(chunk_bytes(data.clone(), 999).map(Ok)));
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (tx, rx) = mpsc::channel(1024 * 1024);
-        let cmd = ImportByteStreamMsg {
-            data: stream,
-            tx,
-            inner: ImportByteStream {
-                format: BlobFormat::Raw,
-            },
+        let (mut tx, rx) = quic_rpc::channel::spsc::channel(1024 * 1024);
+        let data = stream.collect::<Vec<_>>().await;
+        let data = data.into_iter().collect::<io::Result<Vec<_>>>()?;
+        let cmd = ImportByteStream {
+            data,
+            format: BlobFormat::Raw,
         };
-        let res = import_byte_stream_impl(cmd, options).await;
+        let res = import_byte_stream_impl(cmd, &mut tx, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };
-        let ImportEntryMsg {
-            inner: ImportEntry { outboard, .. },
-            tx,
-            ..
-        } = res;
+        let ImportEntry { outboard, .. } = res;
         drop(tx);
         let actual_outboard = match &outboard {
             MemOrFile::Mem(data) => data.clone(),
@@ -523,7 +520,7 @@ mod tests {
         std::fs::write(&path, &data)?;
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (mut tx, rx) = mpsc::channel(1024 * 1024);
+        let (mut tx, rx) = quic_rpc::channel::spsc::channel(1024 * 1024);
         let cmd = ImportPath {
             path,
             mode: ImportMode::Copy,
