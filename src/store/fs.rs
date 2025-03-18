@@ -59,7 +59,7 @@ use bao_tree::{
 use bytes::Bytes;
 use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
-use import::ImportSource;
+use import::{ImportEntry, ImportSource};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use tokio::task::{JoinError, JoinSet};
@@ -82,7 +82,7 @@ mod meta;
 mod options;
 pub(crate) mod util;
 use entry_state::EntryState;
-use import::{import_byte_stream, import_bytes, import_path, ImportEntry};
+use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 
 use super::{proto::*, util::QuicRpcSenderProgressExt, Store};
@@ -105,7 +105,7 @@ fn temp_name() -> String {
 #[enum_conversions()]
 pub enum InternalCommand {
     Dump(meta::Dump),
-    FinishImport(ImportEntry),
+    FinishImport(ImportEntryMsg),
 }
 
 /// Context needed by most tasks
@@ -499,7 +499,7 @@ impl Drop for RtWrapper {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(cmd: ImportEntry, ctx: HashContext) {
+async fn finish_import(cmd: ImportEntryMsg, ctx: HashContext) {
     let Ok(send) = cmd.tx.clone().reserve_owned().await else {
         return;
     };
@@ -511,9 +511,19 @@ async fn finish_import(cmd: ImportEntry, ctx: HashContext) {
     send.send(res);
 }
 
-async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::Result<()> {
+async fn finish_import_impl(import_data: ImportEntryMsg, ctx: HashContext) -> io::Result<()> {
+    let ImportEntryMsg {
+        inner:
+            ImportEntry {
+                source,
+                hash,
+                outboard,
+                ..
+            },
+        tx,
+    } = import_data;
     let options = ctx.options();
-    match &import_data.source {
+    match &source {
         ImportSource::Memory(data) => {
             debug_assert!(options.is_inlined_data(data.len() as u64));
         }
@@ -524,7 +534,6 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
             debug_assert!(!options.is_inlined_data(*size));
         }
     }
-    let hash: crate::Hash = import_data.hash;
     let guard = ctx.lock().await;
     let handle = guard.as_ref().and_then(|x| x.upgrade());
     // if I do have an existing handle, I have to possibly deal with observers.
@@ -533,7 +542,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
     //   the entry does not exist at all.
     // convert the import source to a data location and drop the open files
     ctx.protect(hash, [BaoFilePart::Data, BaoFilePart::Outboard]);
-    let data_location = match import_data.source {
+    let data_location = match source {
         ImportSource::Memory(data) => DataLocation::Inline(data),
         ImportSource::External(path, _file, size) => DataLocation::External(vec![path], size),
         ImportSource::TempFile(path, _file, size) => {
@@ -555,7 +564,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
             DataLocation::Owned(size)
         }
     };
-    let outboard_location = match import_data.outboard {
+    let outboard_location = match outboard {
         MemOrFile::Mem(bytes) if bytes.is_empty() => OutboardLocation::NotNeeded,
         MemOrFile::Mem(bytes) => OutboardLocation::Inline(bytes),
         MemOrFile::File(path) => {
