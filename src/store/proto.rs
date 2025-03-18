@@ -10,7 +10,10 @@ pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{io::BaoContentItem, ChunkRanges};
 use bytes::Bytes;
 use n0_future::Stream;
-use quic_rpc::WithChannels;
+use quic_rpc::{
+    channel::{oneshot, spsc},
+    WithChannels,
+};
 use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +29,6 @@ use crate::{
     },
     Hash,
 };
-use quic_rpc::channel::{spsc, oneshot};
 
 pub trait HashSpecific {
     fn hash(&self) -> Hash;
@@ -65,7 +67,7 @@ pub struct Observe {
 /// Observe the bitfield of the given hash.
 pub struct ObserveMsg {
     pub inner: Observe,
-    pub tx: Observer<Bitfield>,
+    pub tx: tokio::sync::mpsc::Sender<Bitfield>,
 }
 
 impl fmt::Debug for ObserveMsg {

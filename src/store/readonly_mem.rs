@@ -12,7 +12,7 @@ use bytes::Bytes;
 use n0_future::future::yield_now;
 use tokio::task::{JoinError, JoinSet};
 
-use super::util::QuicRpcSenderProgressExt;
+use super::util::{observer::Observer, QuicRpcSenderProgressExt};
 use crate::{
     store::{
         bitfield::Bitfield, mem::CompleteStorage, proto::*, util::observer::Observable, Store,
@@ -71,6 +71,7 @@ impl Actor {
                 inner: Observe { hash },
                 tx,
             }) => {
+                let tx = Observer::new(tx);
                 if let Some(entry) = self.data.get_mut(&hash) {
                     entry.add_observer(tx);
                 } else {

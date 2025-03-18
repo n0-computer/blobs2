@@ -126,6 +126,7 @@ impl Actor {
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
+                let tx = Observer::new(tx);
                 entry.add_observer(tx);
             }
             Command::ImportBytes(ImportBytesMsg {
@@ -730,7 +731,11 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let hash = store.import_bytes(vec![0u8; 1024 * 64]).await.hash().await?;
+        let hash = store
+            .import_bytes(vec![0u8; 1024 * 64])
+            .await
+            .hash()
+            .await?;
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all());
         while let Some(item) = stream.next().await {

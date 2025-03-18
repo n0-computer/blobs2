@@ -85,7 +85,11 @@ use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 
-use super::{proto::*, util::QuicRpcSenderProgressExt, Store};
+use super::{
+    proto::*,
+    util::{observer::Observer, QuicRpcSenderProgressExt},
+    Store,
+};
 
 /// Create a 16 byte unique ID.
 fn new_uuid() -> [u8; 16] {
@@ -508,10 +512,7 @@ async fn finish_import(mut cmd: ImportEntryMsg, ctx: HashContext) {
     cmd.tx.send(res).await.ok();
 }
 
-async fn finish_import_impl(
-    import_data: ImportEntry,
-    ctx: HashContext,
-) -> io::Result<()> {
+async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::Result<()> {
     let ImportEntry {
         source,
         hash,
@@ -679,8 +680,9 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.inner.hash).await else {
         return;
     };
-    let receiver_dropped = cmd.tx.receiver_dropped();
-    handle.add_observer(cmd.tx);
+    let tx = Observer::new(cmd.tx);
+    let receiver_dropped = tx.receiver_dropped();
+    handle.add_observer(tx);
     // this keeps the handle alive until the observer is dropped
     receiver_dropped.await;
     // give the handle a chance to clean up the dropped observer

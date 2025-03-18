@@ -162,7 +162,11 @@ async fn node_smoke() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
-    let hash = store.import_bytes(b"hello world".to_vec()).await.hash().await?;
+    let hash = store
+        .import_bytes(b"hello world".to_vec())
+        .await
+        .hash()
+        .await?;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
     let r1 = Router::builder(endpoint)

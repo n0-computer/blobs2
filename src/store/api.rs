@@ -524,7 +524,7 @@ impl Blobs {
             .try_send(
                 ObserveMsg {
                     inner: Observe { hash },
-                    tx: Observer::new(tx),
+                    tx,
                 }
                 .into(),
             )
