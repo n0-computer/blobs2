@@ -162,42 +162,42 @@ impl Dump {
     }
 }
 
-    async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> ActorResult<()> {
-        let ListTagsMsg {
-            inner:
-                ListTags {
-                    from,
-                    to,
-                    raw,
-                    hash_seq,
-                },
-            tx,
-            ..
-        } = msg;
-        let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
-        let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
-        let mut res = Vec::new();
-        for item in tables.tags().range((from, to))? {
-            match item {
-                Ok((k, v)) => {
-                    let v = v.value();
-                    if raw && v.format.is_raw() || hash_seq && v.format.is_hash_seq() {
-                        let info = TagInfo {
-                            name: k.value(),
-                            hash: v.hash,
-                            format: v.format,
-                        };
-                        res.push(anyhow::Ok(info));
-                    }
-                }
-                Err(e) => {
-                    res.push(Err(e.into()));
+async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> ActorResult<()> {
+    let ListTagsMsg {
+        inner:
+            ListTags {
+                from,
+                to,
+                raw,
+                hash_seq,
+            },
+        tx,
+        ..
+    } = msg;
+    let from = from.map(Bound::Included).unwrap_or(Bound::Unbounded);
+    let to = to.map(Bound::Excluded).unwrap_or(Bound::Unbounded);
+    let mut res = Vec::new();
+    for item in tables.tags().range((from, to))? {
+        match item {
+            Ok((k, v)) => {
+                let v = v.value();
+                if raw && v.format.is_raw() || hash_seq && v.format.is_hash_seq() {
+                    let info = TagInfo {
+                        name: k.value(),
+                        hash: v.hash,
+                        format: v.format,
+                    };
+                    res.push(anyhow::Ok(info));
                 }
             }
+            Err(e) => {
+                res.push(Err(e.into()));
+            }
         }
-        tx.send(res).await.ok();
-        Ok(())
     }
+    tx.send(res).await.ok();
+    Ok(())
+}
 
 impl Blobs {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
@@ -504,20 +504,20 @@ impl Actor {
         }
     }
 
-    fn sync_db(_db: &mut Database, sync: SyncDbMsg) -> ActorResult<()> {
+    async fn sync_db(_db: &mut Database, sync: SyncDbMsg) -> ActorResult<()> {
         let SyncDbMsg { tx, .. } = sync;
         // nothing to do here, since for a toplevel cmd we are outside a write transaction
-        tx.send(Ok(()));
+        tx.send(Ok(())).await.ok();
         Ok(())
     }
 
-    fn handle_toplevel(
+    async fn handle_toplevel(
         db: &mut Database,
         cmd: TopLevelCommand,
     ) -> ActorResult<Option<ShutdownMsg>> {
         Ok(match cmd {
             TopLevelCommand::SyncDb(cmd) => {
-                Self::sync_db(db, cmd)?;
+                Self::sync_db(db, cmd).await?;
                 None
             }
             TopLevelCommand::Shutdown(cmd) => {
@@ -537,7 +537,7 @@ impl Actor {
             match cmd {
                 Command::TopLevel(cmd) => {
                     trace!("{cmd:?}");
-                    if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd)? {
+                    if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd).await? {
                         break Some(shutdown);
                     }
                 }
@@ -584,7 +584,7 @@ impl Actor {
         };
         if let Some(shutdown) = shutdown {
             drop(db);
-            shutdown.tx.send(());
+            shutdown.tx.send(()).await.ok();
         }
         Ok(())
     }

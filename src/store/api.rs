@@ -34,7 +34,7 @@ use crate::{
         },
         IROH_BLOCK_SIZE,
     },
-    util::channel::{mpsc, oneshot},
+    util::channel::mpsc,
     Hash,
 };
 
@@ -545,7 +545,7 @@ impl Blobs {
             ImportBaoMsg {
                 inner,
                 rx: rx.into(),
-                tx: out_tx.into(),
+                tx: out_tx,
             }
             .into(),
         )?;
@@ -611,21 +611,29 @@ impl Blobs {
     }
 
     pub async fn sync_db(&self) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = quic_rpc::channel::oneshot::channel();
         self.sender
-            .send(SyncDbMsg { tx, inner: SyncDb }.into())
+            .send(
+                SyncDbMsg {
+                    tx,
+                    rx: NoReceiver,
+                    inner: SyncDb,
+                }
+                .into(),
+            )
             .await?;
         rx.await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = quic_rpc::channel::oneshot::channel();
         self.sender
             .send(
                 ShutdownMsg {
                     inner: Shutdown,
                     tx,
+                    rx: NoReceiver,
                 }
                 .into(),
             )

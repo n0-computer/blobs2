@@ -254,7 +254,7 @@ impl Actor {
                 tx.send(Ok(tag)).await.ok();
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
-                tx.send(Ok(()));
+                tx.send(Ok(())).await.ok();
             }
             Command::Shutdown(cmd) => {
                 return Some(cmd);
@@ -320,7 +320,7 @@ impl Actor {
             }
         };
         if let Some(shutdown) = shutdown {
-            shutdown.tx.send(());
+            shutdown.tx.send(()).await.ok();
         }
     }
 }

@@ -24,7 +24,7 @@ use crate::{
         util::{observer::Observer, Tag},
         BlobFormat, HashAndFormat,
     },
-    util::channel::{mpsc, oneshot},
+    util::channel::mpsc,
     Hash,
 };
 
@@ -55,16 +55,7 @@ impl HashSpecific for ImportBaoMsg {
     }
 }
 
-pub struct ShutdownMsg {
-    pub inner: Shutdown,
-    pub tx: oneshot::Sender<()>,
-}
-
-impl fmt::Debug for ShutdownMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Shutdown").finish_non_exhaustive()
-    }
-}
+pub type ShutdownMsg = WithChannels<Shutdown, StoreService>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Observe {
@@ -237,16 +228,7 @@ pub struct SyncDb;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Shutdown;
 
-pub struct SyncDbMsg {
-    pub inner: SyncDb,
-    pub tx: oneshot::Sender<anyhow::Result<()>>,
-}
-
-impl fmt::Debug for SyncDbMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SyncDb").finish_non_exhaustive()
-    }
-}
+pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 
 #[derive(Debug, Clone)]
 pub struct StoreService;
@@ -280,7 +262,7 @@ pub enum Request {
     CreateTag(CreateTag),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
     SyncDb(SyncDb),
-    #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
+    #[rpc(tx = quic_rpc::channel::oneshot::Sender<()>)]
     Shutdown(Shutdown),
 }
 
