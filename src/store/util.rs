@@ -347,7 +347,7 @@ pub fn read_checksummed<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Resu
     }
 
     let deserialized =
-        postcard::from_bytes(data).map_err(|e| io::Error::other(e))?;
+        postcard::from_bytes(data).map_err(io::Error::other)?;
 
     Ok(deserialized)
 }

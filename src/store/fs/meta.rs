@@ -467,7 +467,7 @@ impl Actor {
                 tx.send(Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "tag not found",
-                )));
+                ))).await.ok();
                 return Ok(());
             }
         };
