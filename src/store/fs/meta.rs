@@ -89,8 +89,11 @@ impl Db {
     ///
     /// This will fail only if the database actor is dead. In that case the main
     /// actor should probably also shut down.
-    pub async fn send(&self, cmd: Command) -> anyhow::Result<()> {
-        self.sender.send(cmd).await?;
+    pub async fn send(&self, cmd: Command) -> io::Result<()> {
+        self.sender
+            .send(cmd)
+            .await
+            .map_err(|e| io::Error::other("actor down"))?;
         Ok(())
     }
 }

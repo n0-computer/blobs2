@@ -739,14 +739,19 @@ impl BaoFileHandle {
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
         ctx: &TaskContext,
-    ) -> anyhow::Result<()> {
+    ) -> io::Result<()> {
         trace!(
             "write_batch size={} ranges={:?} batch={}",
             size,
             ranges,
             batch.len()
         );
-        let permit = ctx.db.sender.reserve().await?;
+        let permit = ctx
+            .db
+            .sender
+            .reserve()
+            .await
+            .map_err(|e| io::Error::other("reserve"))?;
         let mut guard = self.storage.write().unwrap();
         if let Some(state) = guard.take() {
             match state.write_batch(size, batch, ranges, ctx, &self.hash, permit) {
@@ -754,10 +759,10 @@ impl BaoFileHandle {
                     *guard = Some(new_state);
                     Ok(())
                 }
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e),
             }
         } else {
-            Err(io::Error::new(io::ErrorKind::Other, "handle poisoned").into())
+            Err(io::Error::new(io::ErrorKind::Other, "handle poisoned"))
         }
     }
 }

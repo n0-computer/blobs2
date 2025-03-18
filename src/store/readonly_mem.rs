@@ -12,6 +12,7 @@ use bytes::Bytes;
 use n0_future::future::yield_now;
 use tokio::task::{JoinError, JoinSet};
 
+use super::util::QuicRpcSenderProgressExt;
 use crate::{
     store::{
         bitfield::Bitfield,
@@ -44,23 +45,23 @@ impl Actor {
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::ImportBao(ImportBaoMsg { tx, .. }) => {
-                tx.send(Err(anyhow::anyhow!("import not supported")));
+                tx.send(Err(io::Error::other("import not supported")));
             }
             Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
-                    cause: anyhow::anyhow!("import not supported"),
+                    cause: io::Error::other("import not supported"),
                 })
                 .ok();
             }
             Command::ImportByteStream(ImportByteStreamMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
-                    cause: anyhow::anyhow!("import not supported"),
+                    cause: io::Error::other("import not supported"),
                 })
                 .ok();
             }
             Command::ImportPath(ImportPathMsg { tx, .. }) => {
                 tx.try_send(ImportProgress::Error {
-                    cause: anyhow::anyhow!("import not supported"),
+                    cause: io::Error::other("import not supported"),
                 })
                 .ok();
             }
@@ -88,7 +89,7 @@ impl Actor {
             }
             Command::ExportPath(ExportPathMsg {
                 inner: ExportPath { hash, target, .. },
-                tx,
+                mut tx,
                 ..
             }) => {
                 let entry = self
@@ -176,13 +177,15 @@ impl Store {
 async fn export_path_task(
     entry: Option<(Bytes, Bytes)>,
     target: PathBuf,
-    tx: mpsc::Sender<ExportProgress>,
+    mut tx: quic_rpc::channel::spsc::Sender<ExportProgress>,
 ) {
     let Some(entry) = entry else {
-        tx.send(anyhow::anyhow!("hash not found").into()).await.ok();
+        tx.send(io::Error::new(io::ErrorKind::NotFound, "hash not found").into())
+            .await
+            .ok();
         return;
     };
-    match export_path_impl(entry, target, &tx).await {
+    match export_path_impl(entry, target, &mut tx).await {
         Ok(()) => tx.send(ExportProgress::Done).await.ok(),
         Err(cause) => tx.send(cause.into()).await.ok(),
     };
@@ -191,8 +194,8 @@ async fn export_path_task(
 async fn export_path_impl(
     (data, _): (Bytes, Bytes),
     target: PathBuf,
-    tx: &mpsc::Sender<ExportProgress>,
-) -> anyhow::Result<()> {
+    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+) -> io::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
     let size = data.len() as u64;
@@ -203,7 +206,9 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.send_progress(ExportProgress::CopyProgress { offset })?;
+        tx.send_progress(ExportProgress::CopyProgress { offset })
+            .await
+            .map_err(|e| io::Error::other("error"))?;
         yield_now().await;
     }
     Ok(())

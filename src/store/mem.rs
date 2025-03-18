@@ -26,7 +26,10 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use super::api::tags::{ListOptions, TagInfo};
+use super::{
+    api::tags::{ListOptions, TagInfo},
+    util::QuicRpcSenderProgressExt,
+};
 use crate::{
     store::{
         api::tags::DeleteOptions,
@@ -321,7 +324,7 @@ async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
     mut stream: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
-    tx: quic_rpc::channel::oneshot::Sender<anyhow::Result<()>>,
+    tx: quic_rpc::channel::oneshot::Sender<io::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {
@@ -453,27 +456,27 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
 }
 
 async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg) {
+    let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
-        cmd.tx
-            .send(ExportProgress::Error {
-                cause: anyhow::anyhow!("hash not found"),
-            })
-            .await
-            .ok();
+        tx.send(ExportProgress::Error {
+            cause: io::Error::new(io::ErrorKind::NotFound, "hash not found"),
+        })
+        .await
+        .ok();
         return;
     };
-    match export_path_impl(entry, &cmd).await {
-        Ok(()) => cmd.tx.send(ExportProgress::Done).await.ok(),
-        Err(e) => cmd.tx.send(ExportProgress::Error { cause: e }).await.ok(),
+    match export_path_impl(entry, inner, &mut tx).await {
+        Ok(()) => tx.send(ExportProgress::Done).await.ok(),
+        Err(e) => tx.send(ExportProgress::Error { cause: e }).await.ok(),
     };
 }
 
-async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPathMsg) -> anyhow::Result<()> {
-    let ExportPathMsg {
-        inner: ExportPath { target, .. },
-        tx,
-        ..
-    } = cmd;
+async fn export_path_impl(
+    entry: Arc<RwLock<Entry>>,
+    cmd: ExportPath,
+    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+) -> io::Result<()> {
+    let ExportPath { target, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
@@ -484,7 +487,9 @@ async fn export_path_impl(entry: Arc<RwLock<Entry>>, cmd: &ExportPathMsg) -> any
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.send_progress(ExportProgress::CopyProgress { offset })?;
+        tx.send_progress(ExportProgress::CopyProgress { offset })
+            .await
+            .map_err(|e| io::Error::other(""))?;
         yield_now().await;
     }
     Ok(())

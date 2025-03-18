@@ -141,11 +141,7 @@ pub struct ExportPath {
     pub target: PathBuf,
 }
 
-#[derive(Debug)]
-pub struct ExportPathMsg {
-    pub inner: ExportPath,
-    pub tx: mpsc::Sender<ExportProgress>,
-}
+pub type ExportPathMsg = WithChannels<ExportPath, StoreService>;
 
 impl HashSpecific for ExportPathMsg {
     fn hash(&self) -> crate::Hash {
@@ -302,7 +298,7 @@ impl quic_rpc::Service for StoreService {}
 #[rpc_requests(StoreService, RequestMsg)]
 #[derive(Debug)]
 pub enum Request {
-    #[rpc(rx = quic_rpc::channel::spsc::Receiver<BaoContentItem>, tx = quic_rpc::channel::oneshot::Sender<anyhow::Result<()>>)]
+    #[rpc(rx = quic_rpc::channel::spsc::Receiver<BaoContentItem>, tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
     ImportBao(ImportBao),
     #[rpc(tx = quic_rpc::channel::spsc::Sender<EncodedItem>)]
     ExportBao(ExportBao),
@@ -312,6 +308,8 @@ pub enum Request {
     ImportBytes(ImportBytes),
     #[rpc(tx = quic_rpc::channel::spsc::Sender<ImportProgress>)]
     ImportPath(ImportPath),
+    #[rpc(tx = quic_rpc::channel::spsc::Sender<ExportProgress>)]
+    ExportPath(ExportPath),
     #[rpc(tx = quic_rpc::channel::spsc::Sender<anyhow::Result<TagInfo>>)]
     ListTags(ListOptions),
     #[rpc(tx = quic_rpc::channel::oneshot::Sender<io::Result<()>>)]
@@ -356,25 +354,32 @@ pub enum ImportProgress {
     CopyDone,
     OutboardProgress { offset: u64 },
     Done { hash: Hash },
-    Error { cause: anyhow::Error },
+    Error { cause: io::Error },
 }
 
-impl From<anyhow::Error> for ImportProgress {
-    fn from(e: anyhow::Error) -> Self {
+impl From<io::Error> for ImportProgress {
+    fn from(e: io::Error) -> Self {
         Self::Error { cause: e }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ExportProgress {
-    Size { size: u64 },
-    CopyProgress { offset: u64 },
+    Size {
+        size: u64,
+    },
+    CopyProgress {
+        offset: u64,
+    },
     Done,
-    Error { cause: anyhow::Error },
+    Error {
+        #[serde(with = "crate::util::serde::io_error_serde")]
+        cause: io::Error,
+    },
 }
 
-impl From<anyhow::Error> for ExportProgress {
-    fn from(e: anyhow::Error) -> Self {
+impl From<io::Error> for ExportProgress {
+    fn from(e: io::Error) -> Self {
         Self::Error { cause: e }
     }
 }

@@ -52,7 +52,6 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Context;
 use bao_tree::{
     io::{mixed::traverse_ranges_validated, sync::ReadAt, BaoContentItem, Leaf},
     ChunkNum, ChunkRanges,
@@ -86,7 +85,7 @@ use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntry};
 use options::Options;
 
-use super::{proto::*, Store};
+use super::{proto::*, util::QuicRpcSenderProgressExt, Store};
 
 /// Create a 16 byte unique ID.
 fn new_uuid() -> [u8; 16] {
@@ -166,11 +165,7 @@ impl HashContext {
     }
 
     /// Update the entry state in the database, and wait for completion.
-    pub async fn update(
-        &self,
-        hash: impl Into<Hash>,
-        state: EntryState<Bytes>,
-    ) -> anyhow::Result<()> {
+    pub async fn update(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> io::Result<()> {
         let hash = hash.into();
         let (tx, rx) = oneshot::channel();
         self.db()
@@ -183,20 +178,23 @@ impl HashContext {
                 .into(),
             )
             .await?;
-        rx.await??;
+        rx.await.map_err(|e| io::Error::other(""))?;
         Ok(())
     }
 
     /// Update the entry state in the database, and wait for completion.
-    pub async fn set(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> anyhow::Result<()> {
+    pub async fn set(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> io::Result<()> {
         let hash = hash.into();
         let (tx, rx) = oneshot::channel();
-        self.db().send(meta::Set { hash, state, tx }.into()).await?;
-        rx.await??;
+        self.db()
+            .send(meta::Set { hash, state, tx }.into())
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        rx.await.map_err(|e| io::Error::other(""))??;
         Ok(())
     }
 
-    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> anyhow::Result<BaoFileHandle> {
+    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> io::Result<BaoFileHandle> {
         let hash = hash.into();
         if hash == Hash::EMPTY {
             return Ok(self.ctx.empty.clone());
@@ -204,7 +202,11 @@ impl HashContext {
         let res = self
             .slot
             .get_or_create(|| async {
-                let res = self.db().get(hash).await.context("failed to get entry")?;
+                let res = self
+                    .db()
+                    .get(hash)
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                 match res {
                     Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
                     None => Ok(BaoFileHandle::new_partial_mem(
@@ -223,7 +225,7 @@ fn open_bao_file(
     hash: &Hash,
     state: EntryState<Bytes>,
     options: Arc<Options>,
-) -> anyhow::Result<BaoFileHandle> {
+) -> io::Result<BaoFileHandle> {
     Ok(match state {
         EntryState::Complete {
             data_location,
@@ -238,7 +240,7 @@ fn open_bao_file(
                 }
                 DataLocation::External(paths, size) => {
                     let Some(path) = paths.into_iter().next() else {
-                        anyhow::bail!("no external data path");
+                        return Err(io::Error::other("no external data path"));
                     };
                     let file = fs::File::open(&path)?;
                     MemOrFile::File(FixedSize::new(file, size))
@@ -275,10 +277,10 @@ impl Slot {
     /// If there is nothing in the database, create a new in-memory handle.
     ///
     /// `make` will be called if the a live handle does not exist.
-    pub async fn get_or_create<F, Fut>(&self, make: F) -> anyhow::Result<BaoFileHandle>
+    pub async fn get_or_create<F, Fut>(&self, make: F) -> io::Result<BaoFileHandle>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = anyhow::Result<BaoFileHandle>>,
+        Fut: std::future::Future<Output = io::Result<BaoFileHandle>>,
     {
         let mut slot = self.0.lock().await;
         if let Some(weak) = &*slot {
@@ -513,7 +515,7 @@ async fn finish_import(cmd: ImportEntry, ctx: HashContext) {
     send.send(res);
 }
 
-async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyhow::Result<()> {
+async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::Result<()> {
     let options = ctx.options();
     match &import_data.source {
         ImportSource::Memory(data) => {
@@ -588,7 +590,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> anyho
             }
             DataLocation::External(paths, size) => {
                 let Some(path) = paths.iter().next() else {
-                    anyhow::bail!("no external data path");
+                    return Err(io::Error::other("no external data path"));
                 };
                 let file = fs::File::open(path)?;
                 MemOrFile::File(FixedSize::new(file, *size))
@@ -640,7 +642,7 @@ async fn import_bao_impl(
     mut rx: quic_rpc::channel::spsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     ctx: HashContext,
-) -> anyhow::Result<()> {
+) -> io::Result<()> {
     trace!(
         "importing bao: {} {} bytes",
         handle.hash().fmt_short(),
@@ -658,10 +660,9 @@ async fn import_bao_impl(
         if let BaoContentItem::Leaf(leaf) = &item {
             let leaf_range = chunk_range(&leaf);
             if is_validated(size, &leaf_range) {
-                anyhow::ensure!(
-                    size.get() == leaf.offset + leaf.data.len() as u64,
-                    "invalid size"
-                );
+                if size.get() != leaf.offset + leaf.data.len() as u64 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid size"));
+                }
             }
             ranges |= leaf_range;
         }
@@ -735,32 +736,33 @@ async fn export_bao_impl(
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
-    let Ok(send) = cmd.tx.clone().reserve_owned().await else {
-        return;
-    };
-    match ctx.get_or_create(cmd.inner.hash).await {
+    let ExportPathMsg { inner, mut tx, .. } = cmd;
+    match ctx.get_or_create(inner.hash).await {
         Ok(handle) => {
-            if let Err(cause) = export_path_impl(cmd, handle, ctx).await {
-                send.send(cause.into());
+            if let Err(cause) = export_path_impl(inner, &mut tx, handle, ctx).await {
+                tx.send(cause.into()).await.ok();
             }
         }
         Err(cause) => {
-            let cause = anyhow::anyhow!("failed to open file: {cause}");
-            send.send(cause.into());
+            tx.send(cause.into());
         }
     }
 }
 
 async fn export_path_impl(
-    cmd: ExportPathMsg,
+    cmd: ExportPath,
+    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
     handle: BaoFileHandle,
     ctx: HashContext,
-) -> anyhow::Result<()> {
-    let ExportPath { hash, mode, target } = cmd.inner;
+) -> io::Result<()> {
+    let ExportPath { mode, target, .. } = cmd;
     let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
-            anyhow::bail!("not a complete file");
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no complete entry found",
+            ));
         };
         let data = {
             match &complete.data {
@@ -785,7 +787,7 @@ async fn export_path_impl(
         MemOrFile::File(file) => match mode {
             ExportMode::Copy => {
                 let mut target = fs::File::create(&target)?;
-                copy_with_progress(&file, file.size, &mut target, &cmd.tx).await?;
+                copy_with_progress(&file, file.size, &mut target, tx).await?;
             }
             ExportMode::TryReference => {
                 let hash = handle.hash();
@@ -797,9 +799,9 @@ async fn export_path_impl(
                         if cause.raw_os_error() == Some(ERR_CROSS) {
                             let mut target = fs::File::create(&target)?;
                             let size = file.size;
-                            copy_with_progress(&file, size, &mut target, &cmd.tx).await?;
+                            copy_with_progress(&file, size, &mut target, tx).await?;
                         } else {
-                            anyhow::bail!("failed to move file: {cause}");
+                            return Err(cause);
                         }
                     }
                 }
@@ -814,7 +816,7 @@ async fn export_path_impl(
             }
         },
     }
-    cmd.tx.send(ExportProgress::Done).await?;
+    tx.send(ExportProgress::Done).await?;
     Ok(())
 }
 
@@ -822,8 +824,8 @@ async fn copy_with_progress(
     file: impl ReadAt,
     size: u64,
     target: &mut impl Write,
-    out: &mpsc::Sender<ExportProgress>,
-) -> anyhow::Result<()> {
+    tx: &mut quic_rpc::channel::spsc::Sender<ExportProgress>,
+) -> io::Result<()> {
     let mut offset = 0;
     let mut buf = vec![0u8; 1024 * 1024];
     while offset < size {
@@ -831,7 +833,9 @@ async fn copy_with_progress(
         let buf: &mut [u8] = &mut buf[..remaining];
         file.read_exact_at(offset, buf)?;
         target.write_all(buf)?;
-        out.send_progress(ExportProgress::CopyProgress { offset })?;
+        tx.send_progress(ExportProgress::CopyProgress { offset })
+            .await
+            .map_err(|e| io::Error::other(""))?;
         yield_now().await;
         offset += buf.len() as u64;
     }

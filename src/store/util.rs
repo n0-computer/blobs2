@@ -197,6 +197,24 @@ impl<T> SenderProgressExt<T> for mpsc::Sender<T> {
     }
 }
 
+pub trait QuicRpcSenderProgressExt<T> {
+    async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()>;
+}
+
+impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for quic_rpc::channel::spsc::Sender<T> {
+    async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()> {
+        match self {
+            quic_rpc::channel::spsc::Sender::Tokio(tx) => tx
+                .send_progress(value)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+            quic_rpc::channel::spsc::Sender::Boxed(tx) => {
+                tx.try_send(value.into()).await?;
+                Ok(())
+            }
+        }
+    }
+}
+
 /// A reader that calls a callback with the number of bytes read after each read.
 pub(crate) struct ProgressReader<R, F: Fn(u64) -> std::io::Result<()>> {
     inner: R,

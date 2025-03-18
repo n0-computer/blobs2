@@ -479,7 +479,8 @@ impl Blobs {
                         mode: ExportMode::Copy,
                         target: target.as_ref().to_owned(),
                     },
-                    tx,
+                    tx: tx.into(),
+                    rx: NoReceiver,
                 }
                 .into(),
             )
@@ -629,7 +630,7 @@ impl Future for ImportResult {
 }
 
 impl Stream for ImportResult {
-    type Item = anyhow::Result<ImportProgress>;
+    type Item = io::Result<ImportProgress>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.rx.poll_recv(cx) {
@@ -682,7 +683,7 @@ impl Stream for ExportPathResult {
 }
 
 impl Future for ExportPathResult {
-    type Output = anyhow::Result<()>;
+    type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
@@ -693,7 +694,10 @@ impl Future for ExportPathResult {
                 }
                 Poll::Ready(Some(_)) => continue,
                 Poll::Ready(None) => {
-                    break Poll::Ready(Err(anyhow::anyhow!("export task ended unexpectedly")))
+                    break Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "export task ended unexpectedly",
+                    )))
                 }
                 Poll::Pending => break Poll::Pending,
             }

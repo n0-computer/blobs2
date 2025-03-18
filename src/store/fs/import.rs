@@ -158,12 +158,18 @@ async fn import_bytes_tiny_outer(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
     }
 }
 
-async fn import_bytes_tiny_impl(cmd: ImportBytesMsg) -> anyhow::Result<ImportEntry> {
+async fn import_bytes_tiny_impl(cmd: ImportBytesMsg) -> io::Result<ImportEntry> {
     let size = cmd.inner.data.len() as u64;
     // send the required progress events
     // ImportProgress::Done will be sent when finishing the import!
-    cmd.tx.send(ImportProgress::Size { size }).await?;
-    cmd.tx.send(ImportProgress::CopyDone).await?;
+    cmd.tx
+        .send(ImportProgress::Size { size })
+        .await
+        .map_err(|e| io::Error::other("error"))?;
+    cmd.tx
+        .send(ImportProgress::CopyDone)
+        .await
+        .map_err(|e| io::Error::other("error"))?;
     Ok(if raw_outboard_size(size) == 0 {
         // the thing is so small that it does not even need an outboard
         ImportEntry {
@@ -206,14 +212,17 @@ pub async fn import_byte_stream_outer(cmd: ImportByteStreamMsg, ctx: Arc<TaskCon
 async fn import_byte_stream_impl(
     cmd: ImportByteStreamMsg,
     options: Arc<Options>,
-) -> anyhow::Result<ImportEntry> {
+) -> io::Result<ImportEntry> {
     let ImportByteStreamMsg { data, inner, tx } = cmd;
     let import_source = get_import_source(data, &tx, &options).await?;
     tx.send(ImportProgress::Size {
         size: import_source.size(),
     })
-    .await?;
-    tx.send(ImportProgress::CopyDone).await?;
+    .await
+    .map_err(|e| io::Error::other("error"))?;
+    tx.send(ImportProgress::CopyDone)
+        .await
+        .map_err(|e| io::Error::other("error"))?;
     compute_outboard(import_source, options, tx).await
 }
 
@@ -221,7 +230,7 @@ async fn get_import_source(
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
     out: &mpsc::Sender<ImportProgress>,
     options: &Options,
-) -> anyhow::Result<ImportSource> {
+) -> io::Result<ImportSource> {
     let mut stream = stream.fuse();
     let mut peek = SmallVec::<[_; 2]>::new();
     let Some(first) = stream.next().await.transpose()? else {
@@ -266,7 +275,8 @@ async fn get_import_source(
             data.extend_from_slice(&chunk);
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        out.send_progress(ImportProgress::CopyProgress { offset: size })?;
+        out.send_progress(ImportProgress::CopyProgress { offset: size })
+            .map_err(|e| io::Error::other("error"))?;
     }
     Ok(if let Some((mut file, temp_path)) = disk {
         while let Some(chunk) = stream.next().await {
@@ -274,7 +284,8 @@ async fn get_import_source(
             file.write_all(&chunk)?;
             size += chunk.len() as u64;
             out.send(ImportProgress::CopyProgress { offset: size })
-                .await?;
+                .await
+                .map_err(|e| io::Error::other("error"))?;
         }
         ImportSource::TempFile(temp_path, file, size)
     } else {
@@ -286,7 +297,7 @@ async fn compute_outboard(
     source: ImportSource,
     options: Arc<Options>,
     out: mpsc::Sender<ImportProgress>,
-) -> anyhow::Result<ImportEntry> {
+) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let root = bao_tree::blake3::Hash::from_bytes([0; 32]);
@@ -366,10 +377,7 @@ pub async fn import_path(cmd: ImportPathMsg, context: Arc<TaskContext>) {
     }
 }
 
-async fn import_path_impl(
-    cmd: ImportPathMsg,
-    options: Arc<Options>,
-) -> anyhow::Result<ImportEntry> {
+async fn import_path_impl(cmd: ImportPathMsg, options: Arc<Options>) -> io::Result<ImportEntry> {
     let ImportPathMsg {
         inner: ImportPath { path, mode, format },
         tx,
@@ -385,10 +393,12 @@ async fn import_path_impl(
     }
 
     let size = path.metadata()?.len();
-    tx.send_progress(ImportProgress::Size { size })?;
+    tx.send_progress(ImportProgress::Size { size })
+        .map_err(|e| io::Error::other("error"));
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
-        tx.send_progress(ImportProgress::CopyDone)?;
+        tx.send_progress(ImportProgress::CopyDone)
+            .map_err(|e| io::Error::other("error"))?;
         ImportSource::Memory(data.into())
     } else if mode == ImportMode::TryReference {
         // reference where it is. We are going to need the file handle to
@@ -407,7 +417,8 @@ async fn import_path_impl(
         }
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
-        tx.send_progress(ImportProgress::CopyDone)?;
+        tx.send_progress(ImportProgress::CopyDone)
+            .map_err(|e| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
     };
     compute_outboard(import_source, options, tx).await
