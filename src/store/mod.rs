@@ -10,8 +10,6 @@ mod readonly_mem;
 mod test;
 pub(crate) mod util;
 
-use iroh::endpoint;
-use n0_future::io;
 use proto::{Request, StoreService};
 use quic_rpc::rpc::{listen, Handler};
 use ref_cast::RefCast;

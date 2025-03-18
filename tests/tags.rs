@@ -6,8 +6,6 @@ use blobs2::{
 };
 use futures_lite::StreamExt;
 use n0_future::Stream;
-use quinn::rustls::{quic, server};
-use serde::ser;
 use testresult::TestResult;
 
 async fn to_vec<T>(
@@ -155,8 +153,6 @@ async fn tags_smoke_fs_rpc() -> TestResult<()> {
     let store2 = store.clone();
     tokio::spawn(store2.listen(server));
     let api = Store::connect(client, server_addr);
-    api.tags().set("test", Hash::new("test")).await?;
-    let res = api.tags().get("test").await?;
-    assert_eq!(res, Some(TagInfo::new("test", Hash::new("test"))));
+    tags_smoke(api.tags()).await?;
     Ok(())
 }
