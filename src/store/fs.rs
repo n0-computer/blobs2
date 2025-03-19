@@ -993,9 +993,9 @@ pub mod tests {
             let data = test_data(size);
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
-            let obs = store.observe(hash).await;
+            let obs = store.observe(hash);
             let task = tokio::spawn(async move {
-                let mut agg = obs.aggregated();
+                let mut agg = obs.aggregated().await?;
                 while let Some(_delta) = agg.next().await {
                     let state = agg.state();
                     println!("{:?} complete={}", state, state.is_complete());
@@ -1003,6 +1003,7 @@ pub mod tests {
                         break;
                     }
                 }
+                api::Result::Ok(())
             });
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
             task.await?;
@@ -1047,7 +1048,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
-            let obs = store.observe(expected_hash).await.aggregated();
+            let obs = store.observe(expected_hash).aggregated().await?;
             let actual_hash = store.import_byte_stream(stream).await.hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1071,7 +1072,7 @@ pub mod tests {
         for size in sizes {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).await.aggregated();
+            let obs = store.observe(expected_hash).aggregated().await?;
             let actual_hash = store.import_bytes(expected.clone()).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1099,7 +1100,7 @@ pub mod tests {
         {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).await.aggregated();
+            let obs = store.observe(expected_hash).aggregated().await?;
             let actual_hash = store.import_bytes(expected.clone()).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             let actual = store.export_bytes(expected_hash).await?;
@@ -1132,7 +1133,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
-            let obs = store.observe(expected_hash).await.aggregated();
+            let obs = store.observe(expected_hash).aggregated().await?;
             let actual_hash = store.import_path(&path).hash().await?;
             assert_eq!(expected_hash, actual_hash);
             // we must at some point see completion, otherwise the test will hang
@@ -1378,7 +1379,7 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).await.aggregated();
+                let mut stream = store.observe(hash).aggregated().await?;
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };
@@ -1430,7 +1431,7 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).await.aggregated();
+                let mut stream = store.observe(hash).aggregated().await?;
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };

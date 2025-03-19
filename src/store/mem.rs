@@ -749,7 +749,7 @@ mod tests {
         let exported = stream.bao_to_vec().await?;
 
         let store2 = Store::memory();
-        let mut or = store2.observe(hash).await;
+        let mut or = store2.observe(hash).stream().await?;
         tokio::spawn(async move {
             while let Some(event) = or.next().await {
                 println!("event: {:?}", event);

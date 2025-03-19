@@ -142,7 +142,7 @@ async fn tags_smoke_fs() -> TestResult<()> {
 
 #[tokio::test]
 async fn tags_smoke_fs_rpc() -> TestResult<()> {
-    let server_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345));
+    let server_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let (server, cert) = quic_rpc::util::make_server_endpoint(server_addr)?;
     let client = quic_rpc::util::make_client_endpoint(
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)),
@@ -151,8 +151,8 @@ async fn tags_smoke_fs_rpc() -> TestResult<()> {
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
     let store2 = store.clone();
-    tokio::spawn(store2.listen(server));
-    let api = Store::connect(client, server_addr);
+    tokio::spawn(store2.listen(server.clone()));
+    let api = Store::connect(client, server.local_addr()?);
     tags_smoke(api.tags()).await?;
     Ok(())
 }

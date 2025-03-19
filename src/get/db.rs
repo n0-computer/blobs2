@@ -34,26 +34,15 @@ pub async fn get_missing(
 }
 
 pub async fn get_missing_blob(hash: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
-    let local_ranges = store
-        .observe(hash)
-        .await
-        .next()
-        .await
-        .map(|x| x.ranges)
-        .expect("observe stream stopped");
+    let local_ranges = store.observe(hash).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
     Ok(RangeSpecSeq::from_ranges([required_ranges]))
 }
 
 pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
-    let local_bitmap = store
-        .observe(root)
-        .await
-        .next()
-        .await
-        .expect("observe stream stopped");
-    let root_ranges = ChunkRanges::all() - local_bitmap.ranges.clone();
-    let mut stream = store.export_bao(root, local_bitmap.ranges).stream();
+    let local_bitfield = store.observe(root).await?;
+    let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
+    let mut stream = store.export_bao(root, local_bitfield.ranges).stream();
     let mut hashes = HashSet::new();
     hashes.insert(root);
     let mut ranges = BTreeMap::new();
@@ -66,7 +55,7 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
                 if !hashes.insert(hash) {
                     continue;
                 }
-                let local_bitmap = store.observe(hash).await.next().await.unwrap();
+                let local_bitmap = store.observe(hash).await?;
                 let missing = ChunkRanges::all() - local_bitmap.ranges;
                 let missing = RangeSpec::new(missing);
                 ranges.insert(offset + i as u64, missing);
@@ -100,13 +89,7 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
 // get a single blob, taking the locally available ranges into account
 async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::Result<Stats> {
     trace!("get blob: {}", hash);
-    let local_ranges = store
-        .observe(hash)
-        .await
-        .next()
-        .await
-        .map(|x| x.ranges)
-        .unwrap_or_default();
+    let local_ranges = store.observe(hash).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
     if required_ranges.is_empty() {
         // we don't count the time for looking up the bitfield locally
@@ -169,13 +152,7 @@ async fn get_blob_ranges_impl(
 // get a single blob, taking the locally available ranges into account
 async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyhow::Result<Stats> {
     trace!("get hash seq: {}", root);
-    let local_ranges = store
-        .observe(root)
-        .await
-        .next()
-        .await
-        .map(|x| x.ranges)
-        .unwrap_or_default();
+    let local_ranges = store.observe(root).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
     let request = GetRequest::new(
         root,

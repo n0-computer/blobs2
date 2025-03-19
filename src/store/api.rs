@@ -1,6 +1,6 @@
 //! The user facing API of the store.
 use std::{
-    future::Future,
+    future::{Future, IntoFuture},
     io,
     num::NonZeroU64,
     path::Path,
@@ -80,7 +80,7 @@ pub mod tags {
         ops::{Bound, RangeBounds},
     };
 
-    use n0_future::{Stream, StreamExt, TryFutureExt};
+    use n0_future::{Stream, StreamExt};
     use quic_rpc::{channel::oneshot, ServiceRequest};
     use serde::{Deserialize, Serialize};
 
@@ -557,30 +557,31 @@ impl Blobs {
     }
 
     /// Observe the bitfield of the given hash.
-    ///
-    /// Returns an infinite stream of bitfields. The first bitfield is the
-    /// current state, and the following bitfields are updates.
-    ///
-    /// Once a blob is complete, there will be no more updates.
-    pub async fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
+
+    pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
         let hash = hash.into();
         if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
             let (mut tx, rx) = spsc::channel(1);
-            tx.send(Bitfield::complete(0)).await.ok();
-            return ObserveResult {
-                rx: rx.try_into().unwrap(),
-            };
+            return ObserveResult::new(async move {
+                tx.send(Bitfield::complete(0)).await.ok();
+                Ok(rx.try_into().unwrap())
+            });
         }
         let (tx, rx) = spsc::channel(32);
-        self.sender
-            .local()
-            .unwrap()
-            .send((Observe { hash }, tx))
-            .await
-            .ok();
-        ObserveResult {
-            rx: rx.try_into().unwrap(),
-        }
+        let request = self.sender.request();
+        ObserveResult::new(async move {
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    c.send((Observe { hash }, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(Observe { hash }).await?;
+                    rx.into()
+                }
+            };
+            Ok(rx)
+        })
     }
 
     pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
@@ -742,27 +743,58 @@ impl ImportResult {
     }
 }
 
-/// An infinite stream of bitfields, where the first is the current state
-/// and all following are updates. Once a blob is complete, there will be no
-/// more updates.
+/// An observe result. Awaiting this will return the current state.
+///
+/// Calling [`ObserveResult::stream`] will return a stream of updates, where
+/// the first item is the current state and subsequent items are updates.
+///
+/// Calling [`ObserveResult::aggregated`] will return a stream of states,
+/// where each state is the current state at the time of the update.
 pub struct ObserveResult {
-    rx: tokio::sync::mpsc::Receiver<Bitfield>,
+    inner: n0_future::future::Boxed<api::Result<spsc::Receiver<Bitfield>>>,
 }
 
-impl ObserveResult {
-    pub fn aggregated(self) -> Aggregator<Bitfield> {
-        Aggregator::new(self.rx)
+impl IntoFuture for ObserveResult {
+    type Output = api::Result<Bitfield>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let mut rx = self.inner.await?;
+            match rx.recv().await? {
+                Some(bitfield) => Ok(bitfield),
+                None => Err(io::Error::other("unexpected end of stream").into()),
+            }
+        })
     }
 }
 
-impl Stream for ObserveResult {
-    type Item = Bitfield;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            _ => Poll::Pending,
+impl ObserveResult {
+    fn new(
+        fut: impl Future<Output = api::Result<spsc::Receiver<Bitfield>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
         }
+    }
+
+    pub async fn aggregated(self) -> api::Result<Aggregator<Bitfield>> {
+        let rx = self.inner.await?.try_into().unwrap();
+        Ok(Aggregator::new(rx))
+    }
+
+    /// Returns an infinite stream of bitfields. The first bitfield is the
+    /// current state, and the following bitfields are updates.
+    ///
+    /// Once a blob is complete, there will be no more updates.
+    pub async fn stream(self) -> api::Result<impl Stream<Item = Bitfield>> {
+        let mut rx = self.inner.await?;
+        Ok(Gen::new(|co| async move {
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        }))
     }
 }
 
