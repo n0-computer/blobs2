@@ -1188,6 +1188,28 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn import_bao_simple() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let sizes = [1048576];
+        let db_dir = testdir.path().join("db");
+        {
+            let store = FsStore::load(&db_dir).await?;
+            for size in sizes {
+                let data = vec![0u8; size];
+                let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
+                let data = Bytes::from(encoded);
+                println!("importing size={}", size);
+                store
+                    .import_bao_bytes(hash, ChunkRanges::all(), data)
+                    .await?;
+            }
+            store.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn import_bao_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;

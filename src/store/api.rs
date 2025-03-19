@@ -636,7 +636,7 @@ impl Blobs {
 
     pub fn import_bao_with_opts(
         &self,
-        mut data: mpsc::Receiver<BaoContentItem>,
+        mut data: spsc::Receiver<BaoContentItem>,
         options: ImportBao,
     ) -> ImportBaoResult {
         let request = self.sender.request();
@@ -650,13 +650,13 @@ impl Blobs {
                 ServiceRequest::Remote(r) => {
                     let (rx, tx) = r.write(options).await?;
                     let mut tx: spsc::Sender<_> = tx.into();
-                    while let Some(item) = data.recv().await {
+                    while let Some(item) = data.recv().await? {
                         tx.send(item).await.map_err(|e| api::Error::other(e))?;
                     }
                     rx.into()
                 }
             };
-            Ok(rx)
+            Ok(rx.await??)
         })
     }
 
@@ -666,53 +666,53 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         mut reader: R,
-    ) -> anyhow::Result<R> {
+    ) -> api::Result<R> {
         let (mut tx, rx) = spsc::channel(32);
-        let (out_tx, out_rx) = oneshot::channel();
         let size = u64::from_le_bytes(reader.read::<8>().await?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
                 Ok(reader)
             } else {
-                Err(anyhow::anyhow!("invalid size for hash"))
+                Err(api::Error::other("invalid size for hash"))
             };
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let inner = ImportBao { hash, size };
-        self.sender
-            .local()
-            .unwrap()
-            .send((inner, out_tx, rx))
-            .await?;
-        let reader = loop {
-            match decoder.next().await {
-                ResponseDecoderNext::More((rest, item)) => {
-                    tx.send(item?).await?;
-                    decoder = rest;
-                }
-                ResponseDecoderNext::Done(reader) => break reader,
+        let fut = self.import_bao_with_opts(rx, inner);
+        let driver = async move {
+            let reader = loop {
+                match decoder.next().await {
+                    ResponseDecoderNext::More((rest, item)) => {
+                        tx.send(item?).await?;
+                        decoder = rest;
+                    }
+                    ResponseDecoderNext::Done(reader) => break reader,
+                };
             };
+            drop(tx);
+            io::Result::Ok(reader)
         };
-        drop(tx);
-        out_rx.await??;
-        Ok(reader)
+        let (reader, res) = tokio::join!(driver, fut);
+        res?;
+        Ok(reader?)
     }
 
     /// Import BaoContentItems from a stream.
     ///
     /// The store assumes that these are already verified and in the correct order.
-    pub async fn import_bao(
+    pub fn import_bao(
         &self,
         hash: impl Into<Hash>,
         size: NonZeroU64,
         data: mpsc::Receiver<BaoContentItem>,
-    ) -> api::Result<()> {
+    ) -> ImportBaoResult {
         let options = ImportBao {
             hash: hash.into(),
             size,
         };
-        self.import_bao_with_opts(data, options).await
+        // todo: we must expose the second future
+        self.import_bao_with_opts(data.into(), options)
     }
 
     pub async fn import_bao_quinn(
@@ -720,7 +720,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         stream: &mut quinn::RecvStream,
-    ) -> anyhow::Result<()> {
+    ) -> api::Result<()> {
         let reader = TokioStreamReader::new(stream);
         self.import_bao_reader(hash, ranges, reader).await?;
         Ok(())
@@ -731,12 +731,12 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         data: Bytes,
-    ) -> anyhow::Result<()> {
+    ) -> api::Result<()> {
         self.import_bao_reader(hash, ranges, data).await?;
         Ok(())
     }
 
-    pub async fn sync_db(&self) -> anyhow::Result<()> {
+    pub async fn sync_db(&self) -> api::Result<()> {
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
                 let (tx, rx) = oneshot::channel();
@@ -752,7 +752,7 @@ impl Blobs {
         Ok(())
     }
 
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> api::Result<()> {
         let msg = Shutdown;
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
@@ -875,14 +875,16 @@ impl ExportPathResult {
     }
 }
 
+/// Result of importing a stream of bao items.
+///
+/// This future will resolve once the import is complete, but *must* be polled even before!
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ImportBaoResult {
-    inner: n0_future::future::Boxed<api::Result<oneshot::Receiver<api::Result<()>>>>,
+    inner: n0_future::future::Boxed<api::Result<()>>,
 }
 
 impl ImportBaoResult {
-    fn new(
-        fut: impl Future<Output = api::Result<oneshot::Receiver<api::Result<()>>>> + Send + 'static,
-    ) -> Self {
+    fn new(fut: impl Future<Output = api::Result<()>> + Send + 'static) -> Self {
         Self {
             inner: Box::pin(fut),
         }
@@ -895,10 +897,7 @@ impl IntoFuture for ImportBaoResult {
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move {
-            let rx = self.inner.await?;
-            rx.await?
-        })
+        Box::pin(async move { self.inner.await })
     }
 }
 
