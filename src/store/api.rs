@@ -214,14 +214,14 @@ pub mod tags {
 
     /// Options for a delete operation.
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct DeleteTags {
+    pub struct Delete {
         /// Optional from tag (inclusive)
         pub from: Option<Tag>,
         /// Optional to tag (exclusive)
         pub to: Option<Tag>,
     }
 
-    impl DeleteTags {
+    impl Delete {
         /// Delete a single tag
         pub fn single(name: &[u8]) -> Self {
             let name = Tag::from(name);
@@ -371,7 +371,7 @@ pub mod tags {
         }
 
         /// Deletes a tag.
-        pub async fn delete_with_opts(&self, options: DeleteTags) -> api::Result<()> {
+        pub async fn delete_with_opts(&self, options: Delete) -> api::Result<()> {
             let rx = match self.sender.request().await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = quic_rpc::channel::oneshot::channel();
@@ -388,8 +388,7 @@ pub mod tags {
 
         /// Deletes a tag.
         pub async fn delete(&self, name: impl AsRef<[u8]>) -> api::Result<()> {
-            self.delete_with_opts(DeleteTags::single(name.as_ref()))
-                .await
+            self.delete_with_opts(Delete::single(name.as_ref())).await
         }
 
         /// Deletes a range of tags.
@@ -398,18 +397,17 @@ pub mod tags {
             R: RangeBounds<E>,
             E: AsRef<[u8]>,
         {
-            self.delete_with_opts(DeleteTags::range(range)).await
+            self.delete_with_opts(Delete::range(range)).await
         }
 
         /// Delete all tags with the given prefix.
         pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> api::Result<()> {
-            self.delete_with_opts(DeleteTags::prefix(prefix.as_ref()))
-                .await
+            self.delete_with_opts(Delete::prefix(prefix.as_ref())).await
         }
 
         /// Delete all tags. Use with care. After this, all data will be garbage collected.
         pub async fn delete_all(&self) -> api::Result<()> {
-            self.delete_with_opts(DeleteTags {
+            self.delete_with_opts(Delete {
                 from: None,
                 to: None,
             })

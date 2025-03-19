@@ -42,7 +42,7 @@ use crate::{
         util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
     },
-    Hash,
+    BlobFormat, Hash,
 };
 
 /// An import source.
@@ -99,6 +99,7 @@ impl ImportSource {
 /// it can be moved to the final location (basically it needs to be on the same device).
 pub struct ImportEntry {
     pub hash: Hash,
+    pub format: BlobFormat,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
 }
@@ -191,6 +192,7 @@ async fn import_bytes_tiny_impl(
 
         ImportEntry {
             hash: Hash::new(&cmd.data),
+            format: cmd.format,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::empty(),
         }
@@ -199,6 +201,7 @@ async fn import_bytes_tiny_impl(
         let outboard = PreOrderMemOutboard::create(&cmd.data, IROH_BLOCK_SIZE);
         ImportEntry {
             hash: outboard.root.into(),
+            format: cmd.format,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
         }
@@ -230,7 +233,8 @@ async fn import_byte_stream_impl(
     tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let data = futures_lite::stream::iter(cmd.data).map(io::Result::Ok);
+    let ImportByteStream { format, data } = cmd;
+    let data = futures_lite::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
     tx.send(ImportProgress::Size {
         size: import_source.size(),
@@ -240,7 +244,7 @@ async fn import_byte_stream_impl(
     tx.send(ImportProgress::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    compute_outboard(import_source, options, tx).await
+    compute_outboard(import_source, format, options, tx).await
 }
 
 async fn get_import_source(
@@ -313,6 +317,7 @@ async fn get_import_source(
 
 async fn compute_outboard(
     source: ImportSource,
+    format: BlobFormat,
     options: Arc<Options>,
     _tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
@@ -355,6 +360,7 @@ async fn compute_outboard(
     };
     Ok(ImportEntry {
         hash: hash.into(),
+        format,
         source,
         outboard,
     })
@@ -444,7 +450,7 @@ async fn import_path_impl(
             .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
     };
-    compute_outboard(import_source, options, tx).await
+    compute_outboard(import_source, format, options, tx).await
 }
 
 #[cfg(test)]

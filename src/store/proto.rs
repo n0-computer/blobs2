@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     api::{
         self,
-        tags::{self, DeleteTags, ListTags, TagInfo},
+        tags::{self, Delete, ListTags, TagInfo},
     },
     util::DD,
 };
@@ -146,7 +146,7 @@ pub type ListTagsMsg = WithChannels<tags::ListTags, StoreService>;
 
 pub type RenameTagMsg = WithChannels<tags::Rename, StoreService>;
 
-pub type DeleteTagsMsg = WithChannels<tags::DeleteTags, StoreService>;
+pub type DeleteTagsMsg = WithChannels<tags::Delete, StoreService>;
 
 pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
 
@@ -198,7 +198,7 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     SetTag(tags::SetTag),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
-    DeleteTags(tags::DeleteTags),
+    DeleteTags(tags::Delete),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     RenameTag(tags::Rename),
     #[rpc(tx = oneshot::Sender<api::Result<Tag>>)]

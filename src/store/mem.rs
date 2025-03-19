@@ -33,10 +33,11 @@ use super::{
         tags::{self, ListTags, Rename, TagInfo},
     },
     util::QuicRpcSenderProgressExt,
+    BlobFormat,
 };
 use crate::{
     store::{
-        api::tags::DeleteTags,
+        api::tags::Delete,
         bitfield::Bitfield,
         proto::*,
         util::{
@@ -163,7 +164,7 @@ impl Actor {
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
-                    inner: DeleteTags { from, to },
+                    inner: Delete { from, to },
                     tx,
                     ..
                 } = cmd;

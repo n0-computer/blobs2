@@ -14,7 +14,7 @@ use redb::{Database, DatabaseError, ReadableTable};
 use crate::{
     store::api::{
         self,
-        tags::{self, CreateTag, DeleteTags, ListTags, Rename, SetTag, TagInfo},
+        tags::{self, CreateTag, Delete, ListTags, Rename, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -362,8 +362,8 @@ impl Actor {
         }
     }
 
-    async fn delete(tables: &mut Tables<'_>, cmd: Delete) -> ActorResult<()> {
-        let Delete { hashes, .. } = cmd;
+    async fn delete(tables: &mut Tables<'_>, cmd: DeleteBlobs) -> ActorResult<()> {
+        let DeleteBlobs { hashes, .. } = cmd;
         for hash in hashes {
             if let Some(entry) = tables.blobs.remove(hash)? {
                 match entry.value() {
@@ -441,7 +441,7 @@ impl Actor {
 
     async fn delete_tags(tables: &mut Tables<'_>, cmd: DeleteTagsMsg) -> ActorResult<()> {
         let DeleteTagsMsg {
-            inner: DeleteTags { from, to },
+            inner: Delete { from, to },
             tx,
             ..
         } = cmd;

@@ -81,7 +81,7 @@ impl fmt::Debug for Set {
 }
 
 #[derive(Debug)]
-pub struct Delete {
+pub struct DeleteBlobs {
     pub hashes: Vec<Hash>,
     pub tx: oneshot::Sender<ActorResult<()>>,
 }
@@ -125,7 +125,7 @@ pub enum ReadOnlyCommand {
 pub enum ReadWriteCommand {
     Update(Update),
     Set(Set),
-    Delete(Delete),
+    Delete(DeleteBlobs),
     SetTag(SetTagMsg),
     DeleteTags(DeleteTagsMsg),
     RenameTag(RenameTagMsg),

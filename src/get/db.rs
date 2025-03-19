@@ -33,7 +33,7 @@ pub async fn get_missing(
     })
 }
 
-pub async fn get_missing_blob(hash: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
+pub async fn get_missing_blob(hash: Hash, store: &Store) -> api::Result<RangeSpecSeq> {
     let local_ranges = store.observe(hash).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
     Ok(RangeSpecSeq::from_ranges([required_ranges]))
