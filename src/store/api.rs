@@ -545,6 +545,7 @@ impl Blobs {
     }
 
     pub fn export_bao_with_opts(&self, options: ExportBao) -> ExportBaoResult {
+        trace!("export_bao {:?}", options);
         let request = self.sender.request();
         ExportBaoResult::new(async move {
             Ok(match request.await? {

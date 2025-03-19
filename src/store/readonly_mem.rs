@@ -11,11 +11,12 @@ use bao_tree::{
 use bytes::Bytes;
 use n0_future::future::yield_now;
 use quic_rpc::channel::spsc;
+use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
 use super::{
     api,
-    util::{observer::Observer, QuicRpcSenderProgressExt},
+    util::{observer::Observer, BaoTreeSender, QuicRpcSenderProgressExt},
 };
 use crate::{
     store::{
@@ -161,10 +162,10 @@ async fn export_bao_task(
         tree,
         data: outboard,
     };
-    let spsc::Sender::Tokio(sender) = sender else {
-        panic!();
-    };
-    traverse_ranges_validated(data.as_ref(), outboard, &ranges, &sender).await;
+    let sender = BaoTreeSender::ref_cast_mut(&mut sender);
+    traverse_ranges_validated(data.as_ref(), outboard, &ranges, sender)
+        .await
+        .ok();
 }
 
 impl Store {

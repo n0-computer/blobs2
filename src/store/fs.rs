@@ -69,7 +69,7 @@ use tracing::{error, instrument, trace};
 use crate::{
     store::{
         bitfield::is_validated,
-        util::{FixedSize, MemOrFile, ValueOrPoisioned},
+        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
         Hash,
     },
     util::channel::{mpsc, oneshot},
@@ -696,7 +696,7 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
 async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
     match ctx.get_or_create(cmd.inner.hash).await {
         Ok(handle) => {
-            if let Err(cause) = export_bao_impl(cmd.inner, &cmd.tx, handle).await {
+            if let Err(cause) = export_bao_impl(cmd.inner, &mut cmd.tx, handle).await {
                 cmd.tx
                     .send(bao_tree::io::EncodeError::Io(io::Error::other(cause)).into())
                     .await
@@ -715,7 +715,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
 
 async fn export_bao_impl(
     cmd: ExportBao,
-    tx: &spsc::Sender<EncodedItem>,
+    tx: &mut spsc::Sender<EncodedItem>,
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
     let ExportBao { ranges, hash } = cmd;
@@ -726,10 +726,8 @@ async fn export_bao_impl(
     debug_assert!(handle.hash() == hash, "hash mismatch");
     let data = handle.data_reader();
     let outboard = handle.outboard()?;
-    let spsc::Sender::Tokio(tx) = tx else {
-        panic!();
-    };
-    traverse_ranges_validated(data, outboard, &ranges, tx).await;
+    let tx = BaoTreeSender::new(tx);
+    traverse_ranges_validated(data, outboard, &ranges, tx).await?;
     Ok(())
 }
 

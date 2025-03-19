@@ -8,7 +8,7 @@ use std::{
 };
 
 use arrayvec::ArrayString;
-use bao_tree::blake3;
+use bao_tree::{blake3, io::mixed::EncodedItem};
 use bytes::Bytes;
 use derive_more::{From, Into};
 
@@ -21,6 +21,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;
 use tracing::info;
 pub mod observer;
+use ref_cast::RefCast;
+
 use crate::util::channel::mpsc;
 
 /// A tag
@@ -428,4 +430,21 @@ pub(crate) fn next_prefix(bytes: &mut [u8]) -> bool {
         *byte = 0;
     }
     false
+}
+
+#[derive(ref_cast::RefCast)]
+#[repr(transparent)]
+pub struct BaoTreeSender(spsc::Sender<EncodedItem>);
+
+impl BaoTreeSender {
+    pub fn new(sender: &mut spsc::Sender<EncodedItem>) -> &mut Self {
+        BaoTreeSender::ref_cast_mut(sender)
+    }
+}
+
+impl bao_tree::io::mixed::Sender for BaoTreeSender {
+    type Error = spsc::SendError;
+    async fn send(&mut self, item: EncodedItem) -> std::result::Result<(), Self::Error> {
+        self.0.send(item).await
+    }
 }

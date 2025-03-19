@@ -32,7 +32,7 @@ use super::{
         self,
         tags::{self, ListTags, Rename, TagInfo},
     },
-    util::QuicRpcSenderProgressExt,
+    util::{BaoTreeSender, QuicRpcSenderProgressExt},
     BlobFormat,
 };
 use crate::{
@@ -401,7 +401,7 @@ async fn export_bao_task(
     hash: Hash,
     entry: Arc<RwLock<Entry>>,
     ranges: ChunkRanges,
-    sender: spsc::Sender<EncodedItem>,
+    mut sender: spsc::Sender<EncodedItem>,
 ) {
     let size = entry.read().unwrap().size();
     let data = ExportData {
@@ -413,10 +413,10 @@ async fn export_bao_task(
         tree,
         data: entry.clone(),
     };
-    let spsc::Sender::Tokio(sender) = sender else {
-        panic!();
-    };
-    traverse_ranges_validated(data, outboard, &ranges, &sender).await
+    let tx = BaoTreeSender::new(&mut sender);
+    traverse_ranges_validated(data, outboard, &ranges, tx)
+        .await
+        .ok();
 }
 
 async fn import_bytes(

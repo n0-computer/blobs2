@@ -13,6 +13,7 @@ pub(crate) mod util;
 use proto::{Request, StoreService};
 use quic_rpc::rpc::{listen, Handler};
 use ref_cast::RefCast;
+use tracing::trace;
 
 pub use crate::hash::{BlobFormat, Hash, HashAndFormat};
 
@@ -63,6 +64,10 @@ impl Store {
         Tags::ref_from_sender(&self.sender)
     }
 
+    pub fn blobs(&self) -> &Blobs {
+        Blobs::ref_from_sender(&self.sender)
+    }
+
     pub fn connect(endpoint: quinn::Endpoint, addr: SocketAddr) -> Self {
         let sender = quic_rpc::ServiceSender::Remote(endpoint, addr, PhantomData);
         Store::from_sender(sender)
@@ -70,16 +75,24 @@ impl Store {
 
     pub async fn listen(self, endpoint: quinn::Endpoint) {
         let local = self.sender.local().unwrap().clone();
-        let handler: Handler<crate::store::proto::Request> = Arc::new(move |req, rx, tx| {
+        let handler: Handler<crate::store::proto::Request> = Arc::new(move |req, _, tx| {
             let local = local.clone();
-            Box::pin(match req {
-                Request::SetTag(msg) => local.send((msg, tx)),
-                Request::CreateTag(msg) => local.send((msg, tx)),
-                Request::DeleteTags(msg) => local.send((msg, tx)),
-                Request::RenameTag(msg) => local.send((msg, tx)),
-                Request::ListTags(msg) => local.send((msg, tx)),
-                _ => {
-                    unimplemented!()
+            Box::pin({
+                trace!("rpc request {:?}", req);
+                match req {
+                    Request::SetTag(msg) => local.send((msg, tx)),
+                    Request::CreateTag(msg) => local.send((msg, tx)),
+                    Request::DeleteTags(msg) => local.send((msg, tx)),
+                    Request::RenameTag(msg) => local.send((msg, tx)),
+                    Request::ListTags(msg) => local.send((msg, tx)),
+                    Request::ImportBytes(msg) => local.send((msg, tx)),
+                    Request::ImportByteStream(msg) => local.send((msg, tx)),
+                    Request::ImportPath(msg) => local.send((msg, tx)),
+                    Request::ExportBao(msg) => local.send((msg, tx)),
+                    Request::ExportPath(msg) => local.send((msg, tx)),
+                    _ => {
+                        todo!("rpc request {:?}", req);
+                    }
                 }
             })
         });
