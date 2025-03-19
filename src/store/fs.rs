@@ -1006,7 +1006,7 @@ pub mod tests {
                 api::Result::Ok(())
             });
             store.import_bao_bytes(hash, ranges, bao.into()).await?;
-            task.await?;
+            task.await??;
         }
         Ok(())
     }

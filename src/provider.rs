@@ -136,24 +136,6 @@ pub async fn send_blob(
     hash: Hash,
     ranges: ChunkRanges,
     writer: &mut SendStream,
-) -> io::Result<()> {
+) -> api::Result<()> {
     store.export_bao(hash, ranges).write_quinn(writer).await
-}
-
-#[allow(dead_code)]
-fn encode_error_to_anyhow(err: EncodeError, hash: &Hash) -> anyhow::Error {
-    match err {
-        EncodeError::LeafHashMismatch(x) => anyhow::Error::from(EncodeError::LeafHashMismatch(x))
-            .context(format!("hash {} offset {}", hash.to_hex(), x.to_bytes())),
-        EncodeError::ParentHashMismatch(n) => {
-            let r = n.chunk_range();
-            anyhow::Error::from(EncodeError::ParentHashMismatch(n)).context(format!(
-                "hash {} range {}..{}",
-                hash.to_hex(),
-                r.start.to_bytes(),
-                r.end.to_bytes()
-            ))
-        }
-        e => anyhow::Error::from(e).context(format!("hash {}", hash.to_hex())),
-    }
 }

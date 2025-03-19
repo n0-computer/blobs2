@@ -12,12 +12,9 @@ use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
-    store::{
-        api::{
-            self,
-            tags::{DeleteTags, ListTags, TagInfo},
-        },
-        proto::{CreateTag, Rename, SetTag},
+    store::api::{
+        self,
+        tags::{self, CreateTag, DeleteTags, ListTags, Rename, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -461,7 +458,7 @@ impl Actor {
 
     async fn rename_tag(tables: &mut Tables<'_>, cmd: RenameTagMsg) -> ActorResult<()> {
         let RenameTagMsg {
-            inner: Rename { from, to },
+            inner: tags::Rename { from, to },
             tx,
             ..
         } = cmd;

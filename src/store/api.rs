@@ -5,7 +5,6 @@ use std::{
     num::NonZeroU64,
     path::Path,
     pin::Pin,
-    task::{Context, Poll},
 };
 
 use bao_tree::{
@@ -30,7 +29,6 @@ use tracing::trace;
 
 use super::{BlobFormat, Blobs};
 use crate::{
-    get::request,
     store::{
         api,
         bitfield::Bitfield,
@@ -86,11 +84,7 @@ pub mod tags {
 
     use super::super::Tags;
     use crate::{
-        store::{
-            api,
-            proto::{Rename, SetTag},
-            util::Tag,
-        },
+        store::{api, util::Tag},
         BlobFormat, Hash, HashAndFormat,
     };
 
@@ -209,6 +203,15 @@ pub mod tags {
         }
     }
 
+    /// Rename a tag atomically
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Rename {
+        /// Old tag name
+        pub from: Tag,
+        /// New tag name
+        pub to: Tag,
+    }
+
     /// Options for a delete operation.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct DeleteTags {
@@ -265,6 +268,17 @@ pub mod tags {
             Bound::Unbounded => None,
         };
         (from, to)
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct SetTag {
+        pub name: Tag,
+        pub value: HashAndFormat,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct CreateTag {
+        pub content: HashAndFormat,
     }
 
     impl Tags {
@@ -469,26 +483,28 @@ impl Blobs {
         })
     }
 
-    pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        let inner = ImportPath {
-            path: path.as_ref().to_owned(),
-            mode: ImportMode::Copy,
-            format: BlobFormat::Raw,
-        };
+    pub fn import_path_with_opts(&self, options: ImportPath) -> ImportResult {
         let request = self.sender.request();
         ImportResult::new(async move {
-            let rx = match request.await? {
+            Ok(match request.await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
-                    c.send((inner, tx)).await?;
+                    c.send((options, tx)).await?;
                     rx
                 }
                 ServiceRequest::Remote(r) => {
-                    let (rx, _) = r.write(inner).await?;
+                    let (rx, _) = r.write(options).await?;
                     rx.into()
                 }
-            };
-            Ok(rx)
+            })
+        })
+    }
+
+    pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
+        self.import_path_with_opts(ImportPath {
+            path: path.as_ref().to_owned(),
+            mode: ImportMode::Copy,
+            format: BlobFormat::Raw,
         })
     }
 
@@ -530,41 +546,49 @@ impl Blobs {
         })
     }
 
-    pub fn export_bao(&self, hash: Hash, ranges: ChunkRanges) -> ExportBaoResult {
-        let inner = ExportBao { hash, ranges };
+    pub fn export_bao_with_opts(&self, options: ExportBao) -> ExportBaoResult {
         let request = self.sender.request();
         ExportBaoResult::new(async move {
-            let rx = match request.await? {
+            Ok(match request.await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
-                    c.send((inner, tx)).await?;
+                    c.send((options, tx)).await?;
                     rx
                 }
                 ServiceRequest::Remote(r) => {
-                    let (rx, _) = r.write(inner).await?;
+                    let (rx, _) = r.write(options).await?;
                     rx.into()
                 }
-            };
-            io::Result::Ok(rx)
+            })
+        })
+    }
+
+    pub fn export_bao(&self, hash: impl Into<Hash>, ranges: ChunkRanges) -> ExportBaoResult {
+        self.export_bao_with_opts(ExportBao {
+            hash: hash.into(),
+            ranges,
         })
     }
 
     /// Helper to just export the entire blob into a Bytes
-    pub async fn export_bytes(&self, hash: impl Into<Hash>) -> io::Result<Bytes> {
+    pub async fn export_bytes(&self, hash: impl Into<Hash>) -> api::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
             .data_to_bytes()
             .await
     }
 
     /// Observe the bitfield of the given hash.
-
     pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
-        let hash = hash.into();
+        self.observe_with_opts(Observe { hash: hash.into() })
+    }
+
+    pub fn observe_with_opts(&self, options: Observe) -> ObserveResult {
+        let Observe { hash } = options;
         if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
-            let (mut tx, rx) = spsc::channel(1);
             return ObserveResult::new(async move {
+                let (mut tx, rx) = spsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
-                Ok(rx.try_into().unwrap())
+                Ok(rx)
             });
         }
         let (tx, rx) = spsc::channel(32);
@@ -584,22 +608,51 @@ impl Blobs {
         })
     }
 
+    pub fn export_path_with_opts(&self, options: ExportPath) -> ExportPathResult {
+        let request = self.sender.request();
+        ExportPathResult::new(async move {
+            Ok(match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            })
+        })
+    }
+
     pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
-        let cmd = ExportPath {
+        let options = ExportPath {
             hash,
             mode: ExportMode::Copy,
             target: target.as_ref().to_owned(),
         };
+        self.export_path_with_opts(options)
+    }
+
+    pub fn import_bao_with_opts(
+        &self,
+        mut data: mpsc::Receiver<BaoContentItem>,
+        options: ImportBao,
+    ) -> ImportBaoResult {
         let request = self.sender.request();
-        ExportPathResult::new(async move {
+        ImportBaoResult::new(async move {
             let rx = match request.await? {
                 ServiceRequest::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((cmd, tx)).await?;
+                    let (tx, rx) = oneshot::channel();
+                    c.send((options, tx, data)).await?;
                     rx
                 }
                 ServiceRequest::Remote(r) => {
-                    let (rx, _) = r.write(cmd).await?;
+                    let (rx, tx) = r.write(options).await?;
+                    let mut tx: spsc::Sender<_> = tx.into();
+                    while let Some(item) = data.recv().await {
+                        tx.send(item).await.map_err(|e| api::Error::other(e))?;
+                    }
                     rx.into()
                 }
             };
@@ -654,13 +707,12 @@ impl Blobs {
         hash: impl Into<Hash>,
         size: NonZeroU64,
         data: mpsc::Receiver<BaoContentItem>,
-    ) -> anyhow::Result<()> {
-        let hash = hash.into();
-        let (tx, rx) = oneshot::channel();
-        let msg = ImportBao { hash, size };
-        self.sender.local().unwrap().send((msg, tx, data)).await?;
-        rx.await??;
-        Ok(())
+    ) -> api::Result<()> {
+        let options = ImportBao {
+            hash: hash.into(),
+            size,
+        };
+        self.import_bao_with_opts(data, options).await
     }
 
     pub async fn import_bao_quinn(
@@ -823,20 +875,47 @@ impl ExportPathResult {
     }
 }
 
+pub struct ImportBaoResult {
+    inner: n0_future::future::Boxed<api::Result<oneshot::Receiver<api::Result<()>>>>,
+}
+
+impl ImportBaoResult {
+    fn new(
+        fut: impl Future<Output = api::Result<oneshot::Receiver<api::Result<()>>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+}
+
+impl IntoFuture for ImportBaoResult {
+    type Output = api::Result<()>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let rx = self.inner.await?;
+            rx.await?
+        })
+    }
+}
+
 pub struct ExportBaoResult {
-    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<EncodedItem>>>,
+    inner: n0_future::future::Boxed<api::Result<spsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoResult {
     fn new(
-        fut: impl Future<Output = io::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
+        fut: impl Future<Output = api::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
         }
     }
 
-    pub async fn bao_to_vec(self) -> io::Result<Vec<u8>> {
+    pub async fn bao_to_vec(self) -> api::Result<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {
@@ -845,7 +924,7 @@ impl ExportBaoResult {
         Ok(data)
     }
 
-    pub async fn data_to_bytes(self) -> io::Result<Bytes> {
+    pub async fn data_to_bytes(self) -> api::Result<Bytes> {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
         while let Some(item) = rx.recv().await? {
@@ -856,7 +935,7 @@ impl ExportBaoResult {
                 EncodedItem::Parent(_) => {}
                 EncodedItem::Size(_) => {}
                 EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+                EncodedItem::Error(cause) => return Err(api::Error::other(cause)),
             }
         }
         if data.len() == 1 {
@@ -870,7 +949,7 @@ impl ExportBaoResult {
         }
     }
 
-    pub async fn data_to_vec(self) -> io::Result<Vec<u8>> {
+    pub async fn data_to_vec(self) -> api::Result<Vec<u8>> {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
         while let Some(item) = rx.recv().await? {
@@ -881,13 +960,13 @@ impl ExportBaoResult {
                 EncodedItem::Parent(_) => {}
                 EncodedItem::Size(_) => {}
                 EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+                EncodedItem::Error(cause) => return Err(api::Error::other(cause)),
             }
         }
         Ok(data)
     }
 
-    pub async fn write_quinn(self, target: &mut quinn::SendStream) -> io::Result<()> {
+    pub async fn write_quinn(self, target: &mut quinn::SendStream) -> api::Result<()> {
         let mut rx = self.inner.await?;
         while let Some(item) = rx.recv().await? {
             match item {
@@ -898,19 +977,22 @@ impl ExportBaoResult {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                    target.write_all(&data).await?;
+                    target.write_all(&data).await.map_err(api::Error::other)?;
                 }
                 EncodedItem::Leaf(leaf) => {
-                    target.write_chunk(leaf.data).await?;
+                    target
+                        .write_chunk(leaf.data)
+                        .await
+                        .map_err(api::Error::other)?;
                 }
                 EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(io::Error::from(cause)),
+                EncodedItem::Error(cause) => return Err(api::Error::other(cause)),
             }
         }
         Ok(())
     }
 
-    pub fn into_byte_stream(self) -> impl Stream<Item = io::Result<Bytes>> {
+    pub fn into_byte_stream(self) -> impl Stream<Item = api::Result<Bytes>> {
         self.stream().filter_map(|item| match item {
             EncodedItem::Size(size) => {
                 let size = size.to_le_bytes().to_vec().into();
@@ -924,7 +1006,7 @@ impl ExportBaoResult {
             }
             EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
             EncodedItem::Done => None,
-            EncodedItem::Error(cause) => Some(Err(io::Error::from(cause))),
+            EncodedItem::Error(cause) => Some(Err(api::Error::other(cause))),
         })
     }
 
@@ -933,7 +1015,8 @@ impl ExportBaoResult {
             let mut rx = match self.inner.await {
                 Ok(rx) => rx,
                 Err(cause) => {
-                    co.yield_(EncodedItem::Error(cause.into())).await;
+                    co.yield_(EncodedItem::Error(io::Error::other(cause).into()))
+                        .await;
                     return;
                 }
             };

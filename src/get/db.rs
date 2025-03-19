@@ -15,7 +15,7 @@ use super::{
 use crate::{
     hashseq::HashSeq,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
-    store::Store,
+    store::{api, Store},
     util::channel::mpsc,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
@@ -116,14 +116,14 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-) -> anyhow::Result<AtEndBlob> {
-    let (mut content, size) = header.next().await?;
+) -> api::Result<AtEndBlob> {
+    let (mut content, size) = header.next().await.map_err(|e| api::Error::other(e))?;
     let Some(size) = NonZeroU64::new(size) else {
         return if hash == Hash::EMPTY {
-            let end = content.drain().await?;
+            let end = content.drain().await.map_err(|e| api::Error::other(e))?;
             Ok(end)
         } else {
-            Err(anyhow::anyhow!("invalid size for hash"))
+            Err(api::Error::other("invalid size for hash"))
         };
     };
     let buffer_size = get_buffer_size(size);
@@ -131,11 +131,11 @@ async fn get_blob_ranges_impl(
     let (tx, rx) = mpsc::channel(buffer_size);
     let complete = store.import_bao(hash, size, rx);
     let write = async move {
-        anyhow::Ok(loop {
+        api::Result::Ok(loop {
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
-                    let item = res?;
-                    tx.send(item).await?;
+                    let item = res.map_err(|e| api::Error::other(e))?;
+                    tx.send(item).await.map_err(|e| api::Error::other(e))?;
                     content = next;
                 }
                 BlobContentNext::Done(end) => {

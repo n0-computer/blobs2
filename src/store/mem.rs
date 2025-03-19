@@ -30,7 +30,7 @@ use tracing::{error, info, instrument};
 use super::{
     api::{
         self,
-        tags::{ListTags, TagInfo},
+        tags::{self, ListTags, Rename, TagInfo},
     },
     util::QuicRpcSenderProgressExt,
 };
@@ -245,7 +245,7 @@ impl Actor {
                 tx.send(tags.collect()).await.ok();
             }
             Command::SetTag(SetTagMsg {
-                inner: SetTag { name: tag, value },
+                inner: tags::SetTag { name: tag, value },
                 tx,
                 ..
             }) => {
@@ -253,7 +253,7 @@ impl Actor {
                 tx.send(Ok(())).await.ok();
             }
             Command::CreateTag(CreateTagMsg {
-                inner: CreateTag { content },
+                inner: tags::CreateTag { content },
                 tx,
                 ..
             }) => {

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     api::{
         self,
-        tags::{DeleteTags, ListTags, TagInfo},
+        tags::{self, DeleteTags, ListTags, TagInfo},
     },
     util::DD,
 };
@@ -142,27 +142,13 @@ pub struct ImportPath {
 
 pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
 
-pub type ListTagsMsg = WithChannels<ListTags, StoreService>;
-/// Rename a tag atomically
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Rename {
-    /// Old tag name
-    pub from: Tag,
-    /// New tag name
-    pub to: Tag,
-}
+pub type ListTagsMsg = WithChannels<tags::ListTags, StoreService>;
 
-pub type RenameTagMsg = WithChannels<Rename, StoreService>;
+pub type RenameTagMsg = WithChannels<tags::Rename, StoreService>;
 
-pub type DeleteTagsMsg = WithChannels<DeleteTags, StoreService>;
+pub type DeleteTagsMsg = WithChannels<tags::DeleteTags, StoreService>;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SetTag {
-    pub name: Tag,
-    pub value: HashAndFormat,
-}
-
-pub type SetTagMsg = WithChannels<SetTag, StoreService>;
+pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
 
 /// Debug tool to exit the process in the middle of a write transaction, for testing.
 #[derive(Debug)]
@@ -170,12 +156,7 @@ pub struct ProcessExit {
     pub code: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateTag {
-    pub content: HashAndFormat,
-}
-
-pub type CreateTagMsg = WithChannels<CreateTag, StoreService>;
+pub type CreateTagMsg = WithChannels<tags::CreateTag, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
@@ -213,15 +194,15 @@ pub enum Request {
     #[rpc(tx = spsc::Sender<ExportProgress>)]
     ExportPath(ExportPath),
     #[rpc(tx = oneshot::Sender<Vec<api::Result<TagInfo>>>)]
-    ListTags(ListTags),
+    ListTags(tags::ListTags),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
-    SetTag(SetTag),
+    SetTag(tags::SetTag),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
-    DeleteTags(DeleteTags),
+    DeleteTags(tags::DeleteTags),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
-    RenameTag(Rename),
+    RenameTag(tags::Rename),
     #[rpc(tx = oneshot::Sender<api::Result<Tag>>)]
-    CreateTag(CreateTag),
+    CreateTag(tags::CreateTag),
     #[rpc(tx = oneshot::Sender<api::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]
