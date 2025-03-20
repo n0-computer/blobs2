@@ -73,7 +73,10 @@ use crate::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
         Hash,
     },
-    util::channel::{mpsc, oneshot},
+    util::{
+        channel::{mpsc, oneshot},
+        temp_tag::TempCounterMap,
+    },
 };
 mod bao_file;
 use bao_file::{BaoFileHandle, BaoFileHandleWeak, BaoFileStorage};
@@ -143,6 +146,8 @@ struct Actor {
     tasks: JoinSet<()>,
     // handles
     handles: HashMap<Hash, Slot>,
+    // temp tags
+    temp_tags: HashMap<Batch, TempCounterMap>,
     // our private tokio runtime. It has to live somewhere.
     _rt: RtWrapper,
 }
@@ -475,6 +480,7 @@ impl Actor {
             fs_cmd_rx: fs_commands_rx,
             tasks: JoinSet::new(),
             handles: Default::default(),
+            temp_tags: Default::default(),
             _rt: rt,
         })
     }
