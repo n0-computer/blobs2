@@ -356,8 +356,8 @@ impl Actor {
         mut ds: DeleteHandle,
         options: BatchOptions,
     ) -> anyhow::Result<Self> {
-        trace!(
-            "creating or opening meta database at {:?}",
+        debug!(
+            "creating or opening meta database at {}",
             db_path.display()
         );
         let db = match redb::Database::create(db_path) {
