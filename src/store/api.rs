@@ -463,6 +463,7 @@ impl Blobs {
         let inner = ImportBytes {
             data,
             format: crate::BlobFormat::Raw,
+            batch: Batch::default(),
         };
         let request = self.sender.request();
         ImportResult::new(async move {
@@ -503,6 +504,7 @@ impl Blobs {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
+            batch: Batch::default(),
         })
     }
 
@@ -526,6 +528,7 @@ impl Blobs {
         let inner = ImportByteStream {
             data,
             format: crate::BlobFormat::Raw,
+            batch: Batch::default(),
         };
         let request = self.sender.request();
         ImportResult::new(async move {

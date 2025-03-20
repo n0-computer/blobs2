@@ -17,16 +17,12 @@ use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::api::{
-        self,
-        tags::{self, TagInfo},
-        ExportMode, ExportProgress, ImportMode, ImportProgress,
-    };
+    self,
+    tags::{self, TagInfo},
+    ExportMode, ExportProgress, ImportMode, ImportProgress,
+};
 use crate::{
-    store::{
-        bitfield::Bitfield,
-        util::Tag,
-        BlobFormat,
-    },
+    store::{bitfield::Bitfield, util::Tag, BlobFormat},
     Hash,
 };
 
@@ -72,11 +68,15 @@ impl HashSpecific for ObserveMsg {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Batch(u64);
+
 /// Import the given bytes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportBytes {
     pub data: Bytes,
     pub format: BlobFormat,
+    pub batch: Batch,
 }
 
 pub type ImportBytesMsg = WithChannels<ImportBytes, StoreService>;
@@ -126,6 +126,7 @@ pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send +
 pub struct ImportByteStream {
     pub format: BlobFormat,
     pub data: Vec<Bytes>,
+    pub batch: Batch,
 }
 
 pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
@@ -135,6 +136,7 @@ pub struct ImportPath {
     pub path: PathBuf,
     pub mode: ImportMode,
     pub format: BlobFormat,
+    pub batch: Batch,
 }
 
 pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;

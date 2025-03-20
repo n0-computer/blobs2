@@ -150,6 +150,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStream {
                 format: cmd.inner.format,
+                batch: cmd.batch,
                 data: vec![cmd.inner.data],
             },
             tx: cmd.tx,
@@ -234,7 +235,11 @@ async fn import_byte_stream_impl(
     tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let ImportByteStream { format, data } = cmd;
+    let ImportByteStream {
+        format,
+        data,
+        batch,
+    } = cmd;
     let data = futures_lite::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
     tx.send(ImportProgress::Size {
@@ -328,7 +333,9 @@ impl Progress for OutboardProgress {
         //     return Ok(());
         // }
         self.0
-            .try_send(ImportProgress::OutboardProgress { offset: offset.to_bytes() })
+            .try_send(ImportProgress::OutboardProgress {
+                offset: offset.to_bytes(),
+            })
             .await
     }
 }
@@ -398,7 +405,12 @@ async fn import_path_impl(
     tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let ImportPath { path, mode, format } = cmd;
+    let ImportPath {
+        path,
+        mode,
+        format,
+        batch,
+    } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -458,7 +470,7 @@ mod tests {
     use super::*;
     use crate::store::{
         fs::options::{InlineOptions, PathOptions},
-        proto::BoxedByteStream,
+        proto::{Batch, BoxedByteStream},
         BlobFormat,
     };
 
@@ -497,6 +509,7 @@ mod tests {
         let cmd = ImportByteStream {
             data,
             format: BlobFormat::Raw,
+            batch: Default::default(),
         };
         let res = import_byte_stream_impl(cmd, &mut tx, options).await;
         let Ok(res) = res else {
@@ -524,6 +537,7 @@ mod tests {
             path,
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
+            batch: Batch::default(),
         };
         let res = import_path_impl(cmd, &mut tx, options).await;
         let Ok(res) = res else {

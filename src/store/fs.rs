@@ -43,7 +43,14 @@
 //! context with a slot from the table of the main actor that can be used
 //! to obtain an unqiue handle for the hash.
 use std::{
-    collections::HashMap, fmt, fs, future::Future, io::Write, num::NonZeroU64, ops::Deref, path::{Path, PathBuf}, sync::Arc
+    collections::HashMap,
+    fmt, fs,
+    future::Future,
+    io::Write,
+    num::NonZeroU64,
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use bao_tree::{
