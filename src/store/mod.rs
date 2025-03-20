@@ -96,7 +96,7 @@ impl Store {
                 }
             })
         });
-        listen::<crate::store::proto::Request>(endpoint, handler).await
+        listen::<Request>(endpoint, handler).await
     }
 
     fn from_sender(

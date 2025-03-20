@@ -121,6 +121,7 @@ impl Actor {
                 inner: ImportBao { hash, size },
                 rx: data,
                 tx,
+                ..
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 self.unit_tasks

@@ -157,6 +157,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
             },
             tx: cmd.tx,
             rx: NoReceiver,
+            span: tracing::Span::current(),
         };
         import_byte_stream_outer(cmd, ctx).await;
     }

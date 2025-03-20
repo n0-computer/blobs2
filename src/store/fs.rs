@@ -43,13 +43,7 @@
 //! context with a slot from the table of the main actor that can be used
 //! to obtain an unqiue handle for the hash.
 use std::{
-    collections::HashMap,
-    fmt, fs,
-    io::Write,
-    num::NonZeroU64,
-    ops::Deref,
-    path::{Path, PathBuf},
-    sync::Arc,
+    collections::HashMap, fmt, fs, future::Future, io::Write, num::NonZeroU64, ops::Deref, path::{Path, PathBuf}, sync::Arc
 };
 
 use bao_tree::{
@@ -85,6 +79,7 @@ pub(crate) mod util;
 use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
+use tracing::Instrument;
 
 use super::{
     api::{self, ExportMode, ExportProgress, ImportProgress},
@@ -308,6 +303,11 @@ impl Actor {
         self.context.clone()
     }
 
+    fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
+        let span = tracing::Span::current();
+        self.tasks.spawn(fut.instrument(span));
+    }
+
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::SyncDb(cmd) => {
@@ -340,35 +340,35 @@ impl Actor {
             }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks.spawn(import_bytes(cmd, self.context()));
+                self.spawn(import_bytes(cmd, self.context()));
             }
             Command::ImportByteStream(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks.spawn(import_byte_stream(cmd, self.context()));
+                self.spawn(import_byte_stream(cmd, self.context()));
             }
             Command::ImportPath(cmd) => {
                 trace!("{cmd:?}");
-                self.tasks.spawn(import_path(cmd, self.context()));
+                self.spawn(import_path(cmd, self.context()));
             }
             Command::ExportPath(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
-                self.tasks.spawn(export_path(cmd, ctx));
+                self.spawn(export_path(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
-                self.tasks.spawn(export_bao(cmd, ctx));
+                self.spawn(export_bao(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
-                self.tasks.spawn(import_bao(cmd, ctx));
+                self.spawn(import_bao(cmd, ctx));
             }
             Command::Observe(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
-                self.tasks.spawn(observe(cmd, ctx));
+                self.spawn(observe(cmd, ctx));
             }
         }
     }
@@ -413,6 +413,8 @@ impl Actor {
                     let Some(cmd) = cmd else {
                         break;
                     };
+                    let span = cmd.parent_span();
+                    let _entered = span.enter();
                     self.handle_command(cmd).await;
                 }
                 Some(cmd) = self.fs_cmd_rx.recv() => {
@@ -627,6 +629,7 @@ async fn import_bao(cmd: ImportBaoMsg, ctx: HashContext) {
         inner: ImportBao { size, hash },
         rx,
         tx,
+        ..
     } = cmd;
     let res = match ctx.get_or_create(hash).await {
         Ok(handle) => import_bao_impl(size, rx, handle, ctx).await,

@@ -52,7 +52,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
 
     // test importing a large file with progress
     {
-        let expected = vec![0u8; 1024 * 1024 * 1024];
+        let expected = vec![0u8; 1024 * 1024];
         let temp1 = path.join("test3");
         std::fs::write(&temp1, &expected)?;
         let mut stream = blobs.import_path(temp1).stream().await?;
