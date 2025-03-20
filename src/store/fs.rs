@@ -403,13 +403,12 @@ impl Actor {
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
                         .send(ImportProgress::Done {
-                            hash: cmd.hash,
+                            tt: TempTag::leaking_empty(cmd.format),
                         })
                         .await
                         .ok();
                 }
-                // let tt = self.create_temp_tag(cmd.batch, cmd.hash, cmd.format);
-                let tt = TempTag::new(HashAndFormat { hash: cmd.hash, format: cmd.format }, None);
+                let tt = self.create_temp_tag(cmd.batch, cmd.hash, cmd.format);
                 let ctx = self.hash_context(cmd.hash);
                 self.tasks.spawn(finish_import(cmd, tt, ctx));
             }
@@ -533,7 +532,7 @@ impl Drop for RtWrapper {
 async fn finish_import(mut cmd: ImportEntryMsg, tt: TempTag, ctx: HashContext) {
     let hash = cmd.hash;
     let res = match finish_import_impl(cmd.inner, ctx).await {
-        Ok(()) => ImportProgress::Done { hash },
+        Ok(()) => ImportProgress::Done { tt },
         Err(cause) => ImportProgress::Error { cause },
     };
     cmd.tx.send(res).await.ok();

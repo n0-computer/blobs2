@@ -311,11 +311,7 @@ impl Actor {
             },
             None,
         );
-        import_data
-            .tx
-            .send(ImportProgress::Done { hash })
-            .await
-            .ok();
+        import_data.tx.send(ImportProgress::Done { tt }).await.ok();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {

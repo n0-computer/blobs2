@@ -179,7 +179,7 @@ pub mod outboard_with_progress {
                     ..
                 } => {
                     if let Err(err) = progress.progress(start_chunk).await {
-                        return Ok(Err(err));
+                        // return Ok(Err(err));
                     }
                     let buf = &mut buffer[..size];
                     data.read_exact(buf)?;

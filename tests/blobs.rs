@@ -60,12 +60,12 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let mut res = None;
         while let Some(item) = stream.next().await {
             info!("Progress: {:?}", item);
-            if let ImportProgress::Done { hash } = item {
-                res = Some(hash);
+            if let ImportProgress::Done { tt } = item {
+                res = Some(tt);
                 break;
             }
         }
-        let actual_hash = res; //.as_ref().map(|x| *x.hash());
+        let actual_hash = res.as_ref().map(|x| *x.hash());
         let expected_hash = Hash::new(&expected);
         assert_eq!(actual_hash, Some(expected_hash));
     }

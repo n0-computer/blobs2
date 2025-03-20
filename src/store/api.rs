@@ -785,7 +785,7 @@ pub enum ImportProgress {
         offset: u64,
     },
     Done {
-        hash: Hash,
+        tt: TempTag,
     },
     Error {
         #[serde(with = "crate::util::serde::io_error_serde")]
@@ -879,13 +879,7 @@ impl ImportResult {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await? {
-                Some(ImportProgress::Done { hash }) => {
-                    let tt = TempTag::new(HashAndFormat {
-                        hash,
-                        format: BlobFormat::Raw,
-                    }, None);
-                    break Ok(tt)
-                },
+                Some(ImportProgress::Done { tt }) => break Ok(tt),
                 Some(ImportProgress::Error { cause }) => break Err(cause),
                 _ => {}
             }

@@ -78,6 +78,16 @@ impl TempTag {
         Self { inner, on_drop }
     }
 
+    pub fn leaking_empty(format: BlobFormat) -> Self {
+        Self {
+            inner: HashAndFormat {
+                hash: Hash::EMPTY,
+                format,
+            },
+            on_drop: None,
+        }
+    }
+
     /// The hash of the pinned item
     pub fn inner(&self) -> &HashAndFormat {
         &self.inner
