@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
-use super::{BlobFormat, Blobs};
+use super::{BlobFormat, Blobs, HashAndFormat};
 use crate::{
     store::{
         api,
@@ -36,7 +36,7 @@ use crate::{
         util::{observer::Aggregator, SliceInfoExt},
         IROH_BLOCK_SIZE,
     },
-    util::channel::mpsc,
+    util::{channel::mpsc, temp_tag::TempTag},
     Hash,
 };
 
@@ -875,11 +875,17 @@ impl ImportResult {
         }
     }
 
-    pub async fn hash(self) -> io::Result<Hash> {
+    pub async fn hash(self) -> io::Result<TempTag> {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await? {
-                Some(ImportProgress::Done { hash }) => break Ok(hash),
+                Some(ImportProgress::Done { hash }) => {
+                    let tt = TempTag::new(HashAndFormat {
+                        hash,
+                        format: BlobFormat::Raw,
+                    }, None);
+                    break Ok(tt)
+                },
                 Some(ImportProgress::Error { cause }) => break Err(cause),
                 _ => {}
             }

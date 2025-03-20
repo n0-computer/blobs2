@@ -25,7 +25,10 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
-use quic_rpc::channel::{none::NoReceiver, spsc};
+use quic_rpc::{
+    channel::{none::NoReceiver, spsc},
+    Channels, WithChannels,
+};
 use ref_cast::RefCast;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
@@ -35,8 +38,8 @@ use crate::{
     store::{
         api::{ImportMode, ImportProgress},
         proto::{
-            HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
-            ImportPath, ImportPathMsg,
+            Batch, HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes,
+            ImportBytesMsg, ImportPath, ImportPathMsg, StoreService,
         },
         util::{MemOrFile, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
@@ -97,43 +100,29 @@ impl ImportSource {
 ///
 /// The store can assume that the outboard, if on disk, is in a location where
 /// it can be moved to the final location (basically it needs to be on the same device).
+#[derive(Debug)]
 pub struct ImportEntry {
     pub hash: Hash,
     pub format: BlobFormat,
+    pub batch: Batch,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
 }
 
-pub struct ImportEntryMsg {
-    pub inner: ImportEntry,
-    pub tx: spsc::Sender<ImportProgress>,
+impl Channels<StoreService> for ImportEntry {
+    type Tx = spsc::Sender<ImportProgress>;
+    type Rx = NoReceiver;
 }
 
-impl Deref for ImportEntryMsg {
-    type Target = ImportEntry;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
+pub type ImportEntryMsg = WithChannels<ImportEntry, StoreService>;
 
 impl HashSpecific for ImportEntryMsg {
-    fn hash(&self) -> crate::Hash {
+    fn hash(&self) -> Hash {
         self.hash
     }
 }
 
-impl fmt::Debug for ImportEntryMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImportEntry")
-            .field("hash", &self.hash)
-            .field("source", &self.source.fmt_short())
-            .field("outboard", &self.outboard.fmt_short())
-            .finish()
-    }
-}
-
-impl ImportEntryMsg {
+impl ImportEntry {
     /// True if both data and outboard are in memory.
     pub fn is_mem(&self) -> bool {
         self.source.is_mem() && self.outboard.is_mem()
@@ -167,6 +156,8 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
             let entry = ImportEntryMsg {
                 inner: entry,
                 tx: cmd.tx,
+                rx: cmd.rx,
+                span: cmd.span,
             };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
@@ -195,6 +186,7 @@ async fn import_bytes_tiny_impl(
         ImportEntry {
             hash: Hash::new(&cmd.data),
             format: cmd.format,
+            batch: cmd.batch,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::empty(),
         }
@@ -204,6 +196,7 @@ async fn import_bytes_tiny_impl(
         ImportEntry {
             hash: outboard.root.into(),
             format: cmd.format,
+            batch: cmd.batch,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
         }
@@ -221,6 +214,8 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
             let entry = ImportEntryMsg {
                 inner: entry,
                 tx: cmd.tx,
+                rx: cmd.rx,
+                span: cmd.span,
             };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
@@ -250,7 +245,7 @@ async fn import_byte_stream_impl(
     tx.send(ImportProgress::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    compute_outboard(import_source, format, options, tx).await
+    compute_outboard(import_source, format, batch, options, tx).await
 }
 
 async fn get_import_source(
@@ -343,6 +338,7 @@ impl Progress for OutboardProgress {
 async fn compute_outboard(
     source: ImportSource,
     format: BlobFormat,
+    batch: Batch,
     options: Arc<Options>,
     tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
@@ -382,6 +378,7 @@ async fn compute_outboard(
     Ok(ImportEntry {
         hash: hash.into(),
         format,
+        batch,
         source,
         outboard,
     })
@@ -391,7 +388,12 @@ async fn compute_outboard(
 pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
     match import_path_impl(cmd.inner, &mut cmd.tx, context.options.clone()).await {
         Ok(inner) => {
-            let res = ImportEntryMsg { inner, tx: cmd.tx };
+            let res = ImportEntryMsg {
+                inner,
+                tx: cmd.tx,
+                rx: cmd.rx,
+                span: cmd.span,
+            };
             context.internal_cmd_tx.send(res.into()).await.ok();
         }
         Err(cause) => {
@@ -456,7 +458,7 @@ async fn import_path_impl(
             .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
     };
-    compute_outboard(import_source, format, options, tx).await
+    compute_outboard(import_source, format, batch, options, tx).await
 }
 
 #[cfg(test)]

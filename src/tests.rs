@@ -63,8 +63,9 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
         let hash = store1.import_bytes(test_data(size)).hash().await?;
         hashes.push(hash);
     }
-    let hash_seq = hashes.into_iter().collect::<HashSeq>();
-    let root = store1.import_bytes(hash_seq).hash().await?;
+    let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
+    let root_tt = store1.import_bytes(hash_seq).hash().await?;
+    let root = *root_tt.hash();
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
     let blobs1 = Blobs::new(&store1, ep1.clone());
@@ -99,8 +100,9 @@ async fn node_serve_hash_seq() -> TestResult<()> {
         let hash = store.import_bytes(test_data(size)).hash().await?;
         hashes.push(hash);
     }
-    let hash_seq = hashes.into_iter().collect::<HashSeq>();
-    let root = store.import_bytes(hash_seq).hash().await?;
+    let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
+    let root_tt = store.import_bytes(hash_seq).hash().await?;
+    let root = *root_tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
     let r1 = Router::builder(endpoint)
@@ -162,7 +164,8 @@ async fn node_smoke() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
-    let hash = store.import_bytes(b"hello world".to_vec()).hash().await?;
+    let tt = store.import_bytes(b"hello world".to_vec()).hash().await?;
+    let hash = *tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
     let r1 = Router::builder(endpoint)

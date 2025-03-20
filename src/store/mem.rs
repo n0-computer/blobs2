@@ -34,6 +34,7 @@ use super::{
         ExportProgress, ImportProgress,
     },
     util::{BaoTreeSender, QuicRpcSenderProgressExt},
+    BlobFormat,
 };
 use crate::{
     store::{
@@ -46,6 +47,7 @@ use crate::{
         },
         HashAndFormat, Store, IROH_BLOCK_SIZE,
     },
+    util::temp_tag::TempTag,
     Hash,
 };
 
@@ -302,6 +304,13 @@ impl Actor {
             *entry =
                 CompleteStorage::new(import_data.data, import_data.outboard.data.into()).into();
         }
+        let tt = TempTag::new(
+            HashAndFormat {
+                hash,
+                format: BlobFormat::Raw,
+            },
+            None,
+        );
         import_data
             .tx
             .send(ImportProgress::Done { hash })
@@ -741,7 +750,8 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let hash = store.import_bytes(vec![0u8; 1024 * 64]).hash().await?;
+        let tt = store.import_bytes(vec![0u8; 1024 * 64]).hash().await?;
+        let hash = *tt.hash();
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all()).stream();
         while let Some(item) = stream.next().await {

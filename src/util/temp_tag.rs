@@ -1,6 +1,10 @@
 #![allow(dead_code)]
-use std::sync::{Arc, Weak};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+};
 
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{BlobFormat, Hash, HashAndFormat};
@@ -9,11 +13,12 @@ use crate::{BlobFormat, Hash, HashAndFormat};
 ///
 /// If format is raw, this will protect just the blob
 /// If format is collection, this will protect the collection and all blobs in it
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TempTag {
     /// The hash and format we are pinning
     inner: HashAndFormat,
     /// optional callback to call on drop
+    #[serde(skip)]
     on_drop: Option<Weak<dyn TagDrop>>,
 }
 
@@ -150,16 +155,30 @@ impl TempCounters {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct TempTagScope(Mutex<TempCounterMap>);
+
+impl TagDrop for TempTagScope {
+    fn on_drop(&self, inner: &HashAndFormat) {
+        self.0.lock().unwrap().dec(inner);
+    }
+}
+
+impl TagCounter for TempTagScope {
+    fn on_create(&self, inner: &HashAndFormat) {
+        self.0.lock().unwrap().inc(inner.clone());
+    }
+}
+
 #[derive(Debug, Clone, Default)]
-pub(crate) struct TempCounterMap(std::collections::BTreeMap<Hash, TempCounters>);
+pub(crate) struct TempCounterMap(HashMap<Hash, TempCounters>);
 
 impl TempCounterMap {
-    fn inc(&mut self, value: &HashAndFormat) {
-        let HashAndFormat { hash, format } = value;
-        self.0.entry(*hash).or_default().inc(*format)
+    pub fn inc(&mut self, value: HashAndFormat) {
+        self.0.entry(value.hash).or_default().inc(value.format)
     }
 
-    fn dec(&mut self, value: &HashAndFormat) {
+    pub fn dec(&mut self, value: &HashAndFormat) {
         let HashAndFormat { hash, format } = value;
         let Some(counters) = self.0.get_mut(hash) else {
             warn!("Decrementing non-existent temp tag");
@@ -171,14 +190,14 @@ impl TempCounterMap {
         }
     }
 
-    fn contains(&self, haf: &HashAndFormat) -> bool {
+    pub fn contains(&self, haf: &HashAndFormat) -> bool {
         let Some(entry) = self.0.get(&haf.hash) else {
             return false;
         };
         entry.counter(haf.format) > 0
     }
 
-    fn keys(&self) -> impl Iterator<Item = HashAndFormat> {
+    pub fn keys(&self) -> impl Iterator<Item = HashAndFormat> {
         let mut res = Vec::new();
         for (k, v) in self.0.iter() {
             if v.raw > 0 {

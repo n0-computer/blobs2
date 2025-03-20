@@ -28,7 +28,8 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
     {
         let expected = b"hello".to_vec();
         let expected_hash = Hash::new(&expected);
-        let hash = blobs.import_bytes(expected.clone()).hash().await?;
+        let tt = blobs.import_bytes(expected.clone()).hash().await?;
+        let hash = *tt.hash();
         assert_eq!(hash, expected_hash);
         let actual = blobs.export_bytes(hash).await?;
         assert_eq!(actual, expected);
@@ -39,7 +40,8 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let expected = b"somestuffinafile".to_vec();
         let temp1 = path.join("test1");
         std::fs::write(&temp1, &expected)?;
-        let hash = blobs.import_path(temp1).hash().await?;
+        let tt = blobs.import_path(temp1).hash().await?;
+        let hash = *tt.hash();
         let expected_hash = Hash::new(&expected);
         assert_eq!(hash, expected_hash);
 
@@ -63,8 +65,9 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
                 break;
             }
         }
+        let actual_hash = res; //.as_ref().map(|x| *x.hash());
         let expected_hash = Hash::new(&expected);
-        assert_eq!(res, Some(expected_hash));
+        assert_eq!(actual_hash, Some(expected_hash));
     }
     Ok(())
 }

@@ -75,7 +75,7 @@ use crate::{
     },
     util::{
         channel::{mpsc, oneshot},
-        temp_tag::TempCounterMap,
+        temp_tag::{TagCounter, TempCounterMap, TempTag, TempTagScope},
     },
 };
 mod bao_file;
@@ -95,7 +95,7 @@ use super::{
     api::{self, ExportMode, ExportProgress, ImportProgress},
     proto::{self, *},
     util::{observer::Observer, QuicRpcSenderProgressExt},
-    Store,
+    BlobFormat, HashAndFormat, Store,
 };
 
 /// Create a 16 byte unique ID.
@@ -147,7 +147,7 @@ struct Actor {
     // handles
     handles: HashMap<Hash, Slot>,
     // temp tags
-    temp_tags: HashMap<Batch, TempCounterMap>,
+    temp_tags: HashMap<Batch, Arc<TempTagScope>>,
     // our private tokio runtime. It has to live somewhere.
     _rt: RtWrapper,
 }
@@ -400,16 +400,25 @@ impl Actor {
                 self.db().send(cmd.into()).await.ok();
             }
             InternalCommand::FinishImport(mut cmd) => {
-                if cmd.hash.as_bytes() == Hash::EMPTY.as_bytes() {
+                if cmd.hash == Hash::EMPTY {
                     cmd.tx
-                        .send(ImportProgress::Done { hash: cmd.hash })
+                        .send(ImportProgress::Done {
+                            hash: cmd.hash,
+                        })
                         .await
                         .ok();
                 }
+                // let tt = self.create_temp_tag(cmd.batch, cmd.hash, cmd.format);
+                let tt = TempTag::new(HashAndFormat { hash: cmd.hash, format: cmd.format }, None);
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(finish_import(cmd, ctx));
+                self.tasks.spawn(finish_import(cmd, tt, ctx));
             }
         }
+    }
+
+    fn create_temp_tag(&mut self, batch: Batch, hash: Hash, format: BlobFormat) -> TempTag {
+        let temp_tags = self.temp_tags.entry(batch).or_default();
+        temp_tags.temp_tag(HashAndFormat { hash, format })
     }
 
     fn log_task_result(&self, res: Result<(), JoinError>) {
@@ -521,7 +530,7 @@ impl Drop for RtWrapper {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(mut cmd: ImportEntryMsg, ctx: HashContext) {
+async fn finish_import(mut cmd: ImportEntryMsg, tt: TempTag, ctx: HashContext) {
     let hash = cmd.hash;
     let res = match finish_import_impl(cmd.inner, ctx).await {
         Ok(()) => ImportProgress::Done { hash },
@@ -1063,8 +1072,8 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let actual_hash = store.import_byte_stream(stream).await.hash().await?;
-            assert_eq!(expected_hash, actual_hash);
+            let tt = store.import_byte_stream(stream).await.hash().await?;
+            assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
@@ -1087,8 +1096,8 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
-            assert_eq!(expected_hash, actual_hash);
+            let tt = store.import_bytes(expected.clone()).hash().await?;
+            assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
@@ -1115,8 +1124,8 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
-            assert_eq!(expected_hash, actual_hash);
+            let tt = store.import_bytes(expected.clone()).hash().await?;
+            assert_eq!(expected_hash, *tt.hash());
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1148,8 +1157,8 @@ pub mod tests {
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).aggregated().await?;
-            let actual_hash = store.import_path(&path).hash().await?;
-            assert_eq!(expected_hash, actual_hash);
+            let tt = store.import_path(&path).hash().await?;
+            assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
             let actual = store.export_bytes(expected_hash).await?;
@@ -1170,8 +1179,8 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let actual_hash = store.import_bytes(expected.clone()).hash().await?;
-            assert_eq!(expected_hash, actual_hash);
+            let tt = store.import_bytes(expected.clone()).hash().await?;
+            assert_eq!(expected_hash, *tt.hash());
             let out_path = testdir.path().join(format!("out-{}", size));
             store.export_path(expected_hash, &out_path).finish().await?;
             let actual = fs::read(&out_path)?;
@@ -1537,16 +1546,18 @@ pub mod tests {
         for size in sizes {
             let data = vec![0u8; size];
             let data = Bytes::from(data);
-            let hash = store.import_bytes(data.clone()).hash().await?;
-            data_by_hash.insert(hash, data);
-            hashes.push(hash);
+            let tt = store.import_bytes(data.clone()).hash().await?;
+            data_by_hash.insert(*tt.hash(), data);
+            hashes.push(tt);
         }
         store.sync_db().await?;
-        for hash in &hashes {
+        for tt in &hashes {
+            let hash = *tt.hash();
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export_path(*hash, path).finish().await?;
+            store.export_path(hash, path).finish().await?;
         }
-        for hash in &hashes {
+        for tt in &hashes {
+            let hash = tt.hash();
             let data = store
                 .export_bao(*hash, ChunkRanges::all())
                 .data_to_vec()

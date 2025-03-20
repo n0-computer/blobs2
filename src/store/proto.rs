@@ -68,7 +68,7 @@ impl HashSpecific for ObserveMsg {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Batch(u64);
 
 /// Import the given bytes.
