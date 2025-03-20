@@ -34,12 +34,12 @@ use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
+    api::{
+        blobs::{ImportByteStream, ImportMode, ImportPath, ImportProgress},
+        proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
+        ImportBytes, Scope,
+    },
     store::{
-        api::{ImportMode, ImportProgress},
-        proto::{
-            HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
-            ImportPath, ImportPathMsg, Scope, StoreService,
-        },
         util::{MemOrFile, QuicRpcSenderProgressExt, DD},
         IROH_BLOCK_SIZE,
     },
@@ -492,10 +492,12 @@ mod tests {
     use testresult::TestResult;
 
     use super::*;
-    use crate::store::{
-        fs::options::{InlineOptions, PathOptions},
-        proto::{BoxedByteStream, Scope},
-        BlobFormat,
+    use crate::{
+        api::proto::BoxedByteStream,
+        store::{
+            fs::options::{InlineOptions, PathOptions},
+            BlobFormat,
+        },
     };
 
     async fn drain<T: RpcMessage>(mut recv: spsc::Receiver<T>) -> TestResult<Vec<T>> {

@@ -7,9 +7,9 @@ use iroh::endpoint::{self, RecvStream, SendStream};
 use tracing::{debug, debug_span, warn, Instrument};
 
 use crate::{
+    api::{self, Store},
     hashseq::HashSeq,
     protocol::{GetRequest, Request},
-    store::*,
     Hash,
 };
 

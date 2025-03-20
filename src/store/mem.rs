@@ -28,24 +28,30 @@ use tokio::{
 use tracing::{error, info, instrument};
 
 use super::{
-    api::{
-        self,
-        tags::{self, ListTags, Rename, TagInfo},
-        ExportProgress, ImportProgress,
-    },
     util::{BaoTreeSender, QuicRpcSenderProgressExt},
     BlobFormat,
 };
 use crate::{
-    store::{
-        api::tags::Delete,
+    api::{
+        self,
         bitfield::Bitfield,
-        proto::*,
+        blobs::{
+            ExportBao, ExportPath, ExportProgress, ImportBao, ImportPath, ImportProgress, Observe,
+        },
+        proto::{
+            BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
+            ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ListTagsMsg,
+            ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
+        },
+        tags::{self, Delete, TagInfo},
+        ImportBytes, Store,
+    },
+    store::{
         util::{
             observer::{Observable, Observer},
             SparseMemFile, Tag,
         },
-        HashAndFormat, Store, IROH_BLOCK_SIZE,
+        HashAndFormat, IROH_BLOCK_SIZE,
     },
     util::temp_tag::TempTag,
     Hash,
@@ -192,7 +198,7 @@ impl Actor {
             }
             Command::RenameTag(cmd) => {
                 let RenameTagMsg {
-                    inner: Rename { from, to },
+                    inner: tags::Rename { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -214,7 +220,7 @@ impl Actor {
             Command::ListTags(cmd) => {
                 let ListTagsMsg {
                     inner:
-                        ListTags {
+                        tags::ListTags {
                             from,
                             to,
                             raw,

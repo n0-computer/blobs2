@@ -4,7 +4,8 @@ use std::{
 };
 
 use blobs2::{
-    store::{api::ImportProgress, fs::FsStore, Blobs, Store},
+    api::{blobs::ImportProgress, Blobs, Store},
+    store::fs::FsStore,
     Hash,
 };
 use n0_future::StreamExt;

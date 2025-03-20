@@ -7,13 +7,9 @@ use redb::{AccessGuard, StorageError};
 use tracing::Span;
 
 use super::ActorResult;
-pub use crate::store::proto::SyncDbMsg;
 use crate::{
-    store::{
-        fs::entry_state::EntryState,
-        proto::{ProcessExit, ShutdownMsg},
-        util::DD,
-    },
+    api::proto::{ProcessExit, ShutdownMsg, SyncDbMsg},
+    store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
     Hash,
 };
@@ -108,15 +104,15 @@ pub struct Blobs {
 }
 
 /// Modification method: create a new unique tag and set it to a value.
-pub use crate::store::proto::CreateTagMsg;
+pub use crate::api::proto::CreateTagMsg;
 /// Modification method: remove a range of tags.
-pub use crate::store::proto::DeleteTagsMsg;
+pub use crate::api::proto::DeleteTagsMsg;
 /// Read method: list a range of tags.
-pub use crate::store::proto::ListTagsMsg;
+pub use crate::api::proto::ListTagsMsg;
 /// Modification method: rename a tag.
-pub use crate::store::proto::RenameTagMsg;
+pub use crate::api::proto::RenameTagMsg;
 /// Modification method: set a tag to a value, or remove it.
-pub use crate::store::proto::SetTagMsg;
+pub use crate::api::proto::SetTagMsg;
 
 #[derive(Debug)]
 #[enum_conversions(Command)]

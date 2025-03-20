@@ -3,6 +3,7 @@ pub mod store;
 mod hash;
 pub use hash::{BlobFormat, Hash, HashAndFormat};
 pub use store::IROH_BLOCK_SIZE;
+pub mod api;
 pub mod get;
 pub mod hashseq;
 pub mod net_protocol;

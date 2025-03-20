@@ -2,11 +2,11 @@
 //!
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
-use std::{fmt::Debug, io, num::NonZeroU64, path::PathBuf, pin::Pin};
+use std::{fmt::Debug, io, pin::Pin};
 
 use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
-use bao_tree::{io::BaoContentItem, ChunkRanges};
+use bao_tree::io::BaoContentItem;
 use bytes::Bytes;
 use n0_future::Stream;
 use quic_rpc::{
@@ -16,14 +16,16 @@ use quic_rpc::{
 use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
-use super::api::{
-    self,
+use crate::{store::util::Tag, Hash};
+
+use super::{
+    bitfield::Bitfield,
+    blobs::{
+        ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream, ImportPath,
+        ImportProgress, Observe,
+    },
     tags::{self, TagInfo},
-    ExportMode, ExportProgress, ImportMode, ImportProgress,
-};
-use crate::{
-    store::{bitfield::Bitfield, util::Tag, BlobFormat},
-    Hash,
+    ImportBytes, Shutdown, SyncDb,
 };
 
 pub trait HashSpecific {
@@ -32,17 +34,6 @@ pub trait HashSpecific {
     fn hash_short(&self) -> ArrayString<10> {
         self.hash().fmt_short()
     }
-}
-
-/// Import bao encoded data for the given hash with the iroh block size.
-///
-/// The result is just a single item, indicating if a write error occurred.
-/// To observe the incoming data more granularly, use the `Observe` command
-/// concurrently.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBao {
-    pub hash: Hash,
-    pub size: NonZeroU64,
 }
 
 pub type ImportBaoMsg = WithChannels<ImportBao, StoreService>;
@@ -55,11 +46,6 @@ impl HashSpecific for ImportBaoMsg {
 
 pub type ShutdownMsg = WithChannels<Shutdown, StoreService>;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Observe {
-    pub hash: Hash,
-}
-
 pub type ObserveMsg = WithChannels<Observe, StoreService>;
 
 impl HashSpecific for ObserveMsg {
@@ -68,38 +54,7 @@ impl HashSpecific for ObserveMsg {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Scope(u64);
-
-impl Debug for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "Global")
-        } else {
-            f.debug_tuple("Scope").field(&self.0).finish()
-        }
-    }
-}
-
-/// Import the given bytes.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBytes {
-    pub data: Bytes,
-    pub format: BlobFormat,
-    pub scope: Scope,
-}
-
 pub type ImportBytesMsg = WithChannels<ImportBytes, StoreService>;
-
-/// Export the given ranges in bao format, with the iroh block size.
-///
-/// The returned stream should be verified by the store.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportBao {
-    pub hash: Hash,
-    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
-    pub ranges: ChunkRanges,
-}
 
 pub type ExportBaoMsg = WithChannels<ExportBao, StoreService>;
 
@@ -107,19 +62,6 @@ impl HashSpecific for ExportBaoMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.hash
     }
-}
-
-/// Export a file to a target path.
-///
-/// For an incomplete file, the size might be truncated and gaps will be filled
-/// with zeros. If possible, a store implementation should try to write as a
-/// sparse file.
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportPath {
-    pub hash: Hash,
-    pub mode: ExportMode,
-    pub target: PathBuf,
 }
 
 pub type ExportPathMsg = WithChannels<ExportPath, StoreService>;
@@ -132,22 +74,7 @@ impl HashSpecific for ExportPathMsg {
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportByteStream {
-    pub format: BlobFormat,
-    pub data: Vec<Bytes>,
-    pub scope: Scope,
-}
-
 pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportPath {
-    pub path: PathBuf,
-    pub mode: ImportMode,
-    pub format: BlobFormat,
-    pub scope: Scope,
-}
 
 pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
 
@@ -160,7 +87,7 @@ pub type DeleteTagsMsg = WithChannels<tags::Delete, StoreService>;
 pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
 
 /// Debug tool to exit the process in the middle of a write transaction, for testing.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessExit {
     pub code: i32,
 }
@@ -173,12 +100,6 @@ impl HashSpecific for CreateTagMsg {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SyncDb;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Shutdown;
-
 pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 
 #[derive(Debug, Clone)]
@@ -188,7 +109,7 @@ impl quic_rpc::Service for StoreService {}
 #[rpc_requests(StoreService, Command)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
-    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<api::Result<()>>)]
+    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
     ImportBao(ImportBao),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
     ExportBao(ExportBao),
@@ -202,17 +123,17 @@ pub enum Request {
     ImportPath(ImportPath),
     #[rpc(tx = spsc::Sender<ExportProgress>)]
     ExportPath(ExportPath),
-    #[rpc(tx = oneshot::Sender<Vec<api::Result<TagInfo>>>)]
+    #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
     ListTags(tags::ListTags),
-    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SetTag(tags::SetTag),
-    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     DeleteTags(tags::Delete),
-    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     RenameTag(tags::Rename),
-    #[rpc(tx = oneshot::Sender<api::Result<Tag>>)]
+    #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
     CreateTag(tags::CreateTag),
-    #[rpc(tx = oneshot::Sender<api::Result<()>>)]
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]
     Shutdown(Shutdown),

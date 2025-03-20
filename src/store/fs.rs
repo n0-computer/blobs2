@@ -54,7 +54,11 @@ use std::{
 };
 
 use bao_tree::{
-    io::{mixed::traverse_ranges_validated, sync::ReadAt, BaoContentItem, Leaf},
+    io::{
+        mixed::{traverse_ranges_validated, EncodedItem},
+        sync::ReadAt,
+        BaoContentItem, Leaf,
+    },
     ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
@@ -68,8 +72,15 @@ use tokio::task::{JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
 use crate::{
-    store::{
+    api::{
         bitfield::is_validated,
+        blobs::{ExportBao, ExportPath, ImportBao},
+        proto::{
+            self, Command, ExportBaoMsg, ExportPathMsg, HashSpecific, ImportBaoMsg, ObserveMsg,
+        },
+        Scope,
+    },
+    store::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
         Hash,
     },
@@ -86,17 +97,19 @@ mod import;
 mod meta;
 mod options;
 pub(crate) mod util;
+use super::{
+    util::{observer::Observer, QuicRpcSenderProgressExt},
+    BlobFormat, HashAndFormat,
+};
+use crate::api::{
+    self,
+    blobs::{ExportMode, ExportProgress, ImportProgress},
+    Store,
+};
 use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 use tracing::Instrument;
-
-use super::{
-    api::{self, ExportMode, ExportProgress, ImportProgress},
-    proto::{self, *},
-    util::{observer::Observer, QuicRpcSenderProgressExt},
-    BlobFormat, HashAndFormat, Store,
-};
 
 /// Create a 16 byte unique ID.
 fn new_uuid() -> [u8; 16] {
@@ -930,7 +943,7 @@ impl FsStore {
 }
 
 pub struct FsStore {
-    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, StoreService>,
+    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>,
     db: mpsc::Sender<InternalCommand>,
 }
 
@@ -950,7 +963,7 @@ impl AsRef<Store> for FsStore {
 
 impl FsStore {
     fn new(
-        sender: quic_rpc::LocalMpscChannel<proto::Command, StoreService>,
+        sender: quic_rpc::LocalMpscChannel<proto::Command, proto::StoreService>,
         db: mpsc::Sender<InternalCommand>,
     ) -> Self {
         Self {
@@ -989,10 +1002,12 @@ pub mod tests {
     use walkdir::WalkDir;
 
     use super::*;
-    use crate::store::{
-        bitfield::Bitfield,
-        util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
-        HashAndFormat, IROH_BLOCK_SIZE,
+    use crate::{
+        api::bitfield::Bitfield,
+        store::{
+            util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
+            HashAndFormat, IROH_BLOCK_SIZE,
+        },
     };
 
     /// Interesting sizes for testing.

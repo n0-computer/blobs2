@@ -29,8 +29,8 @@ use super::{
     BaoFilePart,
 };
 use crate::{
+    api::bitfield::Bitfield,
     store::{
-        bitfield::Bitfield,
         fs::{meta::raw_outboard_size, TaskContext},
         mem::{PartialMemStorage, SizeInfo},
         util::{

@@ -12,8 +12,9 @@ use bytes::Bytes;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
-    store::api::{
+    api::{
         self,
+        proto::{ShutdownMsg, SyncDbMsg},
         tags::{self, CreateTag, Delete, ListTags, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
@@ -31,7 +32,7 @@ use super::{
     util::PeekableReceiver,
     BaoFilePart,
 };
-use crate::store::{proto::ShutdownMsg, util::Tag, Hash, IROH_BLOCK_SIZE};
+use crate::store::{util::Tag, Hash, IROH_BLOCK_SIZE};
 
 /// Error type for message handler functions of the redb actor.
 ///
@@ -199,11 +200,11 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
                         hash: v.hash,
                         format: v.format,
                     };
-                    res.push(crate::store::api::Result::Ok(info));
+                    res.push(crate::api::Result::Ok(info));
                 }
             }
             Err(e) => {
-                res.push(Err(crate::store::api::Error::other(e)));
+                res.push(Err(crate::api::Error::other(e)));
             }
         }
     }
@@ -356,10 +357,7 @@ impl Actor {
         mut ds: DeleteHandle,
         options: BatchOptions,
     ) -> anyhow::Result<Self> {
-        debug!(
-            "creating or opening meta database at {}",
-            db_path.display()
-        );
+        debug!("creating or opening meta database at {}", db_path.display());
         let db = match redb::Database::create(db_path) {
             Ok(db) => db,
             Err(DatabaseError::UpgradeRequired(1)) => {
@@ -455,7 +453,7 @@ impl Actor {
             ..
         } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
-        tx.send(res.map_err(|_| crate::store::api::Error::other("storage")))
+        tx.send(res.map_err(|_| crate::api::Error::other("storage")))
             .await
             .ok();
         Ok(())

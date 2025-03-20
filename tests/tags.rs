@@ -1,19 +1,17 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use blobs2::{
-    store::{api::tags::TagInfo, fs::FsStore, Store, Tags},
+    api::{self, tags::TagInfo, Store, Tags},
+    store::fs::FsStore,
     BlobFormat, Hash, HashAndFormat,
 };
 use futures_lite::StreamExt;
 use n0_future::Stream;
 use testresult::TestResult;
 
-async fn to_vec<T>(
-    stream: impl Stream<Item = blobs2::store::api::Result<T>>,
-) -> blobs2::store::api::Result<Vec<T>> {
+async fn to_vec<T>(stream: impl Stream<Item = api::Result<T>>) -> api::Result<Vec<T>> {
     let res = stream.collect::<Vec<_>>().await;
-    res.into_iter()
-        .collect::<blobs2::store::api::Result<Vec<_>>>()
+    res.into_iter().collect::<api::Result<Vec<_>>>()
 }
 
 fn expected(tags: impl IntoIterator<Item = &'static str>) -> Vec<TagInfo> {
@@ -130,7 +128,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
 #[ignore = "fixme"]
 async fn tags_smoke_mem() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let store = blobs2::store::Store::memory();
+    let store = Store::memory();
     tags_smoke(store.tags()).await
 }
 

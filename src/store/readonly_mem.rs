@@ -5,7 +5,11 @@ use std::{
 };
 
 use bao_tree::{
-    io::{mixed::traverse_ranges_validated, outboard::PreOrderMemOutboard, sync::ReadAt},
+    io::{
+        mixed::{traverse_ranges_validated, EncodedItem},
+        outboard::PreOrderMemOutboard,
+        sync::ReadAt,
+    },
     BaoTree, ChunkRanges,
 };
 use bytes::Bytes;
@@ -14,28 +18,32 @@ use quic_rpc::channel::spsc;
 use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
-use super::{
-    api::{self, ExportProgress, ImportProgress},
-    util::{observer::Observer, BaoTreeSender, QuicRpcSenderProgressExt},
-};
+use super::util::{observer::Observer, BaoTreeSender, QuicRpcSenderProgressExt};
 use crate::{
-    store::{
-        bitfield::Bitfield, mem::CompleteStorage, proto::*, util::observer::Observable, Store,
-        IROH_BLOCK_SIZE,
+    api::{
+        self,
+        bitfield::Bitfield,
+        blobs::{self, ExportProgress, ImportProgress},
+        proto::{
+            self, Command, ExportBaoMsg, ExportPathMsg, ImportBaoMsg, ImportByteStreamMsg,
+            ImportBytesMsg, ImportPathMsg, ObserveMsg,
+        },
+        Store,
     },
+    store::{mem::CompleteStorage, util::observer::Observable, IROH_BLOCK_SIZE},
     util::channel::mpsc,
     Hash,
 };
 
 struct Actor {
-    commands: mpsc::Receiver<Command>,
+    commands: mpsc::Receiver<proto::Command>,
     unit_tasks: JoinSet<()>,
     data: HashMap<Hash, CompleteStorage>,
     observers: Observable<Bitfield>,
 }
 
 impl Actor {
-    fn new(commands: mpsc::Receiver<Command>, data: HashMap<Hash, CompleteStorage>) -> Self {
+    fn new(commands: mpsc::Receiver<proto::Command>, data: HashMap<Hash, CompleteStorage>) -> Self {
         Self {
             data,
             commands,
@@ -73,7 +81,7 @@ impl Actor {
                 .ok();
             }
             Command::Observe(ObserveMsg {
-                inner: Observe { hash },
+                inner: blobs::Observe { hash },
                 tx,
                 ..
             }) => {
@@ -85,7 +93,7 @@ impl Actor {
                 }
             }
             Command::ExportBao(ExportBaoMsg {
-                inner: ExportBao { hash, ranges },
+                inner: blobs::ExportBao { hash, ranges },
                 tx,
                 ..
             }) => {
@@ -97,7 +105,7 @@ impl Actor {
                     .spawn(export_bao_task(hash, entry, ranges, tx));
             }
             Command::ExportPath(ExportPathMsg {
-                inner: ExportPath { hash, target, .. },
+                inner: blobs::ExportPath { hash, target, .. },
                 tx,
                 ..
             }) => {

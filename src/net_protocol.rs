@@ -10,7 +10,7 @@ use futures_lite::future::Boxed as BoxedFuture;
 use iroh::{endpoint::Connecting, protocol::ProtocolHandler, Endpoint};
 use tracing::error;
 
-use crate::store::Store;
+use crate::api::Store;
 
 #[derive(Debug)]
 pub(crate) struct BlobsInner {

@@ -13,9 +13,9 @@ use super::{
     Stats,
 };
 use crate::{
+    api::{self, Store},
     hashseq::HashSeq,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
-    store::{api, Store},
     util::channel::mpsc,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
