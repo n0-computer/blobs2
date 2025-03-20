@@ -1,8 +1,8 @@
 //! The server side API
-use std::{fmt::Debug, io};
+use std::fmt::Debug;
 
 use anyhow::{Context, Result};
-use bao_tree::{io::EncodeError, ChunkRanges};
+use bao_tree::ChunkRanges;
 use iroh::endpoint::{self, RecvStream, SendStream};
 use tracing::{debug, debug_span, warn, Instrument};
 

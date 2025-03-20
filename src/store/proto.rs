@@ -2,7 +2,6 @@
 //!
 //! A store needs to handle [`Command`]s. It is fine to just return an error for some
 //! commands. E.g. an immutable store can just return an error for import commands.
-use core::fmt;
 use std::{fmt::Debug, io, num::NonZeroU64, path::PathBuf, pin::Pin};
 
 use arrayvec::ArrayString;
@@ -17,19 +16,16 @@ use quic_rpc::{
 use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    api::{
+use super::api::{
         self,
-        tags::{self, Delete, ListTags, TagInfo},
+        tags::{self, TagInfo},
         ExportMode, ExportProgress, ImportMode, ImportProgress,
-    },
-    util::DD,
-};
+    };
 use crate::{
     store::{
         bitfield::Bitfield,
-        util::{observer::Observer, Tag},
-        BlobFormat, HashAndFormat,
+        util::Tag,
+        BlobFormat,
     },
     Hash,
 };

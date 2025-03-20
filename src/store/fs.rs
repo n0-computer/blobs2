@@ -818,7 +818,7 @@ async fn export_path_impl(
     }
     tx.send(ExportProgress::Done)
         .await
-        .map_err(|e| api::Error::other(e))?;
+        .map_err(api::Error::other)?;
     Ok(())
 }
 

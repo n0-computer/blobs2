@@ -13,17 +13,14 @@
 use std::{
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     ops::Deref,
     path::PathBuf,
     sync::Arc,
 };
 
 use bao_tree::{
-    io::{
-        outboard::{PreOrderMemOutboard, PreOrderOutboard},
-        sync::WriteAt,
-    },
+    io::outboard::{PreOrderMemOutboard, PreOrderOutboard},
     BaoTree, ChunkNum,
 };
 use bytes::Bytes;
@@ -41,7 +38,7 @@ use crate::{
             HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
             ImportPath, ImportPathMsg,
         },
-        util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt},
+        util::{MemOrFile, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
     },
     util::outboard_with_progress::{init_outboard, Progress},

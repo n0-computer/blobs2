@@ -14,7 +14,7 @@ use redb::{Database, DatabaseError, ReadableTable};
 use crate::{
     store::api::{
         self,
-        tags::{self, CreateTag, Delete, ListTags, Rename, SetTag, TagInfo},
+        tags::{self, CreateTag, Delete, ListTags, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
 };

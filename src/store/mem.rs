@@ -34,7 +34,6 @@ use super::{
         ExportProgress, ImportProgress,
     },
     util::{BaoTreeSender, QuicRpcSenderProgressExt},
-    BlobFormat,
 };
 use crate::{
     store::{

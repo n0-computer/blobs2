@@ -323,7 +323,7 @@ pub mod tags {
                     rx.into()
                 }
             };
-            Ok(rx.await??)
+            rx.await?
         }
 
         pub async fn set(
@@ -650,12 +650,12 @@ impl Blobs {
                     let (rx, tx) = r.write(options).await?;
                     let mut tx: spsc::Sender<_> = tx.into();
                     while let Some(item) = data.recv().await? {
-                        tx.send(item).await.map_err(|e| api::Error::other(e))?;
+                        tx.send(item).await.map_err(api::Error::other)?;
                     }
                     rx.into()
                 }
             };
-            Ok(rx.await??)
+            rx.await?
         })
     }
 
@@ -995,7 +995,7 @@ impl IntoFuture for ImportBaoResult {
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.inner.await })
+        Box::pin(self.inner)
     }
 }
 

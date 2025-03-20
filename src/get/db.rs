@@ -117,10 +117,10 @@ async fn get_blob_ranges_impl(
     hash: Hash,
     store: &Store,
 ) -> api::Result<AtEndBlob> {
-    let (mut content, size) = header.next().await.map_err(|e| api::Error::other(e))?;
+    let (mut content, size) = header.next().await.map_err(api::Error::other)?;
     let Some(size) = NonZeroU64::new(size) else {
         return if hash == Hash::EMPTY {
-            let end = content.drain().await.map_err(|e| api::Error::other(e))?;
+            let end = content.drain().await.map_err(api::Error::other)?;
             Ok(end)
         } else {
             Err(api::Error::other("invalid size for hash"))
@@ -134,8 +134,8 @@ async fn get_blob_ranges_impl(
         api::Result::Ok(loop {
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
-                    let item = res.map_err(|e| api::Error::other(e))?;
-                    tx.send(item).await.map_err(|e| api::Error::other(e))?;
+                    let item = res.map_err(api::Error::other)?;
+                    tx.send(item).await.map_err(api::Error::other)?;
                     content = next;
                 }
                 BlobContentNext::Done(end) => {
