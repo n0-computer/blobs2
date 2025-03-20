@@ -20,7 +20,7 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
-use tracing::{info, trace, warn};
+use tracing::{info, trace, warn, Span};
 
 use super::{
     entry_state::{DataLocation, EntryState, OutboardLocation},
@@ -391,6 +391,7 @@ fn send_update(permit: mpsc::Permit<meta::Command>, hash: &Hash, update: EntrySt
             hash: *hash,
             state: update,
             tx: None,
+            span: Span::current(),
         }
         .into(),
     );

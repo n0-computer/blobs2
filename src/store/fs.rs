@@ -75,7 +75,7 @@ use crate::{
     },
     util::{
         channel::{mpsc, oneshot},
-        temp_tag::{TagCounter, TempCounterMap, TempTag, TempTagScope},
+        temp_tag::{TagCounter, TempTag, TempTagScope},
     },
 };
 mod bao_file;
@@ -199,6 +199,7 @@ impl HashContext {
                     hash,
                     state,
                     tx: Some(tx),
+                    span: tracing::Span::current(),
                 }
                 .into(),
             )
@@ -212,7 +213,15 @@ impl HashContext {
         let hash = hash.into();
         let (tx, rx) = oneshot::channel();
         self.db()
-            .send(meta::Set { hash, state, tx }.into())
+            .send(
+                meta::Set {
+                    hash,
+                    state,
+                    tx,
+                    span: tracing::Span::current(),
+                }
+                .into(),
+            )
             .await
             .map_err(io::Error::other)?;
         rx.await.map_err(|_e| io::Error::other(""))??;

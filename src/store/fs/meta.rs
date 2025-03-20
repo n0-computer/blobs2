@@ -9,7 +9,6 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
-use data_encoding::Display;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{

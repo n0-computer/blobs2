@@ -78,6 +78,7 @@ async fn blobs_smoke_fs() -> TestResult {
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
     blobs_smoke(td.path(), store.blobs()).await?;
+    store.shutdown().await?;
     Ok(())
 }
 
@@ -92,5 +93,6 @@ async fn blobs_smoke_rpc() -> TestResult {
     tokio::spawn(store.clone().listen(server.clone()));
     let api = Store::connect(client, server.local_addr()?);
     blobs_smoke(td.path(), api.blobs()).await?;
+    api.shutdown().await?;
     Ok(())
 }

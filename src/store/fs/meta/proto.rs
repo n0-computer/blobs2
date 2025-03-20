@@ -4,6 +4,7 @@ use std::fmt;
 use bytes::Bytes;
 use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
+use tracing::Span;
 
 use super::ActorResult;
 pub use crate::store::proto::SyncDbMsg;
@@ -53,6 +54,7 @@ pub struct Update {
     pub state: EntryState<Bytes>,
     /// do I need this? Optional?
     pub tx: Option<oneshot::Sender<ActorResult<()>>>,
+    pub span: Span,
 }
 
 impl fmt::Debug for Update {
@@ -69,6 +71,7 @@ pub struct Set {
     pub hash: Hash,
     pub state: EntryState<Bytes>,
     pub tx: oneshot::Sender<ActorResult<()>>,
+    pub span: Span,
 }
 
 impl fmt::Debug for Set {
@@ -84,6 +87,7 @@ impl fmt::Debug for Set {
 pub struct DeleteBlobs {
     pub hashes: Vec<Hash>,
     pub tx: oneshot::Sender<ActorResult<()>>,
+    pub span: Span,
 }
 
 /// Predicate for filtering entries in a redb table.
@@ -159,9 +163,9 @@ impl ReadWriteCommand {
 
     pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
         match self {
-            Self::Update(x) => None,
-            Self::Set(x) => None,
-            Self::Delete(x) => None,
+            Self::Update(x) => Some(&x.span),
+            Self::Set(x) => Some(&x.span),
+            Self::Delete(x) => Some(&x.span),
             Self::SetTag(x) => x.parent_span_opt(),
             Self::DeleteTags(x) => x.parent_span_opt(),
             Self::RenameTag(x) => x.parent_span_opt(),
