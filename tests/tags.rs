@@ -153,5 +153,6 @@ async fn tags_smoke_rpc() -> TestResult<()> {
     tokio::spawn(store.clone().listen(server.clone()));
     let api = Store::connect(client, server.local_addr()?);
     tags_smoke(api.tags()).await?;
+    api.shutdown().await?;
     Ok(())
 }

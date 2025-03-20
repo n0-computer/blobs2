@@ -90,6 +90,7 @@ impl Store {
                     Request::ImportPath(msg) => local.send((msg, tx)),
                     Request::ExportBao(msg) => local.send((msg, tx)),
                     Request::ExportPath(msg) => local.send((msg, tx)),
+                    Request::Shutdown(msg) => local.send((msg, tx)),
                     _ => {
                         todo!("rpc request {:?}", req);
                     }

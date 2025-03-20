@@ -9,6 +9,7 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
+use data_encoding::Display;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
@@ -22,7 +23,7 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{ReadOnlyTables, ReadableTables, Tables};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, info_span, instrument, trace, trace_span, Instrument};
 
 use super::{
     delete_set::DeleteHandle,
@@ -315,6 +316,23 @@ impl Set {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TxnNum {
+    Read(u64),
+    Write(u64),
+    TopLevel(u64),
+}
+
+impl std::fmt::Debug for TxnNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxnNum::Read(n) => write!(f, "r{}", n),
+            TxnNum::Write(n) => write!(f, "w{}", n),
+            TxnNum::TopLevel(n) => write!(f, "t{}", n),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Actor {
     db: redb::Database,
@@ -358,7 +376,14 @@ impl Actor {
     async fn handle_readonly(
         tables: &impl ReadableTables,
         cmd: ReadOnlyCommand,
+        op: TxnNum,
     ) -> ActorResult<()> {
+        let span = info_span!(
+            parent: &cmd.parent_span(),
+            "txn",
+            op = tracing::field::debug(op),
+        );
+        let _guard = span.enter();
         match cmd {
             ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
             ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
@@ -488,7 +513,17 @@ impl Actor {
         Ok(())
     }
 
-    async fn handle_readwrite(tables: &mut Tables<'_>, cmd: ReadWriteCommand) -> ActorResult<()> {
+    async fn handle_readwrite(
+        tables: &mut Tables<'_>,
+        cmd: ReadWriteCommand,
+        op: TxnNum,
+    ) -> ActorResult<()> {
+        let span = info_span!(
+            parent: &cmd.parent_span(),
+            "txn",
+            op = tracing::field::debug(op),
+        );
+        let _guard = span.enter();
         match cmd {
             ReadWriteCommand::Update(cmd) => cmd.handle(tables),
             ReadWriteCommand::Set(cmd) => cmd.handle(tables),
@@ -506,15 +541,17 @@ impl Actor {
     async fn handle_non_toplevel(
         tables: &mut Tables<'_>,
         cmd: NonTopLevelCommand,
+        op: TxnNum,
     ) -> ActorResult<()> {
         match cmd {
-            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd).await,
-            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd).await,
+            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd, op).await,
+            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd, op).await,
         }
     }
 
-    async fn sync_db(_db: &mut Database, sync: SyncDbMsg) -> ActorResult<()> {
-        let SyncDbMsg { tx, .. } = sync;
+    async fn sync_db(_db: &mut Database, cmd: SyncDbMsg) -> ActorResult<()> {
+        trace!("{cmd:?}");
+        let SyncDbMsg { tx, .. } = cmd;
         // nothing to do here, since for a toplevel cmd we are outside a write transaction
         tx.send(Ok(())).await.ok();
         Ok(())
@@ -523,13 +560,21 @@ impl Actor {
     async fn handle_toplevel(
         db: &mut Database,
         cmd: TopLevelCommand,
+        op: TxnNum,
     ) -> ActorResult<Option<ShutdownMsg>> {
+        let span = info_span!(
+            parent: &cmd.parent_span(),
+            "txn",
+            op = tracing::field::debug(op),
+        );
+        let _guard = span.enter();
         Ok(match cmd {
             TopLevelCommand::SyncDb(cmd) => {
                 Self::sync_db(db, cmd).await?;
                 None
             }
             TopLevelCommand::Shutdown(cmd) => {
+                trace!("{cmd:?}");
                 // nothing to do here, since the database will be dropped
                 Some(cmd)
             }
@@ -539,25 +584,28 @@ impl Actor {
     pub async fn run(mut self) -> ActorResult<()> {
         let mut db = DbWrapper::from(self.db);
         let options = &self.options;
+        let mut op = 0u64;
         let shutdown = loop {
+            op += 1;
             let Some(cmd) = self.cmds.recv().await else {
                 break None;
             };
             match cmd {
                 Command::TopLevel(cmd) => {
-                    trace!("{cmd:?}");
-                    if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd).await? {
+                    let op = TxnNum::TopLevel(op);
+                    if let Some(shutdown) = Self::handle_toplevel(&mut db, cmd, op).await? {
                         break Some(shutdown);
                     }
                 }
                 Command::ReadOnly(cmd) => {
+                    let op = TxnNum::Read(op);
                     self.cmds.push_back(cmd.into()).ok();
                     let tx = db.begin_read()?;
                     let tables = ReadOnlyTables::new(&tx)?;
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::read_only).await {
-                        Self::handle_readonly(&tables, cmd).await?;
+                        Self::handle_readonly(&tables, cmd, op).await?;
                         n += 1;
                         if t0.elapsed() > options.max_read_duration {
                             break;
@@ -568,7 +616,7 @@ impl Actor {
                     }
                 }
                 Command::ReadWrite(cmd) => {
-                    trace!("write batch");
+                    let op = TxnNum::Write(op);
                     self.cmds.push_back(cmd.into()).ok();
                     let ftx = self.ds.begin_write();
                     let tx = db.begin_write()?;
@@ -576,7 +624,7 @@ impl Actor {
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
-                        Self::handle_non_toplevel(&mut tables, cmd).await?;
+                        Self::handle_non_toplevel(&mut tables, cmd, op).await?;
                         n += 1;
                         if t0.elapsed() > options.max_write_duration {
                             break;

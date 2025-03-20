@@ -120,6 +120,23 @@ pub enum ReadOnlyCommand {
     Blobs(Blobs),
 }
 
+impl ReadOnlyCommand {
+    pub fn parent_span(&self) -> tracing::Span {
+        self.parent_span_opt()
+            .cloned()
+            .unwrap_or_else(|| tracing::Span::current())
+    }
+
+    pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
+        match self {
+            Self::Get(_) => None,
+            Self::Dump(_) => None,
+            Self::ListTags(x) => x.parent_span_opt(),
+            Self::Blobs(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 #[enum_conversions(Command)]
 pub enum ReadWriteCommand {
@@ -133,11 +150,47 @@ pub enum ReadWriteCommand {
     ProcessExit(ProcessExit),
 }
 
+impl ReadWriteCommand {
+    pub fn parent_span(&self) -> tracing::Span {
+        self.parent_span_opt()
+            .cloned()
+            .unwrap_or_else(|| tracing::Span::current())
+    }
+
+    pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
+        match self {
+            Self::Update(x) => None,
+            Self::Set(x) => None,
+            Self::Delete(x) => None,
+            Self::SetTag(x) => x.parent_span_opt(),
+            Self::DeleteTags(x) => x.parent_span_opt(),
+            Self::RenameTag(x) => x.parent_span_opt(),
+            Self::CreateTag(x) => x.parent_span_opt(),
+            Self::ProcessExit(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 #[enum_conversions(Command)]
 pub enum TopLevelCommand {
     SyncDb(SyncDbMsg),
     Shutdown(ShutdownMsg),
+}
+
+impl TopLevelCommand {
+    pub fn parent_span(&self) -> tracing::Span {
+        self.parent_span_opt()
+            .cloned()
+            .unwrap_or_else(|| tracing::Span::current())
+    }
+
+    pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
+        match self {
+            Self::SyncDb(x) => x.parent_span_opt(),
+            Self::Shutdown(x) => x.parent_span_opt(),
+        }
+    }
 }
 
 #[enum_conversions()]
