@@ -38,8 +38,8 @@ use crate::{
     store::{
         api::{ImportMode, ImportProgress},
         proto::{
-            Batch, HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes,
-            ImportBytesMsg, ImportPath, ImportPathMsg, StoreService,
+            HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
+            ImportPath, ImportPathMsg, Scope, StoreService,
         },
         util::{MemOrFile, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
@@ -54,11 +54,20 @@ use crate::{
 /// and the file location.
 ///
 /// This serves as an intermediate result between copying and outboard computation.
-#[derive(derive_more::Debug)]
 pub enum ImportSource {
     TempFile(PathBuf, File, u64),
     External(PathBuf, File, u64),
-    Memory(#[debug(skip)] Bytes),
+    Memory(Bytes),
+}
+
+impl std::fmt::Debug for ImportSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TempFile(path, _, size) => write!(f, "TempFile({:?}, {})", path, size),
+            Self::External(path, _, size) => write!(f, "External({:?}, {})", path, size),
+            Self::Memory(data) => write!(f, "Memory({})", data.len()),
+        }
+    }
 }
 
 impl ImportSource {
@@ -100,13 +109,24 @@ impl ImportSource {
 ///
 /// The store can assume that the outboard, if on disk, is in a location where
 /// it can be moved to the final location (basically it needs to be on the same device).
-#[derive(Debug)]
 pub struct ImportEntry {
     pub hash: Hash,
     pub format: BlobFormat,
-    pub batch: Batch,
+    pub scope: Scope,
     pub source: ImportSource,
     pub outboard: MemOrFile<Bytes, PathBuf>,
+}
+
+impl std::fmt::Debug for ImportEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportEntry")
+            .field("hash", &self.hash)
+            .field("format", &self.format)
+            .field("scope", &self.scope)
+            .field("source", &self.source.fmt_short())
+            .field("outboard", &self.outboard.fmt_short())
+            .finish()
+    }
 }
 
 impl Channels<StoreService> for ImportEntry {
@@ -139,7 +159,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStream {
                 format: cmd.inner.format,
-                batch: cmd.batch,
+                scope: cmd.scope,
                 data: vec![cmd.inner.data],
             },
             tx: cmd.tx,
@@ -182,11 +202,10 @@ async fn import_bytes_tiny_impl(
         .map_err(|_e| io::Error::other("error"))?;
     Ok(if raw_outboard_size(size) == 0 {
         // the thing is so small that it does not even need an outboard
-
         ImportEntry {
             hash: Hash::new(&cmd.data),
             format: cmd.format,
-            batch: cmd.batch,
+            scope: cmd.scope,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::empty(),
         }
@@ -196,7 +215,7 @@ async fn import_bytes_tiny_impl(
         ImportEntry {
             hash: outboard.root.into(),
             format: cmd.format,
-            batch: cmd.batch,
+            scope: cmd.scope,
             source: ImportSource::Memory(cmd.data),
             outboard: MemOrFile::Mem(Bytes::from(outboard.data)),
         }
@@ -233,7 +252,7 @@ async fn import_byte_stream_impl(
     let ImportByteStream {
         format,
         data,
-        batch,
+        scope: batch,
     } = cmd;
     let data = futures_lite::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
@@ -338,7 +357,7 @@ impl Progress for OutboardProgress {
 async fn compute_outboard(
     source: ImportSource,
     format: BlobFormat,
-    batch: Batch,
+    scope: Scope,
     options: Arc<Options>,
     tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
@@ -378,7 +397,7 @@ async fn compute_outboard(
     Ok(ImportEntry {
         hash: hash.into(),
         format,
-        batch,
+        scope,
         source,
         outboard,
     })
@@ -411,7 +430,7 @@ async fn import_path_impl(
         path,
         mode,
         format,
-        batch,
+        scope: batch,
     } = cmd;
     if !path.is_absolute() {
         return Err(io::Error::new(
@@ -472,7 +491,7 @@ mod tests {
     use super::*;
     use crate::store::{
         fs::options::{InlineOptions, PathOptions},
-        proto::{Batch, BoxedByteStream},
+        proto::{BoxedByteStream, Scope},
         BlobFormat,
     };
 
@@ -511,7 +530,7 @@ mod tests {
         let cmd = ImportByteStream {
             data,
             format: BlobFormat::Raw,
-            batch: Default::default(),
+            scope: Default::default(),
         };
         let res = import_byte_stream_impl(cmd, &mut tx, options).await;
         let Ok(res) = res else {
@@ -539,7 +558,7 @@ mod tests {
             path,
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
-            batch: Batch::default(),
+            scope: Scope::default(),
         };
         let res = import_path_impl(cmd, &mut tx, options).await;
         let Ok(res) = res else {

@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{BlobFormat, Hash, HashAndFormat};
 
@@ -78,6 +78,7 @@ impl TempTag {
         Self { inner, on_drop }
     }
 
+    /// The empty temp tag. We don't track the empty blob since we always have it.
     pub fn leaking_empty(format: BlobFormat) -> Self {
         Self {
             inner: HashAndFormat {
@@ -109,7 +110,7 @@ impl TempTag {
     }
 
     /// Keep the item alive until the end of the process
-    pub fn leak(mut self) {
+    pub fn leak(&mut self) {
         // set the liveness tracker to None, so that the refcount is not decreased
         // during drop. This means that the refcount will never reach 0 and the
         // item will not be gced until the end of the process.
@@ -170,12 +171,14 @@ pub(crate) struct TempTagScope(Mutex<TempCounterMap>);
 
 impl TagDrop for TempTagScope {
     fn on_drop(&self, inner: &HashAndFormat) {
+        trace!("Dropping temp tag {:?}", inner);
         self.0.lock().unwrap().dec(inner);
     }
 }
 
 impl TagCounter for TempTagScope {
     fn on_create(&self, inner: &HashAndFormat) {
+        trace!("Creating temp tag {:?}", inner);
         self.0.lock().unwrap().inc(inner.clone());
     }
 }

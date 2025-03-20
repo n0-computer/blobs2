@@ -243,12 +243,24 @@ impl BlobFormat {
 }
 
 /// A hash and format pair
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, MaxSize, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, MaxSize, Hash)]
 pub struct HashAndFormat {
     /// The hash
     pub hash: Hash,
     /// The format
     pub format: BlobFormat,
+}
+
+impl std::fmt::Debug for HashAndFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        std::fmt::Debug::fmt(&(DD(self.hash.to_hex()), self.format), f)
+    }
+}
+
+impl From<(Hash, BlobFormat)> for HashAndFormat {
+    fn from((hash, format): (Hash, BlobFormat)) -> Self {
+        Self { hash, format }
+    }
 }
 
 impl From<Hash> for HashAndFormat {

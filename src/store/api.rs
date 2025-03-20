@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
-use super::{BlobFormat, Blobs, HashAndFormat};
+use super::{BlobFormat, Blobs};
 use crate::{
     store::{
         api,
@@ -463,7 +463,7 @@ impl Blobs {
         let inner = ImportBytes {
             data,
             format: crate::BlobFormat::Raw,
-            batch: Batch::default(),
+            scope: Scope::default(),
         };
         let request = self.sender.request();
         ImportResult::new(async move {
@@ -504,7 +504,7 @@ impl Blobs {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
-            batch: Batch::default(),
+            scope: Scope::default(),
         })
     }
 
@@ -528,7 +528,7 @@ impl Blobs {
         let inner = ImportByteStream {
             data,
             format: crate::BlobFormat::Raw,
-            batch: Batch::default(),
+            scope: Scope::default(),
         };
         let request = self.sender.request();
         ImportResult::new(async move {

@@ -102,6 +102,7 @@ impl Db {
 
 impl Get {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
+        trace!("{self:?}");
         let Get { hash, tx } = self;
         let Some(entry) = tables.blobs().get(hash)? else {
             tx.send(GetResult { state: Ok(None) });
@@ -131,6 +132,7 @@ impl Get {
 
 impl Dump {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
+        trace!("{self:?}");
         let cmd = self;
         trace!("dumping database");
         for e in tables.blobs().iter()? {
@@ -163,6 +165,7 @@ impl Dump {
 }
 
 async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> ActorResult<()> {
+    trace!("{msg:?}");
     let ListTagsMsg {
         inner:
             ListTags {
@@ -225,6 +228,7 @@ impl Blobs {
 
 impl Update {
     fn handle(self, tables: &mut Tables) -> ActorResult<()> {
+        trace!("{self:?}");
         let Update {
             hash, state, tx, ..
         } = self;
@@ -277,6 +281,7 @@ impl Update {
 
 impl Set {
     fn handle(self, tables: &mut Tables) -> ActorResult<()> {
+        trace!("{self:?}");
         let Set {
             state, hash, tx, ..
         } = self;
@@ -410,6 +415,7 @@ impl Actor {
     }
 
     async fn set_tag(tables: &mut Tables<'_>, cmd: SetTagMsg) -> ActorResult<()> {
+        trace!("{cmd:?}");
         let SetTagMsg {
             inner: SetTag { name: tag, value },
             tx,
@@ -423,6 +429,7 @@ impl Actor {
     }
 
     async fn create_tag(tables: &mut Tables<'_>, cmd: CreateTagMsg) -> ActorResult<()> {
+        trace!("{cmd:?}");
         let CreateTagMsg {
             inner: CreateTag { content: hash },
             tx,
@@ -440,6 +447,7 @@ impl Actor {
     }
 
     async fn delete_tags(tables: &mut Tables<'_>, cmd: DeleteTagsMsg) -> ActorResult<()> {
+        trace!("{cmd:?}");
         let DeleteTagsMsg {
             inner: Delete { from, to },
             tx,
@@ -457,6 +465,7 @@ impl Actor {
     }
 
     async fn rename_tag(tables: &mut Tables<'_>, cmd: RenameTagMsg) -> ActorResult<()> {
+        trace!("{cmd:?}");
         let RenameTagMsg {
             inner: tags::Rename { from, to },
             tx,
@@ -559,7 +568,7 @@ impl Actor {
                     }
                 }
                 Command::ReadWrite(cmd) => {
-                    info!("{cmd:?}");
+                    trace!("write batch");
                     self.cmds.push_back(cmd.into()).ok();
                     let ftx = self.ds.begin_write();
                     let tx = db.begin_write()?;

@@ -119,6 +119,18 @@ pub enum InternalCommand {
     FinishImport(ImportEntryMsg),
 }
 
+impl InternalCommand {
+    pub fn parent_span(&self) -> tracing::Span {
+        match self {
+            Self::Dump(_) => tracing::Span::current(),
+            Self::FinishImport(cmd) => cmd
+                .parent_span_opt()
+                .cloned()
+                .unwrap_or_else(|| tracing::Span::current()),
+        }
+    }
+}
+
 /// Context needed by most tasks
 #[derive(Debug)]
 struct TaskContext {
@@ -147,7 +159,7 @@ struct Actor {
     // handles
     handles: HashMap<Hash, Slot>,
     // temp tags
-    temp_tags: HashMap<Batch, Arc<TempTagScope>>,
+    temp_tags: HashMap<Scope, Arc<TempTagScope>>,
     // our private tokio runtime. It has to live somewhere.
     _rt: RtWrapper,
 }
@@ -321,6 +333,8 @@ impl Actor {
     }
 
     async fn handle_command(&mut self, cmd: Command) {
+        let span = cmd.parent_span();
+        let _entered = span.enter();
         match cmd {
             Command::SyncDb(cmd) => {
                 trace!("{cmd:?}");
@@ -395,11 +409,15 @@ impl Actor {
     }
 
     async fn handle_fs_command(&mut self, cmd: InternalCommand) {
+        let span = cmd.parent_span();
+        let _entered = span.enter();
         match cmd {
             InternalCommand::Dump(cmd) => {
+                trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
             InternalCommand::FinishImport(mut cmd) => {
+                trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
                         .send(ImportProgress::Done {
@@ -408,15 +426,15 @@ impl Actor {
                         .await
                         .ok();
                 }
-                let tt = self.create_temp_tag(cmd.batch, cmd.hash, cmd.format);
+                let tt = self.create_temp_tag(cmd.scope, cmd.hash, cmd.format);
                 let ctx = self.hash_context(cmd.hash);
-                self.tasks.spawn(finish_import(cmd, tt, ctx));
+                self.spawn(finish_import(cmd, tt, ctx));
             }
         }
     }
 
-    fn create_temp_tag(&mut self, batch: Batch, hash: Hash, format: BlobFormat) -> TempTag {
-        let temp_tags = self.temp_tags.entry(batch).or_default();
+    fn create_temp_tag(&mut self, scope: Scope, hash: Hash, format: BlobFormat) -> TempTag {
+        let temp_tags = self.temp_tags.entry(scope).or_default();
         temp_tags.temp_tag(HashAndFormat { hash, format })
     }
 
@@ -433,12 +451,9 @@ impl Actor {
                     let Some(cmd) = cmd else {
                         break;
                     };
-                    let span = cmd.parent_span();
-                    let _entered = span.enter();
                     self.handle_command(cmd).await;
                 }
                 Some(cmd) = self.fs_cmd_rx.recv() => {
-                    trace!("{cmd:?}");
                     self.handle_fs_command(cmd).await;
                 }
                 Some(res) = self.tasks.join_next(), if !self.tasks.is_empty() => {
@@ -529,10 +544,17 @@ impl Drop for RtWrapper {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(mut cmd: ImportEntryMsg, tt: TempTag, ctx: HashContext) {
-    let hash = cmd.hash;
+async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
     let res = match finish_import_impl(cmd.inner, ctx).await {
-        Ok(()) => ImportProgress::Done { tt },
+        Ok(()) => {
+            // for a remote call, we can't have the on_drop callback, so we have to leak the temp tag
+            // it will be cleaned up when either the process exits or scope ends
+            if cmd.tx.is_rpc() {
+                trace!("leaking temp tag {}", tt.hash_and_format());
+                tt.leak();
+            }
+            ImportProgress::Done { tt }
+        }
         Err(cause) => ImportProgress::Error { cause },
     };
     cmd.tx.send(res).await.ok();
@@ -640,6 +662,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
         outboard_location,
     };
     ctx.update(hash, state).await?;
+    trace!("update complete!");
     Ok(())
 }
 
