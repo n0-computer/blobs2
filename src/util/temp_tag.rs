@@ -179,7 +179,7 @@ impl TagDrop for TempTagScope {
 impl TagCounter for TempTagScope {
     fn on_create(&self, inner: &HashAndFormat) {
         trace!("Creating temp tag {:?}", inner);
-        self.0.lock().unwrap().inc(inner.clone());
+        self.0.lock().unwrap().inc(*inner);
     }
 }
 

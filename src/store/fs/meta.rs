@@ -22,7 +22,7 @@ mod proto;
 pub use proto::*;
 mod tables;
 use tables::{ReadOnlyTables, ReadableTables, Tables};
-use tracing::{debug, error, info, info_span, instrument, trace, trace_span, Instrument};
+use tracing::{debug, error, info_span, trace};
 
 use super::{
     delete_set::DeleteHandle,

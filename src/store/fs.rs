@@ -126,7 +126,7 @@ impl InternalCommand {
             Self::FinishImport(cmd) => cmd
                 .parent_span_opt()
                 .cloned()
-                .unwrap_or_else(|| tracing::Span::current()),
+                .unwrap_or_else(tracing::Span::current),
         }
     }
 }

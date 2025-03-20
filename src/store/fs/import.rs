@@ -13,8 +13,7 @@
 use std::{
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, Write},
-    ops::Deref,
+    io::{self, Seek, Write},
     path::PathBuf,
     sync::Arc,
 };

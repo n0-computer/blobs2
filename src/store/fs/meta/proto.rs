@@ -128,7 +128,7 @@ impl ReadOnlyCommand {
     pub fn parent_span(&self) -> tracing::Span {
         self.parent_span_opt()
             .cloned()
-            .unwrap_or_else(|| tracing::Span::current())
+            .unwrap_or_else(tracing::Span::current)
     }
 
     pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
@@ -158,7 +158,7 @@ impl ReadWriteCommand {
     pub fn parent_span(&self) -> tracing::Span {
         self.parent_span_opt()
             .cloned()
-            .unwrap_or_else(|| tracing::Span::current())
+            .unwrap_or_else(tracing::Span::current)
     }
 
     pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
@@ -186,7 +186,7 @@ impl TopLevelCommand {
     pub fn parent_span(&self) -> tracing::Span {
         self.parent_span_opt()
             .cloned()
-            .unwrap_or_else(|| tracing::Span::current())
+            .unwrap_or_else(tracing::Span::current)
     }
 
     pub fn parent_span_opt(&self) -> Option<&tracing::Span> {

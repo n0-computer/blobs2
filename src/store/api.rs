@@ -81,6 +81,7 @@ pub mod tags {
     use n0_future::{Stream, StreamExt};
     use quic_rpc::{channel::oneshot, ServiceRequest};
     use serde::{Deserialize, Serialize};
+    use tracing::trace;
 
     use super::super::Tags;
     use crate::{
@@ -290,6 +291,7 @@ pub mod tags {
             &self,
             options: ListTags,
         ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+            trace!("{:?}", options);
             let (tx, rx) = oneshot::channel();
             let rx = match self.sender.request().await? {
                 ServiceRequest::Remote(r) => {
@@ -311,15 +313,16 @@ pub mod tags {
             stream.next().await.transpose()
         }
 
-        pub async fn set_with_opts(&self, msg: SetTag) -> super::Result<()> {
+        pub async fn set_with_opts(&self, options: SetTag) -> super::Result<()> {
+            trace!("{:?}", options);
             let rx = match self.sender.request().await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = oneshot::channel();
-                    c.send((msg, tx)).await?;
+                    c.send((options, tx)).await?;
                     rx
                 }
                 ServiceRequest::Remote(r) => {
-                    let (rx, _) = r.write(msg).await?;
+                    let (rx, _) = r.write(options).await?;
                     rx.into()
                 }
             };
@@ -372,6 +375,7 @@ pub mod tags {
 
         /// Deletes a tag.
         pub async fn delete_with_opts(&self, options: Delete) -> api::Result<()> {
+            trace!("{:?}", options);
             let rx = match self.sender.request().await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = quic_rpc::channel::oneshot::channel();
@@ -418,6 +422,7 @@ pub mod tags {
         ///
         /// If the tag does not exist, this will return an error.
         pub async fn rename_with_opts(&self, options: Rename) -> api::Result<()> {
+            trace!("{:?}", options);
             let rx = match self.sender.request().await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = quic_rpc::channel::oneshot::channel();

@@ -13,7 +13,6 @@ pub(crate) mod util;
 use proto::{Request, StoreService};
 use quic_rpc::rpc::{listen, Handler};
 use ref_cast::RefCast;
-use tracing::trace;
 
 pub use crate::hash::{BlobFormat, Hash, HashAndFormat};
 
@@ -78,7 +77,6 @@ impl Store {
         let handler: Handler<crate::store::proto::Request> = Arc::new(move |req, _, tx| {
             let local = local.clone();
             Box::pin({
-                trace!("rpc request {:?}", req);
                 match req {
                     Request::SetTag(msg) => local.send((msg, tx)),
                     Request::CreateTag(msg) => local.send((msg, tx)),
