@@ -25,7 +25,7 @@ use quic_rpc::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
-use tracing::trace;
+use tracing::{error, trace};
 
 use super::{BlobFormat, Blobs};
 use crate::{
@@ -456,30 +456,26 @@ pub mod tags {
 
 impl Blobs {
     pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
-        self.import_bytes_impl(data.into())
-    }
-
-    fn import_bytes_impl(&self, data: bytes::Bytes) -> ImportResult {
-        trace!(
-            "import_bytes size={} addr={}",
-            data.len(),
-            data.addr_short()
-        );
-        let inner = ImportBytes {
-            data,
+        let options = ImportBytes {
+            data: data.into(),
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
+        self.import_bytes_with_opts(options)
+    }
+
+    pub fn import_bytes_with_opts(&self, options: ImportBytes) -> ImportResult {
+        trace!("{options:?}");
         let request = self.sender.request();
         ImportResult::new(async move {
             let rx = match request.await? {
                 ServiceRequest::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
-                    c.send((inner, tx)).await?;
+                    c.send((options, tx)).await?;
                     rx
                 }
                 ServiceRequest::Remote(r) => {
-                    let (rx, _) = r.write(inner).await?;
+                    let (rx, _) = r.write(options).await?;
                     rx.into()
                 }
             };
@@ -488,6 +484,7 @@ impl Blobs {
     }
 
     pub fn import_path_with_opts(&self, options: ImportPath) -> ImportResult {
+        trace!("{:?}", options);
         let request = self.sender.request();
         ImportResult::new(async move {
             Ok(match request.await? {
@@ -553,7 +550,7 @@ impl Blobs {
     }
 
     pub fn export_bao_with_opts(&self, options: ExportBao) -> ExportBaoResult {
-        trace!("export_bao {:?}", options);
+        trace!("{options:?}");
         let request = self.sender.request();
         ExportBaoResult::new(async move {
             Ok(match request.await? {
@@ -590,6 +587,7 @@ impl Blobs {
     }
 
     pub fn observe_with_opts(&self, options: Observe) -> ObserveResult {
+        trace!("{:?}", options);
         let Observe { hash } = options;
         if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
             return ObserveResult::new(async move {
@@ -616,6 +614,7 @@ impl Blobs {
     }
 
     pub fn export_path_with_opts(&self, options: ExportPath) -> ExportPathResult {
+        trace!("{:?}", options);
         let request = self.sender.request();
         ExportPathResult::new(async move {
             Ok(match request.await? {
@@ -646,6 +645,7 @@ impl Blobs {
         mut data: spsc::Receiver<BaoContentItem>,
         options: ImportBao,
     ) -> ImportBaoResult {
+        trace!("{:?}", options);
         let request = self.sender.request();
         ImportBaoResult::new(async move {
             let rx = match request.await? {
@@ -883,9 +883,16 @@ impl ImportResult {
     pub async fn hash(self) -> io::Result<TempTag> {
         let mut rx = self.inner.await?;
         loop {
-            match rx.recv().await? {
-                Some(ImportProgress::Done { tt }) => break Ok(tt),
-                Some(ImportProgress::Error { cause }) => break Err(cause),
+            match rx.recv().await {
+                Ok(Some(ImportProgress::Done { tt })) => break Ok(tt),
+                Ok(Some(ImportProgress::Error { cause })) => {
+                    trace!("got explicit error: {:?}", cause);
+                    break Err(cause);
+                }
+                Err(cause) => {
+                    trace!("error receiving import progress: {:?}", cause);
+                    return Err(cause);
+                }
                 _ => {}
             }
         }

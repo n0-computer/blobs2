@@ -40,7 +40,7 @@ use crate::{
             HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
             ImportPath, ImportPathMsg, Scope, StoreService,
         },
-        util::{MemOrFile, QuicRpcSenderProgressExt},
+        util::{MemOrFile, QuicRpcSenderProgressExt, DD},
         IROH_BLOCK_SIZE,
     },
     util::outboard_with_progress::{init_outboard, Progress},
@@ -62,9 +62,13 @@ pub enum ImportSource {
 impl std::fmt::Debug for ImportSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TempFile(path, _, size) => write!(f, "TempFile({:?}, {})", path, size),
-            Self::External(path, _, size) => write!(f, "External({:?}, {})", path, size),
-            Self::Memory(data) => write!(f, "Memory({})", data.len()),
+            Self::TempFile(path, _, size) => {
+                f.debug_tuple("TempFile").field(path).field(size).finish()
+            }
+            Self::External(path, _, size) => {
+                f.debug_tuple("External").field(path).field(size).finish()
+            }
+            Self::Memory(data) => f.debug_tuple("Memory").field(&data.len()).finish(),
         }
     }
 }
@@ -122,8 +126,8 @@ impl std::fmt::Debug for ImportEntry {
             .field("hash", &self.hash)
             .field("format", &self.format)
             .field("scope", &self.scope)
-            .field("source", &self.source.fmt_short())
-            .field("outboard", &self.outboard.fmt_short())
+            .field("source", &DD(self.source.fmt_short()))
+            .field("outboard", &DD(self.outboard.fmt_short()))
             .finish()
     }
 }

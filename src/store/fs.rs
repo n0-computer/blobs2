@@ -671,7 +671,6 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
         outboard_location,
     };
     ctx.update(hash, state).await?;
-    trace!("update complete!");
     Ok(())
 }
 
@@ -962,7 +961,15 @@ impl FsStore {
 
     pub async fn dump(&self) -> anyhow::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.db.send(meta::Dump { tx }.into()).await?;
+        self.db
+            .send(
+                meta::Dump {
+                    tx,
+                    span: tracing::Span::current(),
+                }
+                .into(),
+            )
+            .await?;
         rx.await??;
         Ok(())
     }

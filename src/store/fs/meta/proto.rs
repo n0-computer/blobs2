@@ -25,6 +25,7 @@ use crate::{
 pub struct Get {
     pub hash: Hash,
     pub tx: oneshot::Sender<GetResult>,
+    pub span: Span,
 }
 
 impl fmt::Debug for Get {
@@ -47,6 +48,7 @@ pub struct GetResult {
 #[derive(Debug)]
 pub struct Dump {
     pub tx: oneshot::Sender<anyhow::Result<()>>,
+    pub span: Span,
 }
 
 pub struct Update {
@@ -102,6 +104,7 @@ pub struct Blobs {
     #[allow(clippy::type_complexity)]
     pub tx:
         oneshot::Sender<ActorResult<Vec<std::result::Result<(Hash, EntryState), StorageError>>>>,
+    pub span: Span,
 }
 
 /// Modification method: create a new unique tag and set it to a value.
@@ -133,10 +136,10 @@ impl ReadOnlyCommand {
 
     pub fn parent_span_opt(&self) -> Option<&tracing::Span> {
         match self {
-            Self::Get(_) => None,
-            Self::Dump(_) => None,
+            Self::Get(x) => Some(&x.span),
+            Self::Dump(x) => Some(&x.span),
             Self::ListTags(x) => x.parent_span_opt(),
-            Self::Blobs(_) => None,
+            Self::Blobs(x) => Some(&x.span),
         }
     }
 }

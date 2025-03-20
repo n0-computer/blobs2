@@ -82,7 +82,16 @@ impl Db {
     /// Get the entry state for a hash, if any.
     pub async fn get(&self, hash: Hash) -> anyhow::Result<Option<EntryState<Bytes>>> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(Get { hash, tx }.into()).await?;
+        self.sender
+            .send(
+                Get {
+                    hash,
+                    tx,
+                    span: tracing::Span::current(),
+                }
+                .into(),
+            )
+            .await?;
         let res = rx.await?;
         res.state
     }
@@ -103,7 +112,7 @@ impl Db {
 impl Get {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
         trace!("{self:?}");
-        let Get { hash, tx } = self;
+        let Get { hash, tx, .. } = self;
         let Some(entry) = tables.blobs().get(hash)? else {
             tx.send(GetResult { state: Ok(None) });
             return Ok(());
@@ -204,7 +213,7 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
 
 impl Blobs {
     fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
-        let Blobs { filter, tx } = self;
+        let Blobs { filter, tx, .. } = self;
         let mut res = Vec::new();
         let mut index = 0u64;
         #[allow(clippy::explicit_counter_loop)]

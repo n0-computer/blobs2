@@ -68,8 +68,18 @@ impl HashSpecific for ObserveMsg {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Scope(u64);
+
+impl Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "Global")
+        } else {
+            f.debug_tuple("Scope").field(&self.0).finish()
+        }
+    }
+}
 
 /// Import the given bytes.
 #[derive(Debug, Serialize, Deserialize)]
