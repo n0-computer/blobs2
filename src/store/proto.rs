@@ -21,6 +21,7 @@ use super::{
     api::{
         self,
         tags::{self, Delete, ListTags, TagInfo},
+        ExportMode, ExportProgress, ImportMode, ImportProgress,
     },
     util::DD,
 };
@@ -229,94 +230,4 @@ pub enum Command2 {
 
     SyncDb(SyncDbMsg),
     Shutdown(ShutdownMsg),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ImportProgress {
-    CopyProgress {
-        offset: u64,
-    },
-    Size {
-        size: u64,
-    },
-    CopyDone,
-    OutboardProgress {
-        offset: u64,
-    },
-    Done {
-        hash: Hash,
-    },
-    Error {
-        #[serde(with = "crate::util::serde::io_error_serde")]
-        cause: io::Error,
-    },
-}
-
-impl From<io::Error> for ImportProgress {
-    fn from(e: io::Error) -> Self {
-        Self::Error { cause: e }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ExportProgress {
-    Size { size: u64 },
-    CopyProgress { offset: u64 },
-    Done,
-    Error { cause: api::Error },
-}
-
-impl From<api::Error> for ExportProgress {
-    fn from(e: api::Error) -> Self {
-        Self::Error { cause: e }
-    }
-}
-
-/// The import mode describes how files will be imported.
-///
-/// This is a hint to the import trait method. For some implementations, this
-/// does not make any sense. E.g. an in memory implementation will always have
-/// to copy the file into memory. Also, a disk based implementation might choose
-/// to copy small files even if the mode is `Reference`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ImportMode {
-    /// This mode will copy the file into the database before hashing.
-    ///
-    /// This is the safe default because the file can not be accidentally modified
-    /// after it has been imported.
-    #[default]
-    Copy,
-    /// This mode will try to reference the file in place and assume it is unchanged after import.
-    ///
-    /// This has a large performance and storage benefit, but it is less safe since
-    /// the file might be modified after it has been imported.
-    ///
-    /// Stores are allowed to ignore this mode and always copy the file, e.g.
-    /// if the file is very small or if the store does not support referencing files.
-    TryReference,
-}
-
-/// The import mode describes how files will be imported.
-///
-/// This is a hint to the import trait method. For some implementations, this
-/// does not make any sense. E.g. an in memory implementation will always have
-/// to copy the file into memory. Also, a disk based implementation might choose
-/// to copy small files even if the mode is `Reference`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub enum ExportMode {
-    /// This mode will copy the file to the target directory.
-    ///
-    /// This is the safe default because the file can not be accidentally modified
-    /// after it has been exported.
-    #[default]
-    Copy,
-    /// This mode will try to move the file to the target directory and then reference it from
-    /// the database.
-    ///
-    /// This has a large performance and storage benefit, but it is less safe since
-    /// the file might be modified in the target directory after it has been exported.
-    ///
-    /// Stores are allowed to ignore this mode and always copy the file, e.g.
-    /// if the file is very small or if the store does not support referencing files.
-    TryReference,
 }

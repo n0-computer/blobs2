@@ -87,7 +87,7 @@ use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 
 use super::{
-    api,
+    api::{self, ExportMode, ExportProgress, ImportProgress},
     proto::{self, *},
     util::{observer::Observer, QuicRpcSenderProgressExt},
     Store,

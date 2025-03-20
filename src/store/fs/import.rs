@@ -24,24 +24,27 @@ use bao_tree::{
         outboard::{PreOrderMemOutboard, PreOrderOutboard},
         sync::WriteAt,
     },
-    BaoTree,
+    BaoTree, ChunkNum,
 };
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
 use quic_rpc::channel::{none::NoReceiver, spsc};
+use ref_cast::RefCast;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
 
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     store::{
+        api::{ImportMode, ImportProgress},
         proto::{
             HashSpecific, ImportByteStream, ImportByteStreamMsg, ImportBytes, ImportBytesMsg,
-            ImportMode, ImportPath, ImportPathMsg, ImportProgress,
+            ImportPath, ImportPathMsg,
         },
         util::{MemOrFile, ProgressReader, QuicRpcSenderProgressExt},
         IROH_BLOCK_SIZE,
     },
+    util::outboard_with_progress::{init_outboard, Progress},
     BlobFormat, Hash,
 };
 
@@ -315,21 +318,34 @@ async fn get_import_source(
     })
 }
 
+#[derive(ref_cast::RefCast)]
+#[repr(transparent)]
+struct OutboardProgress(spsc::Sender<ImportProgress>);
+
+impl Progress for OutboardProgress {
+    type Error = quic_rpc::channel::spsc::SendError;
+
+    async fn progress(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {
+        // if offset.0 % 1024 != 0 {
+        //     return Ok(());
+        // }
+        self.0
+            .try_send(ImportProgress::OutboardProgress { offset: offset.to_bytes() })
+            .await
+    }
+}
+
 async fn compute_outboard(
     source: ImportSource,
     format: BlobFormat,
     options: Arc<Options>,
-    _tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     let root = bao_tree::blake3::Hash::from_bytes([0; 32]);
     let outboard_size = raw_outboard_size(size);
-    let send_progress = |offset| {
-        // tx.send_progress(ImportProgress::OutboardProgress { offset })
-        //     .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver dropped"))
-        Ok(())
-    };
+    let send_progress = OutboardProgress::ref_cast_mut(tx);
     let mut data = source.read();
     data.rewind()?;
     let (hash, outboard) = if outboard_size > options.inline.max_outboard_inlined {
@@ -344,7 +360,7 @@ async fn compute_outboard(
             root,
             data: &mut outboard_file,
         };
-        init_outboard(data, &mut outboard, send_progress)?;
+        init_outboard(data, &mut outboard, send_progress).await??;
         (outboard.root, MemOrFile::File(outboard_path))
     } else {
         // outboard will be stored in memory, so compute it to a memory buffer
@@ -355,7 +371,7 @@ async fn compute_outboard(
             root,
             data: &mut outboard_file,
         };
-        init_outboard(data, &mut outboard, send_progress)?;
+        init_outboard(data, &mut outboard, send_progress).await??;
         (outboard.root, MemOrFile::Mem(Bytes::from(outboard_file)))
     };
     Ok(ImportEntry {
@@ -364,26 +380,6 @@ async fn compute_outboard(
         source,
         outboard,
     })
-}
-
-pub(crate) fn init_outboard<R: Read + Seek, W: WriteAt>(
-    data: R,
-    outboard: &mut PreOrderOutboard<W>,
-    progress: impl Fn(u64) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    use bao_tree::io::sync::CreateOutboard;
-
-    // wrap the reader in a progress reader, so we can report progress.
-    let reader = ProgressReader::new(data, progress);
-    // wrap the reader in a buffered reader, so we read in large chunks
-    // this reduces the number of io ops and also the number of progress reports
-    let buf_size = usize::try_from(outboard.tree.size())
-        .unwrap_or(usize::MAX)
-        .min(1024 * 1024);
-    let reader = BufReader::with_capacity(buf_size, reader);
-
-    outboard.init_from(reader)?;
-    Ok(())
 }
 
 #[instrument(skip_all, fields(path = %cmd.inner.path.display()))]
@@ -464,7 +460,7 @@ mod tests {
     use super::*;
     use crate::store::{
         fs::options::{InlineOptions, PathOptions},
-        proto::{BoxedByteStream, ImportMode},
+        proto::BoxedByteStream,
         BlobFormat,
     };
 

@@ -1,13 +1,16 @@
 use std::{
+    hash,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::Path,
 };
 
 use blobs2::{
-    store::{fs::FsStore, Blobs, Store},
+    store::{api::ImportProgress, fs::FsStore, Blobs, Store},
     Hash,
 };
+use n0_future::StreamExt;
 use testresult::TestResult;
+use tracing::info;
 
 /// Interesting sizes for testing.
 pub const INTERESTING_SIZES: [usize; 8] = [
@@ -45,6 +48,24 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         blobs.export_path(hash, &temp2).finish().await?;
         let actual = std::fs::read(&temp2)?;
         assert_eq!(actual, expected);
+    }
+
+    // test importing a large file with progress
+    {
+        let expected = vec![0u8; 1024 * 1024 * 1024];
+        let temp1 = path.join("test3");
+        std::fs::write(&temp1, &expected)?;
+        let mut stream = blobs.import_path(temp1).stream().await?;
+        let mut res = None;
+        while let Some(item) = stream.next().await {
+            info!("Progress: {:?}", item);
+            if let ImportProgress::Done { hash } = item {
+                res = Some(hash);
+                break;
+            }
+        }
+        let expected_hash = Hash::new(&expected);
+        assert_eq!(res, Some(expected_hash));
     }
     Ok(())
 }

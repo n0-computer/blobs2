@@ -31,6 +31,7 @@ use super::{
     api::{
         self,
         tags::{self, ListTags, Rename, TagInfo},
+        ExportProgress, ImportProgress,
     },
     util::{BaoTreeSender, QuicRpcSenderProgressExt},
     BlobFormat,

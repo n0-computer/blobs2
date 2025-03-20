@@ -15,7 +15,7 @@ use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
 use super::{
-    api,
+    api::{self, ExportProgress, ImportProgress},
     util::{observer::Observer, BaoTreeSender, QuicRpcSenderProgressExt},
 };
 use crate::{
