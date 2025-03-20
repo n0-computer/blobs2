@@ -25,7 +25,7 @@ use quic_rpc::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
-use tracing::{error, trace};
+use tracing::trace;
 
 use super::{BlobFormat, Blobs};
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
         api,
         bitfield::Bitfield,
         proto::*,
-        util::{observer::Aggregator, SliceInfoExt},
+        util::observer::Aggregator,
         IROH_BLOCK_SIZE,
     },
     util::{channel::mpsc, temp_tag::TempTag},

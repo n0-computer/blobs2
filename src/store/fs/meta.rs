@@ -388,7 +388,7 @@ impl Actor {
     ) -> ActorResult<()> {
         let span = info_span!(
             parent: &cmd.parent_span(),
-            "txn",
+            "tx",
             op = tracing::field::debug(op),
         );
         let _guard = span.enter();
@@ -528,7 +528,7 @@ impl Actor {
     ) -> ActorResult<()> {
         let span = info_span!(
             parent: &cmd.parent_span(),
-            "txn",
+            "tx",
             op = tracing::field::debug(op),
         );
         let _guard = span.enter();
@@ -572,7 +572,7 @@ impl Actor {
     ) -> ActorResult<Option<ShutdownMsg>> {
         let span = info_span!(
             parent: &cmd.parent_span(),
-            "txn",
+            "tx",
             op = tracing::field::debug(op),
         );
         let _guard = span.enter();
