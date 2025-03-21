@@ -1,4 +1,4 @@
-use blobs2::{store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
+use blobs2::{hashseq::HashSeq, store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
 use clap::Parser;
 use iroh::endpoint::Connection;
 
@@ -27,32 +27,33 @@ async fn get_one_by_one(connection: Connection, content: HashAndFormat) -> anyho
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let args = ReceiveArgs::parse();
-    let ticket = args.ticket;
-    // let ticket: BlobTicket = "blobadez2n2x3z6hvrp53h5kty2l53xpcdqyv2jaasjqt2aapiuavvcdiajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiaakd3fswf7wayaycuab4ul7mbqddbhyacyfy226kffhjqhq3vt2lj7ab2cam74wthkkrxtrbyl4s6y".parse().unwrap();
+    // let args = ReceiveArgs::parse();
+    // let ticket = args.ticket;
+    let ticket: BlobTicket = "blobabxioatojt2ey7clh7umbiakpvnadussqiodk7axl65t35ymcfg22ajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiaakd3fsx724ayaycuadd77vybqcfthupgeaiqksmqsd5ecxg7h732aeoqi2a45idvm7gg2g6555znn".parse().unwrap();
     let dirname = format!(".sendme2-recv-{}", ticket.hash().to_hex());
     let store = FsStore::load(dirname).await?;
+    let blobs = store.blobs();
     // let blobs = Blobs::new(store.clone());
     let endpoint = iroh::Endpoint::builder().bind().await?;
     // let router = Router::builder(endpoint).accept(blobs2::ALPN, blobs.clone()).build();
     let addr = ticket.node_addr().clone();
     let content = ticket.hash_and_format();
-    let connection = endpoint.connect(addr.clone(), blobs2::ALPN).await?;
-    // let test = blobs2::get::request::get_blob(
-    //     connection.clone(),
-    //     "ac87e3ab04a6b02f2347b94a11c4d04a4ffe21a22672033057e14396b5703b7f"
-    //         .parse()
-    //         .unwrap(),
-    // )
-    // .bytes()
-    // .await?;
-    // println!("Test: {:?} {}", test, test.len());
+    store.dump().await?;
+    let hs = blobs.export_bytes(ticket.hash()).await?;
+    println!("hs: {}", hs.len() / 32);
+    let hs = HashSeq::try_from(hs)?;
+    for hash in hs {
+        let data = blobs.export_bytes(hash).await?;
+        let bitfield = blobs2::get::db::get_missing(hash, &store).await?;
+        println!("Got hash: {} {} {:?}", hash, data.len(), bitfield);
+    }
     let ranges = blobs2::get::db::get_missing(content, &store).await?;
     println!("Missing ranges {:?}", ranges);
-    panic!();
+    return Ok(());
+    let connection = endpoint.connect(addr.clone(), blobs2::ALPN).await?;
     println!("Connected to {:?}", addr);
-    // get_one_by_one(connection, content).await?;
-    let stats = blobs2::get::db::get_all(connection, content, &store);
+    let stats = get_one_by_one(connection, content);
+    // let stats = blobs2::get::db::get_all(connection, content, &store);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = ctrl_c => {
@@ -65,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
             println!("Done");
         }
     }
+    // let ranges = blobs2::get::db::get_missing(content, &store).await?;
+    // println!("Missing ranges {:?}", ranges);
     endpoint.close().await;
     store.shutdown().await?;
     Ok(())

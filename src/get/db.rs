@@ -52,12 +52,13 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
             let offset = data.offset / 32 + 1;
             let hs = HashSeq::try_from(data.data)?;
             for (i, hash) in hs.into_iter().enumerate() {
-                if !hashes.insert(hash) {
-                    continue;
-                }
-                let local_bitmap = store.observe(hash).await?;
-                let missing = ChunkRanges::all() - local_bitmap.ranges;
-                let missing = RangeSpec::new(missing);
+                let missing = if hashes.insert(hash) {
+                    let local_bitmap = store.observe(hash).await?;
+                    let missing = ChunkRanges::all() - local_bitmap.ranges;
+                    RangeSpec::new(missing)
+                } else {
+                    RangeSpec::EMPTY
+                };
                 ranges.insert(offset + i as u64, missing);
             }
         }
@@ -65,6 +66,8 @@ pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<R
     // let required_ranges = ChunkRanges::all() - local_ranges;
     let n = ranges.keys().last().copied().unwrap_or_default();
     let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(RangeSpec::all()));
+    let ranges = ranges.collect::<Vec<_>>();
+    println!("ranges: {:?}", ranges);
     Ok(RangeSpecSeq::new(ranges))
 }
 
