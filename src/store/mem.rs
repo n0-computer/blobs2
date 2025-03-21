@@ -34,9 +34,9 @@ use super::{
 use crate::{
     api::{
         self,
-        bitfield::Bitfield,
         blobs::{
-            ExportBao, ExportPath, ExportProgress, ImportBao, ImportPath, ImportProgress, Observe,
+            Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportPath, ImportProgress,
+            Observe,
         },
         proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,

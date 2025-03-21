@@ -22,8 +22,7 @@ use super::util::{observer::Observer, BaoTreeSender, QuicRpcSenderProgressExt};
 use crate::{
     api::{
         self,
-        bitfield::Bitfield,
-        blobs::{self, ExportProgress, ImportProgress},
+        blobs::{self, Bitfield, ExportProgress, ImportProgress},
         proto::{
             self, Command, ExportBaoMsg, ExportPathMsg, ImportBaoMsg, ImportByteStreamMsg,
             ImportBytesMsg, ImportPathMsg, ObserveMsg,

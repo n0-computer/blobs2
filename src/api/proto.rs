@@ -16,17 +16,15 @@ use quic_rpc::{
 use quic_rpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
-use crate::{store::util::Tag, Hash};
-
 use super::{
-    bitfield::Bitfield,
     blobs::{
-        ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream, ImportPath,
+        Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream, ImportPath,
         ImportProgress, Observe,
     },
     tags::{self, TagInfo},
     ImportBytes, Shutdown, SyncDb,
 };
+use crate::{store::util::Tag, Hash};
 
 pub trait HashSpecific {
     fn hash(&self) -> Hash;

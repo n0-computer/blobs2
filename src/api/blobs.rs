@@ -1,0 +1,774 @@
+
+use std::{
+    future::{Future, IntoFuture},
+    io,
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+    pin::Pin,
+};
+
+use bao_tree::{
+    io::{
+        fsm::{ResponseDecoder, ResponseDecoderNext},
+        mixed::EncodedItem,
+        BaoContentItem,
+    },
+    BaoTree, ChunkRanges,
+};
+use bytes::Bytes;
+use genawaiter::sync::Gen;
+use iroh_io::{AsyncStreamReader, TokioStreamReader};
+use n0_future::{Stream, StreamExt};
+use quic_rpc::{
+    channel::{oneshot, spsc},
+    ServiceRequest,
+};
+use serde::{Deserialize, Serialize};
+use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tracing::trace;
+
+use super::{Blobs, ImportBytes, Scope, Shutdown, SyncDb};
+use crate::{
+    store::util::observer::Aggregator, util::temp_tag::TempTag, BlobFormat, Hash, IROH_BLOCK_SIZE,
+};
+mod bitfield;
+pub use bitfield::{is_validated, Bitfield};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportPath {
+    pub path: PathBuf,
+    pub mode: ImportMode,
+    pub format: BlobFormat,
+    pub scope: Scope,
+}
+
+/// Import bao encoded data for the given hash with the iroh block size.
+///
+/// The result is just a single item, indicating if a write error occurred.
+/// To observe the incoming data more granularly, use the `Observe` command
+/// concurrently.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBao {
+    pub hash: Hash,
+    pub size: NonZeroU64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Observe {
+    pub hash: Hash,
+}
+
+/// Export the given ranges in bao format, with the iroh block size.
+///
+/// The returned stream should be verified by the store.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportBao {
+    pub hash: Hash,
+    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
+    pub ranges: ChunkRanges,
+}
+
+/// Export a file to a target path.
+///
+/// For an incomplete file, the size might be truncated and gaps will be filled
+/// with zeros. If possible, a store implementation should try to write as a
+/// sparse file.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportPath {
+    pub hash: Hash,
+    pub mode: ExportMode,
+    pub target: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportByteStream {
+    pub format: BlobFormat,
+    pub data: Vec<Bytes>,
+    pub scope: Scope,
+}
+
+impl Blobs {
+    pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
+        let options = ImportBytes {
+            data: data.into(),
+            format: crate::BlobFormat::Raw,
+            scope: Scope::default(),
+        };
+        self.import_bytes_with_opts(options)
+    }
+
+    pub fn import_bytes_with_opts(&self, options: ImportBytes) -> ImportResult {
+        trace!("{options:?}");
+        let request = self.sender.request();
+        ImportResult::new(async move {
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            };
+            Ok(rx)
+        })
+    }
+
+    pub fn import_path_with_opts(&self, options: ImportPath) -> ImportResult {
+        trace!("{:?}", options);
+        let request = self.sender.request();
+        ImportResult::new(async move {
+            Ok(match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            })
+        })
+    }
+
+    pub fn import_path(&self, path: impl AsRef<Path>) -> ImportResult {
+        self.import_path_with_opts(ImportPath {
+            path: path.as_ref().to_owned(),
+            mode: ImportMode::Copy,
+            format: BlobFormat::Raw,
+            scope: Scope::default(),
+        })
+    }
+
+    pub async fn import_byte_stream(
+        &self,
+        data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
+    ) -> ImportResult {
+        self.import_byte_stream_impl(Box::pin(data)).await
+    }
+
+    async fn import_byte_stream_impl(
+        &self,
+        data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
+    ) -> ImportResult {
+        let data = data
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        let inner = ImportByteStream {
+            data,
+            format: crate::BlobFormat::Raw,
+            scope: Scope::default(),
+        };
+        let request = self.sender.request();
+        ImportResult::new(async move {
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((inner, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(inner).await?;
+                    rx.into()
+                }
+            };
+            Ok(rx)
+        })
+    }
+
+    pub fn export_bao_with_opts(&self, options: ExportBao) -> ExportBaoResult {
+        trace!("{options:?}");
+        let request = self.sender.request();
+        ExportBaoResult::new(async move {
+            Ok(match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            })
+        })
+    }
+
+    pub fn export_bao(&self, hash: impl Into<Hash>, ranges: ChunkRanges) -> ExportBaoResult {
+        self.export_bao_with_opts(ExportBao {
+            hash: hash.into(),
+            ranges,
+        })
+    }
+
+    /// Helper to just export the entire blob into a Bytes
+    pub async fn export_bytes(&self, hash: impl Into<Hash>) -> super::Result<Bytes> {
+        self.export_bao(hash.into(), ChunkRanges::all())
+            .data_to_bytes()
+            .await
+    }
+
+    /// Observe the bitfield of the given hash.
+    pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
+        self.observe_with_opts(Observe { hash: hash.into() })
+    }
+
+    pub fn observe_with_opts(&self, options: Observe) -> ObserveResult {
+        trace!("{:?}", options);
+        let Observe { hash } = options;
+        if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
+            return ObserveResult::new(async move {
+                let (mut tx, rx) = spsc::channel(1);
+                tx.send(Bitfield::complete(0)).await.ok();
+                Ok(rx)
+            });
+        }
+        let (tx, rx) = spsc::channel(32);
+        let request = self.sender.request();
+        ObserveResult::new(async move {
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    c.send((Observe { hash }, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(Observe { hash }).await?;
+                    rx.into()
+                }
+            };
+            Ok(rx)
+        })
+    }
+
+    pub fn export_path_with_opts(&self, options: ExportPath) -> ExportPathResult {
+        trace!("{:?}", options);
+        let request = self.sender.request();
+        ExportPathResult::new(async move {
+            Ok(match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((options, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(options).await?;
+                    rx.into()
+                }
+            })
+        })
+    }
+
+    pub fn export_path(&self, hash: Hash, target: impl AsRef<Path>) -> ExportPathResult {
+        let options = ExportPath {
+            hash,
+            mode: ExportMode::Copy,
+            target: target.as_ref().to_owned(),
+        };
+        self.export_path_with_opts(options)
+    }
+
+    pub fn import_bao_with_opts(
+        &self,
+        mut data: spsc::Receiver<BaoContentItem>,
+        options: ImportBao,
+    ) -> ImportBaoResult {
+        trace!("{:?}", options);
+        let request = self.sender.request();
+        ImportBaoResult::new(async move {
+            let rx = match request.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = oneshot::channel();
+                    c.send((options, tx, data)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, tx) = r.write(options).await?;
+                    let mut tx: spsc::Sender<_> = tx.into();
+                    while let Some(item) = data.recv().await? {
+                        tx.send(item).await.map_err(super::Error::other)?;
+                    }
+                    rx.into()
+                }
+            };
+            rx.await?
+        })
+    }
+
+    // todo: export_path_with_opts
+    async fn import_bao_reader<R: AsyncStreamReader>(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        mut reader: R,
+    ) -> super::Result<R> {
+        let (mut tx, rx) = spsc::channel(32);
+        let size = u64::from_le_bytes(reader.read::<8>().await?);
+        let Some(size) = NonZeroU64::new(size) else {
+            return if hash.as_bytes() == crate::Hash::EMPTY.as_bytes() {
+                Ok(reader)
+            } else {
+                Err(super::Error::other("invalid size for hash"))
+            };
+        };
+        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
+        let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
+        let inner = ImportBao { hash, size };
+        let fut = self.import_bao_with_opts(rx, inner);
+        let driver = async move {
+            let reader = loop {
+                match decoder.next().await {
+                    ResponseDecoderNext::More((rest, item)) => {
+                        tx.send(item?).await?;
+                        decoder = rest;
+                    }
+                    ResponseDecoderNext::Done(reader) => break reader,
+                };
+            };
+            drop(tx);
+            io::Result::Ok(reader)
+        };
+        let (reader, res) = tokio::join!(driver, fut);
+        res?;
+        Ok(reader?)
+    }
+
+    /// Import BaoContentItems from a stream.
+    ///
+    /// The store assumes that these are already verified and in the correct order.
+    pub fn import_bao(
+        &self,
+        hash: impl Into<Hash>,
+        size: NonZeroU64,
+        data: mpsc::Receiver<BaoContentItem>,
+    ) -> ImportBaoResult {
+        let options = ImportBao {
+            hash: hash.into(),
+            size,
+        };
+        // todo: we must expose the second future
+        self.import_bao_with_opts(data.into(), options)
+    }
+
+    pub async fn import_bao_quinn(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        stream: &mut quinn::RecvStream,
+    ) -> super::Result<()> {
+        let reader = TokioStreamReader::new(stream);
+        self.import_bao_reader(hash, ranges, reader).await?;
+        Ok(())
+    }
+
+    pub async fn import_bao_bytes(
+        &self,
+        hash: Hash,
+        ranges: ChunkRanges,
+        data: Bytes,
+    ) -> super::Result<()> {
+        self.import_bao_reader(hash, ranges, data).await?;
+        Ok(())
+    }
+
+    pub async fn sync_db(&self) -> super::Result<()> {
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = oneshot::channel();
+                c.send((SyncDb, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(SyncDb).await?;
+                rx.into()
+            }
+        };
+        rx.await??;
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> super::Result<()> {
+        let msg = Shutdown;
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                c.send((msg, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(msg).await?;
+                rx.into()
+            }
+        };
+        rx.await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ImportProgress {
+    CopyProgress {
+        offset: u64,
+    },
+    Size {
+        size: u64,
+    },
+    CopyDone,
+    OutboardProgress {
+        offset: u64,
+    },
+    Done {
+        tt: TempTag,
+    },
+    Error {
+        #[serde(with = "crate::util::serde::io_error_serde")]
+        cause: io::Error,
+    },
+}
+
+impl From<io::Error> for ImportProgress {
+    fn from(e: io::Error) -> Self {
+        Self::Error { cause: e }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ExportProgress {
+    Size { size: u64 },
+    CopyProgress { offset: u64 },
+    Done,
+    Error { cause: super::Error },
+}
+
+impl From<super::Error> for ExportProgress {
+    fn from(e: super::Error) -> Self {
+        Self::Error { cause: e }
+    }
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ImportMode {
+    /// This mode will copy the file into the database before hashing.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been imported.
+    #[default]
+    Copy,
+    /// This mode will try to reference the file in place and assume it is unchanged after import.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified after it has been imported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum ExportMode {
+    /// This mode will copy the file to the target directory.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been exported.
+    #[default]
+    Copy,
+    /// This mode will try to move the file to the target directory and then reference it from
+    /// the database.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified in the target directory after it has been exported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
+}
+
+pub struct ImportResult {
+    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<ImportProgress>>>,
+}
+
+impl ImportResult {
+    fn new(
+        fut: impl Future<Output = io::Result<spsc::Receiver<ImportProgress>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn hash(self) -> io::Result<TempTag> {
+        let mut rx = self.inner.await?;
+        loop {
+            match rx.recv().await {
+                Ok(Some(ImportProgress::Done { tt })) => break Ok(tt),
+                Ok(Some(ImportProgress::Error { cause })) => {
+                    trace!("got explicit error: {:?}", cause);
+                    break Err(cause);
+                }
+                Err(cause) => {
+                    trace!("error receiving import progress: {:?}", cause);
+                    return Err(cause);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn stream(self) -> io::Result<impl Stream<Item = ImportProgress>> {
+        let mut rx = self.inner.await?;
+        Ok(Gen::new(|co| async move {
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        }))
+    }
+}
+
+/// An observe result. Awaiting this will return the current state.
+///
+/// Calling [`ObserveResult::stream`] will return a stream of updates, where
+/// the first item is the current state and subsequent items are updates.
+///
+/// Calling [`ObserveResult::aggregated`] will return a stream of states,
+/// where each state is the current state at the time of the update.
+pub struct ObserveResult {
+    inner: n0_future::future::Boxed<super::Result<spsc::Receiver<Bitfield>>>,
+}
+
+impl IntoFuture for ObserveResult {
+    type Output = super::Result<Bitfield>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let mut rx = self.inner.await?;
+            match rx.recv().await? {
+                Some(bitfield) => Ok(bitfield),
+                None => Err(io::Error::other("unexpected end of stream").into()),
+            }
+        })
+    }
+}
+
+impl ObserveResult {
+    fn new(
+        fut: impl Future<Output = super::Result<spsc::Receiver<Bitfield>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn aggregated(self) -> super::Result<Aggregator<Bitfield>> {
+        let rx = self.inner.await?.try_into().unwrap();
+        Ok(Aggregator::new(rx))
+    }
+
+    /// Returns an infinite stream of bitfields. The first bitfield is the
+    /// current state, and the following bitfields are updates.
+    ///
+    /// Once a blob is complete, there will be no more updates.
+    pub async fn stream(self) -> super::Result<impl Stream<Item = Bitfield>> {
+        let mut rx = self.inner.await?;
+        Ok(Gen::new(|co| async move {
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        }))
+    }
+}
+
+pub struct ExportPathResult {
+    inner: n0_future::future::Boxed<io::Result<spsc::Receiver<ExportProgress>>>,
+}
+
+impl ExportPathResult {
+    fn new(
+        fut: impl Future<Output = io::Result<spsc::Receiver<ExportProgress>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn finish(self) -> super::Result<()> {
+        let mut rx = self.inner.await?;
+        loop {
+            match rx.recv().await? {
+                Some(ExportProgress::Done) => break Ok(()),
+                Some(ExportProgress::Error { cause }) => break Err(cause),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Result of importing a stream of bao items.
+///
+/// This future will resolve once the import is complete, but *must* be polled even before!
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct ImportBaoResult {
+    inner: n0_future::future::Boxed<super::Result<()>>,
+}
+
+impl ImportBaoResult {
+    fn new(fut: impl Future<Output = super::Result<()>> + Send + 'static) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+}
+
+impl IntoFuture for ImportBaoResult {
+    type Output = super::Result<()>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.inner)
+    }
+}
+
+pub struct ExportBaoResult {
+    inner: n0_future::future::Boxed<super::Result<spsc::Receiver<EncodedItem>>>,
+}
+
+impl ExportBaoResult {
+    fn new(
+        fut: impl Future<Output = super::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn bao_to_vec(self) -> super::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        let mut stream = self.into_byte_stream();
+        while let Some(item) = stream.next().await {
+            data.extend_from_slice(&item?);
+        }
+        Ok(data)
+    }
+
+    pub async fn data_to_bytes(self) -> super::Result<Bytes> {
+        let mut rx = self.inner.await?;
+        let mut data = Vec::new();
+        while let Some(item) = rx.recv().await? {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    data.push(leaf.data);
+                }
+                EncodedItem::Parent(_) => {}
+                EncodedItem::Size(_) => {}
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(super::Error::other(cause)),
+            }
+        }
+        if data.len() == 1 {
+            Ok(data.pop().unwrap())
+        } else {
+            let mut out = Vec::new();
+            for item in data {
+                out.extend_from_slice(&item);
+            }
+            Ok(out.into())
+        }
+    }
+
+    pub async fn data_to_vec(self) -> super::Result<Vec<u8>> {
+        let mut rx = self.inner.await?;
+        let mut data = Vec::new();
+        while let Some(item) = rx.recv().await? {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    data.extend_from_slice(&leaf.data);
+                }
+                EncodedItem::Parent(_) => {}
+                EncodedItem::Size(_) => {}
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(super::Error::other(cause)),
+            }
+        }
+        Ok(data)
+    }
+
+    pub async fn write_quinn(self, target: &mut quinn::SendStream) -> super::Result<()> {
+        let mut rx = self.inner.await?;
+        while let Some(item) = rx.recv().await? {
+            match item {
+                EncodedItem::Size(size) => {
+                    target.write_u64_le(size).await?;
+                }
+                EncodedItem::Parent(parent) => {
+                    let mut data = vec![0u8; 64];
+                    data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                    data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                    target.write_all(&data).await.map_err(super::Error::other)?;
+                }
+                EncodedItem::Leaf(leaf) => {
+                    target
+                        .write_chunk(leaf.data)
+                        .await
+                        .map_err(super::Error::other)?;
+                }
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(super::Error::other(cause)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn into_byte_stream(self) -> impl Stream<Item = super::Result<Bytes>> {
+        self.stream().filter_map(|item| match item {
+            EncodedItem::Size(size) => {
+                let size = size.to_le_bytes().to_vec().into();
+                Some(Ok(size))
+            }
+            EncodedItem::Parent(parent) => {
+                let mut data = vec![0u8; 64];
+                data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                Some(Ok(data.into()))
+            }
+            EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
+            EncodedItem::Done => None,
+            EncodedItem::Error(cause) => Some(Err(super::Error::other(cause))),
+        })
+    }
+
+    pub fn stream(self) -> impl Stream<Item = EncodedItem> {
+        Gen::new(|co| async move {
+            let mut rx = match self.inner.await {
+                Ok(rx) => rx,
+                Err(cause) => {
+                    co.yield_(EncodedItem::Error(io::Error::other(cause).into()))
+                        .await;
+                    return;
+                }
+            };
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        })
+    }
+}

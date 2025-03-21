@@ -73,12 +73,11 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        bitfield::is_validated,
-        blobs::{ExportBao, ExportPath, ImportBao},
+        blobs::{is_validated, ExportBao, ExportPath, ImportBao},
         proto::{
             self, Command, ExportBaoMsg, ExportPathMsg, HashSpecific, ImportBaoMsg, ObserveMsg,
         },
-        Scope,
+        ApiSender, Scope,
     },
     store::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
@@ -97,6 +96,11 @@ mod import;
 mod meta;
 mod options;
 pub(crate) mod util;
+use entry_state::EntryState;
+use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
+use options::Options;
+use tracing::Instrument;
+
 use super::{
     util::{observer::Observer, QuicRpcSenderProgressExt},
     BlobFormat, HashAndFormat,
@@ -106,10 +110,6 @@ use crate::api::{
     blobs::{ExportMode, ExportProgress, ImportProgress},
     Store,
 };
-use entry_state::EntryState;
-use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
-use options::Options;
-use tracing::Instrument;
 
 /// Create a 16 byte unique ID.
 fn new_uuid() -> [u8; 16] {
@@ -943,7 +943,7 @@ impl FsStore {
 }
 
 pub struct FsStore {
-    sender: quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>,
+    sender: ApiSender,
     db: mpsc::Sender<InternalCommand>,
 }
 
@@ -1003,7 +1003,7 @@ pub mod tests {
 
     use super::*;
     use crate::{
-        api::bitfield::Bitfield,
+        api::blobs::Bitfield,
         store::{
             util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
             HashAndFormat, IROH_BLOCK_SIZE,
