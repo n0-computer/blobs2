@@ -117,7 +117,7 @@ pub mod outboard_with_progress {
         iter::BaoChunk,
         BaoTree, ChunkNum,
     };
-    use blake3::guts::{hash_subtree, parent_cv};
+    use blake3::guts::parent_cv;
     use smallvec::SmallVec;
 
     pub trait Progress {
@@ -126,6 +126,19 @@ pub mod outboard_with_progress {
             &mut self,
             offset: ChunkNum,
         ) -> impl Future<Output = std::result::Result<(), Self::Error>>;
+    }
+
+    pub struct NoProgress;
+
+    impl Progress for NoProgress {
+        type Error = io::Error;
+
+        fn progress(
+            &mut self,
+            _offset: ChunkNum,
+        ) -> impl Future<Output = std::result::Result<(), Self::Error>> {
+            async { Ok(()) }
+        }
     }
 
     pub async fn init_outboard<R, W, P>(
@@ -162,6 +175,7 @@ pub mod outboard_with_progress {
     {
         // do not allocate for small trees
         let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
+        println!("tree: {:?}", tree);
         // debug_assert!(buffer.len() == tree.chunk_group_bytes());
         for item in tree.post_order_chunks_iter() {
             match item {
@@ -183,7 +197,7 @@ pub mod outboard_with_progress {
                     }
                     let buf = &mut buffer[..size];
                     data.read_exact(buf)?;
-                    let hash = hash_subtree(start_chunk.0, buf, is_root);
+                    let hash = bao_tree::hash_subtree(start_chunk.0, buf, is_root);
                     stack.push(hash);
                 }
             }
@@ -191,5 +205,39 @@ pub mod outboard_with_progress {
         debug_assert_eq!(stack.len(), 1);
         outboard.root = stack.pop().unwrap();
         Ok(Ok(()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use bao_tree::{
+            blake3,
+            io::{outboard::PreOrderOutboard, sync::CreateOutboard},
+            BaoTree,
+        };
+        use testresult::TestResult;
+
+        use crate::{
+            store::fs::tests::test_data,
+            util::outboard_with_progress::{init_outboard, NoProgress},
+            IROH_BLOCK_SIZE,
+        };
+
+        #[tokio::test]
+        async fn init_outboard_with_progress() -> TestResult<()> {
+            for size in [1024 * 18 + 1] {
+                let data = test_data(size);
+                let mut o1 = PreOrderOutboard::<Vec<u8>> {
+                    tree: BaoTree::new(data.len() as u64, IROH_BLOCK_SIZE),
+                    ..Default::default()
+                };
+                let mut o2 = o1.clone();
+                o1.init_from(data.as_ref())?;
+                init_outboard(data.as_ref(), &mut o2, &mut NoProgress).await??;
+                assert_eq!(o1.root, blake3::hash(&data));
+                assert_eq!(o1.root, o2.root);
+                assert_eq!(o1.data, o2.data);
+            }
+            Ok(())
+        }
     }
 }

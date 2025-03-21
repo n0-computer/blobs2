@@ -68,6 +68,11 @@ impl RangeSpec {
         Self(smallvec![0])
     }
 
+    /// Creates a [`RangeSpec`] selecting the last chunk, which is also a size proof.
+    pub fn verified_size() -> Self {
+        Self(smallvec![u64::MAX])
+    }
+
     /// Checks if this [`RangeSpec`] does not select any chunks in the blob.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -151,7 +156,6 @@ impl fmt::Debug for RangeSpec {
 pub struct RangeSpecSeq(SmallVec<[(u64, RangeSpec); 2]>);
 
 impl RangeSpecSeq {
-    #[allow(dead_code)]
     /// A [`RangeSpecSeq`] containing no chunks from any blobs in the sequence.
     ///
     /// [`RangeSpecSeq::iter`], will return an empty range forever.
@@ -182,6 +186,11 @@ impl RangeSpecSeq {
     /// [`RangeSpecSeq::iter`], will return a full range forever.
     pub fn all() -> Self {
         Self(smallvec![(0, RangeSpec::all())])
+    }
+
+    /// A [`RangeSpecSeq`] containing the last chunk of each blob.
+    pub fn verified_size() -> Self {
+        Self(smallvec![(0, RangeSpec::verified_size())])
     }
 
     /// Convenience function to create a [`RangeSpecSeq`] from a finite sequence of range sets.

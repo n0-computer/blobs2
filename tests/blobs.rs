@@ -4,7 +4,10 @@ use std::{
 };
 
 use blobs2::{
-    api::{blobs::ImportProgress, Blobs, Store},
+    api::{
+        blobs::{Blobs, ImportProgress},
+        Store,
+    },
     store::fs::FsStore,
     Hash,
 };

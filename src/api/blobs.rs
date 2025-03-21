@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashSet},
     future::{Future, IntoFuture},
     io,
     num::NonZeroU64,
@@ -10,9 +11,9 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        BaoContentItem,
+        BaoContentItem, Leaf,
     },
-    BaoTree, ChunkRanges,
+    BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use genawaiter::sync::Gen;
@@ -26,68 +27,41 @@ use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
-use super::{Blobs, ImportBytes, Scope, Shutdown, SyncDb};
+use super::{ApiSender, ImportBytes, Scope, Shutdown, SyncDb};
 use crate::{
-    store::util::observer::Aggregator, util::temp_tag::TempTag, BlobFormat, Hash, IROH_BLOCK_SIZE,
+    hashseq::HashSeq,
+    protocol::{RangeSpec, RangeSpecSeq},
+    store::util::observer::Aggregator,
+    util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 mod bitfield;
 pub use bitfield::{is_validated, Bitfield};
+pub mod request;
+use ref_cast::RefCast;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportPath {
-    pub path: PathBuf,
-    pub mode: ImportMode,
-    pub format: BlobFormat,
-    pub scope: Scope,
-}
-
-/// Import bao encoded data for the given hash with the iroh block size.
-///
-/// The result is just a single item, indicating if a write error occurred.
-/// To observe the incoming data more granularly, use the `Observe` command
-/// concurrently.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBao {
-    pub hash: Hash,
-    pub size: NonZeroU64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Observe {
-    pub hash: Hash,
-}
-
-/// Export the given ranges in bao format, with the iroh block size.
-///
-/// The returned stream should be verified by the store.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportBao {
-    pub hash: Hash,
-    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
-    pub ranges: ChunkRanges,
-}
-
-/// Export a file to a target path.
-///
-/// For an incomplete file, the size might be truncated and gaps will be filled
-/// with zeros. If possible, a store implementation should try to write as a
-/// sparse file.
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportPath {
-    pub hash: Hash,
-    pub mode: ExportMode,
-    pub target: PathBuf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportByteStream {
-    pub format: BlobFormat,
-    pub data: Vec<Bytes>,
-    pub scope: Scope,
+#[derive(Debug, Clone, ref_cast::RefCast)]
+#[repr(transparent)]
+pub struct Blobs {
+    sender: ApiSender,
 }
 
 impl Blobs {
+    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
+        Self::ref_cast(sender)
+    }
+}
+
+impl Blobs {
+    pub fn import_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
+        let options = ImportBytes {
+            data: Bytes::copy_from_slice(data.as_ref()),
+            format: crate::BlobFormat::Raw,
+            scope: Scope::default(),
+        };
+        self.import_bytes_with_opts(options)
+    }
+
     pub fn import_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
         let options = ImportBytes {
             data: data.into(),
@@ -207,6 +181,23 @@ impl Blobs {
         })
     }
 
+    /// Export a single chunk from the given hash, at the given offset.
+    pub async fn export_chunk(&self, hash: impl Into<Hash>, offset: u64) -> super::Result<Leaf> {
+        let base = ChunkNum::full_chunks(offset);
+        let ranges = ChunkRanges::from(base..base + 1);
+        let mut stream = self.export_bao(hash, ranges).stream();
+        while let Some(item) = stream.next().await {
+            match item {
+                EncodedItem::Leaf(leaf) => return Ok(leaf),
+                EncodedItem::Parent(_) => {}
+                EncodedItem::Size(_) => {}
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(super::Error::other(cause)),
+            }
+        }
+        Err(super::Error::other("unexpected end of stream"))
+    }
+
     /// Helper to just export the entire blob into a Bytes
     pub async fn export_bytes(&self, hash: impl Into<Hash>) -> super::Result<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
@@ -244,6 +235,57 @@ impl Blobs {
             };
             Ok(rx)
         })
+    }
+
+    /// Return the missing ranges for the given hash or hashseq as
+    pub async fn get_missing(
+        &self,
+        data: impl Into<HashAndFormat>,
+    ) -> anyhow::Result<RangeSpecSeq> {
+        let data = data.into();
+        Ok(match data.format {
+            BlobFormat::Raw => self.get_missing_blob(data.hash).await?,
+            BlobFormat::HashSeq => self.get_missing_hash_seq(data.hash).await?,
+        })
+    }
+
+    async fn get_missing_blob(&self, hash: Hash) -> super::Result<RangeSpecSeq> {
+        let local_ranges = self.observe(hash).await?.ranges;
+        let required_ranges = ChunkRanges::all() - local_ranges;
+        Ok(RangeSpecSeq::from_ranges([required_ranges]))
+    }
+
+    async fn get_missing_hash_seq(&self, root: Hash) -> anyhow::Result<RangeSpecSeq> {
+        let local_bitfield = self.observe(root).await?;
+        let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
+        let mut stream = self.export_bao(root, local_bitfield.ranges).stream();
+        let mut hashes = HashSet::new();
+        hashes.insert(root);
+        let mut ranges = BTreeMap::new();
+        ranges.insert(0, RangeSpec::new(root_ranges));
+        while let Some(item) = stream.next().await {
+            if let EncodedItem::Leaf(data) = item {
+                let offset = data.offset / 32 + 1;
+                let hs = HashSeq::try_from(data.data)?;
+                for (i, hash) in hs.into_iter().enumerate() {
+                    let missing = if hashes.insert(hash) {
+                        let local_bitmap = self.observe(hash).await?;
+                        let missing = ChunkRanges::all() - local_bitmap.ranges;
+                        RangeSpec::new(missing)
+                    } else {
+                        // duplicate, we are already requesting missing data for this hash
+                        RangeSpec::EMPTY
+                    };
+                    ranges.insert(offset + i as u64, missing);
+                }
+            }
+        }
+        // let required_ranges = ChunkRanges::all() - local_ranges;
+        let n = ranges.keys().last().copied().unwrap_or_default();
+        let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(RangeSpec::all()));
+        let ranges = ranges.collect::<Vec<_>>();
+        println!("ranges: {:?}", ranges);
+        Ok(RangeSpecSeq::new(ranges))
     }
 
     pub fn export_path_with_opts(&self, options: ExportPath) -> ExportPathResult {
@@ -408,6 +450,60 @@ impl Blobs {
         rx.await?;
         Ok(())
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportPath {
+    pub path: PathBuf,
+    pub mode: ImportMode,
+    pub format: BlobFormat,
+    pub scope: Scope,
+}
+
+/// Import bao encoded data for the given hash with the iroh block size.
+///
+/// The result is just a single item, indicating if a write error occurred.
+/// To observe the incoming data more granularly, use the `Observe` command
+/// concurrently.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBao {
+    pub hash: Hash,
+    pub size: NonZeroU64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Observe {
+    pub hash: Hash,
+}
+
+/// Export the given ranges in bao format, with the iroh block size.
+///
+/// The returned stream should be verified by the store.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportBao {
+    pub hash: Hash,
+    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
+    pub ranges: ChunkRanges,
+}
+
+/// Export a file to a target path.
+///
+/// For an incomplete file, the size might be truncated and gaps will be filled
+/// with zeros. If possible, a store implementation should try to write as a
+/// sparse file.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportPath {
+    pub hash: Hash,
+    pub mode: ExportMode,
+    pub target: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportByteStream {
+    pub format: BlobFormat,
+    pub data: Vec<Bytes>,
+    pub scope: Scope,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

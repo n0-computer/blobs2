@@ -1,3 +1,10 @@
+use std::io::Cursor;
+
+use bao_tree::{
+    blake3,
+    io::{outboard::PreOrderOutboard, sync::CreateOutboard},
+    BaoTree,
+};
 use iroh::{protocol::Router, Endpoint};
 use n0_future::StreamExt;
 use testresult::TestResult;
@@ -11,7 +18,8 @@ use crate::{
         tests::{test_data, INTERESTING_SIZES},
         FsStore,
     },
-    Hash, HashAndFormat,
+    util::outboard_with_progress::NoProgress,
+    Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 
 #[tokio::test]
@@ -181,5 +189,24 @@ async fn node_smoke() -> TestResult<()> {
     let data = get::request::get_blob(conn, hash).bytes().await?;
     assert_eq!(data.as_ref(), b"hello world");
     r1.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_export_chunk() -> TestResult {
+    tracing_subscriber::fmt::try_init().ok();
+    let testdir = tempfile::tempdir()?;
+    let db_path = testdir.path().join("db");
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
+    let blobs = store.blobs();
+    for size in [1024 * 18 + 1] {
+        let data = vec![0u8; size];
+        let tt = store.import_slice(&data).hash().await?;
+        let hash = *tt.hash();
+        let c = blobs.export_chunk(hash, 0).await;
+        println!("{:?}", c);
+        let c = blobs.export_chunk(hash, 1000000).await;
+        println!("{:?}", c);
+    }
     Ok(())
 }

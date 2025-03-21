@@ -54,10 +54,10 @@ pub struct Store {
 }
 
 impl Deref for Store {
-    type Target = Blobs;
+    type Target = blobs::Blobs;
 
     fn deref(&self) -> &Self::Target {
-        Blobs::ref_from_sender(&self.sender)
+        blobs::Blobs::ref_from_sender(&self.sender)
     }
 }
 
@@ -73,25 +73,13 @@ impl Tags {
     }
 }
 
-#[derive(Debug, Clone, ref_cast::RefCast)]
-#[repr(transparent)]
-pub struct Blobs {
-    sender: ApiSender,
-}
-
-impl Blobs {
-    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
-        Self::ref_cast(sender)
-    }
-}
-
 impl Store {
     pub fn tags(&self) -> &Tags {
         Tags::ref_from_sender(&self.sender)
     }
 
-    pub fn blobs(&self) -> &Blobs {
-        Blobs::ref_from_sender(&self.sender)
+    pub fn blobs(&self) -> &blobs::Blobs {
+        blobs::Blobs::ref_from_sender(&self.sender)
     }
 
     pub fn connect(endpoint: quinn::Endpoint, addr: SocketAddr) -> Self {

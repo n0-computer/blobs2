@@ -1,11 +1,7 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    num::NonZeroU64,
-};
+use std::{future::Future, num::NonZeroU64};
 
-use bao_tree::{io::mixed::EncodedItem, ChunkRanges};
+use bao_tree::{io::Leaf, ChunkRanges};
 use iroh::endpoint::Connection;
-use n0_future::StreamExt;
 use tracing::{info, trace};
 
 use super::{
@@ -13,66 +9,45 @@ use super::{
     Stats,
 };
 use crate::{
-    api::{self, Store},
+    api::{self, blobs::Blobs, Store},
     hashseq::HashSeq,
-    protocol::{GetRequest, RangeSpec, RangeSpecSeq},
+    protocol::{GetRequest, RangeSpecSeq},
     util::channel::mpsc,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 
-/// Compute the missing data for the given hash or hash seq.
-pub async fn get_missing(
-    data: impl Into<HashAndFormat>,
-    store: impl AsRef<Store>,
-) -> anyhow::Result<RangeSpecSeq> {
-    let data = data.into();
-    let store = store.as_ref();
-    Ok(match data.format {
-        BlobFormat::Raw => get_missing_blob(data.hash, store).await?,
-        BlobFormat::HashSeq => get_missing_hash_seq(data.hash, store).await?,
-    })
+/// Trait to lazily get a connection
+pub trait GetConnection {
+    fn connection(
+        &self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static;
 }
 
-pub async fn get_missing_blob(hash: Hash, store: &Store) -> api::Result<RangeSpecSeq> {
-    let local_ranges = store.observe(hash).await?.ranges;
-    let required_ranges = ChunkRanges::all() - local_ranges;
-    Ok(RangeSpecSeq::from_ranges([required_ranges]))
-}
-
-pub async fn get_missing_hash_seq(root: Hash, store: &Store) -> anyhow::Result<RangeSpecSeq> {
-    let local_bitfield = store.observe(root).await?;
-    let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
-    let mut stream = store.export_bao(root, local_bitfield.ranges).stream();
-    let mut hashes = HashSet::new();
-    hashes.insert(root);
-    let mut ranges = BTreeMap::new();
-    ranges.insert(0, RangeSpec::new(root_ranges));
-    while let Some(item) = stream.next().await {
-        if let EncodedItem::Leaf(data) = item {
-            let offset = data.offset / 32 + 1;
-            let hs = HashSeq::try_from(data.data)?;
-            for (i, hash) in hs.into_iter().enumerate() {
-                let missing = if hashes.insert(hash) {
-                    let local_bitmap = store.observe(hash).await?;
-                    let missing = ChunkRanges::all() - local_bitmap.ranges;
-                    RangeSpec::new(missing)
-                } else {
-                    RangeSpec::EMPTY
-                };
-                ranges.insert(offset + i as u64, missing);
-            }
-        }
+/// If we already have a connection, the impl is trivial
+impl GetConnection for Connection {
+    fn connection(
+        &self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static {
+        let conn = self.clone();
+        async { Ok(conn) }
     }
-    // let required_ranges = ChunkRanges::all() - local_ranges;
-    let n = ranges.keys().last().copied().unwrap_or_default();
-    let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(RangeSpec::all()));
-    let ranges = ranges.collect::<Vec<_>>();
-    println!("ranges: {:?}", ranges);
-    Ok(RangeSpecSeq::new(ranges))
+}
+
+/// If we have a function that returns a future, we can use that
+impl<F, Fut> GetConnection for F
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<Connection, anyhow::Error>> + Send + 'static,
+{
+    fn connection(
+        &self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static {
+        self()
+    }
 }
 
 pub async fn get_all(
-    conn: Connection,
+    conn: impl GetConnection,
     data: impl Into<HashAndFormat>,
     store: impl AsRef<Store>,
 ) -> anyhow::Result<Stats> {
@@ -90,7 +65,11 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
 }
 
 // get a single blob, taking the locally available ranges into account
-async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::Result<Stats> {
+async fn get_blob_impl(
+    conn: impl GetConnection,
+    hash: Hash,
+    store: &Store,
+) -> anyhow::Result<Stats> {
     trace!("get blob: {}", hash);
     let local_ranges = store.observe(hash).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
@@ -99,6 +78,7 @@ async fn get_blob_impl(conn: Connection, hash: Hash, store: &Store) -> anyhow::R
         return Ok(Stats::default());
     }
     let request = GetRequest::new(hash, RangeSpecSeq::from_ranges([required_ranges]));
+    let conn = conn.connection().await?;
     let start = crate::get::fsm::start(conn, request);
     let next = start.next().await?;
     let ConnectedNext::StartRoot(root) = next.next().await? else {
@@ -152,8 +132,123 @@ async fn get_blob_ranges_impl(
     Ok(end)
 }
 
+#[derive(Debug)]
+pub struct LazyHashSeq {
+    blobs: Blobs,
+    hash: Hash,
+    current_chunk: Option<HashSeqChunk>,
+}
+
+#[derive(Debug)]
+pub struct HashSeqChunk {
+    /// the offset of the first hash in this chunk
+    offset: u64,
+    /// the hashes in this chunk
+    chunk: HashSeq,
+}
+
+impl TryFrom<Leaf> for HashSeqChunk {
+    type Error = anyhow::Error;
+
+    fn try_from(leaf: Leaf) -> Result<Self, Self::Error> {
+        let offset = leaf.offset;
+        let chunk = HashSeq::try_from(leaf.data)?;
+        Ok(Self { offset, chunk })
+    }
+}
+
+impl HashSeqChunk {
+    fn get(&self, offset: u64) -> Option<Hash> {
+        let start = self.offset;
+        let end = start + self.chunk.len() as u64;
+        if offset >= start && offset < end {
+            let o = (offset - start) as usize;
+            self.chunk.get(o)
+        } else {
+            None
+        }
+    }
+}
+
+impl LazyHashSeq {
+    pub fn new(blobs: Blobs, hash: Hash) -> Self {
+        Self {
+            blobs,
+            hash,
+            current_chunk: None,
+        }
+    }
+
+    pub async fn get(&mut self, child_offset: u64) -> anyhow::Result<Option<Hash>> {
+        if let Some(chunk) = &self.current_chunk {
+            if let Some(hash) = chunk.get(child_offset) {
+                return Ok(Some(hash));
+            }
+        }
+        let leaf = self
+            .blobs
+            .export_chunk(self.hash, child_offset * 32)
+            .await?;
+        let hs = HashSeqChunk::try_from(leaf)?;
+        Ok(hs.get(child_offset).map(|hash| {
+            self.current_chunk = Some(hs);
+            hash
+        }))
+    }
+}
+
+pub async fn execute_request(
+    store: &Store,
+    conn: Connection,
+    request: GetRequest,
+) -> anyhow::Result<Stats> {
+    let root = request.hash;
+    let start = crate::get::fsm::start(conn, request);
+    let connected = start.next().await?;
+    trace!("Getting header");
+    // read the header
+    let mut next_child = match connected.next().await? {
+        ConnectedNext::StartRoot(at_start_root) => {
+            let header = at_start_root.next();
+            let end = get_blob_ranges_impl(header, root, store).await?;
+            match end.next() {
+                EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+                EndBlobNext::Closing(at_closing) => Err(at_closing),
+            }
+        }
+        ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
+        ConnectedNext::Closing(at_closing) => Err(at_closing),
+    };
+    let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
+    // read the rest, if any
+    let at_closing = loop {
+        let at_start_child = match next_child {
+            Ok(at_start_child) => at_start_child,
+            Err(at_closing) => break at_closing,
+        };
+        let offset = at_start_child.child_offset();
+        let Some(hash) = hash_seq.get(offset).await? else {
+            break at_start_child.finish();
+        };
+        info!("getting child {offset} {}", hash.fmt_short());
+        let header = at_start_child.next(hash);
+        let end = get_blob_ranges_impl(header, hash, store).await?;
+        next_child = match end.next() {
+            EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+            EndBlobNext::Closing(at_closing) => Err(at_closing),
+        }
+    };
+    let stats = at_closing.next().await?;
+    trace!(?stats, "get hash seq done");
+    Ok(stats)
+}
+
 // get a single blob, taking the locally available ranges into account
-async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyhow::Result<Stats> {
+async fn get_hash_seq_impl(
+    conn: impl GetConnection,
+    root: Hash,
+    store: &Store,
+) -> anyhow::Result<Stats> {
     trace!("get hash seq: {}", root);
     let local_ranges = store.observe(root).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
@@ -161,9 +256,10 @@ async fn get_hash_seq_impl(conn: Connection, root: Hash, store: &Store) -> anyho
         root,
         RangeSpecSeq::from_ranges_infinite([required_ranges, ChunkRanges::all()]),
     );
+    let conn = conn.connection().await?;
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
-    info!("Getting header");
+    trace!("Getting header");
     // read the header
     let mut next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
