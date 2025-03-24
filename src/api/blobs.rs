@@ -27,9 +27,14 @@ use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
-use super::{ApiSender, ImportBytes, Scope, Shutdown, SyncDb};
+use super::{ApiSender, Scope, Shutdown, SyncDb};
 use crate::{
-    get::db::LazyHashSeq, hashseq::HashSeq, protocol::{RangeSpec, RangeSpecSeq}, store::util::observer::Aggregator, util::temp_tag::TempTag, BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE
+    get::db::{HashSeqChunk, LazyHashSeq},
+    hashseq::HashSeq,
+    protocol::{RangeSpec, RangeSpecSeq},
+    store::util::observer::Aggregator,
+    util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 mod bitfield;
 pub use bitfield::{is_validated, Bitfield};
@@ -46,9 +51,36 @@ impl Blobs {
     pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
         Self::ref_cast(sender)
     }
-}
 
-impl Blobs {
+    pub async fn delete_with_opts(&self, options: DeleteBlobs) -> super::Result<()> {
+        trace!("{options:?}");
+        let request = self.sender.request().await?;
+        let rx = match request {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = oneshot::channel();
+                c.send((options, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, tx) = r.write(options).await?;
+                rx.into()
+            }
+        };
+        rx.await?;
+        Ok(())
+    }
+
+    pub async fn delete(
+        &self,
+        hashes: impl IntoIterator<Item = impl Into<Hash>>,
+    ) -> super::Result<()> {
+        self.delete_with_opts(DeleteBlobs {
+            hashes: hashes.into_iter().map(Into::into).collect(),
+            force: false,
+        })
+        .await
+    }
+
     pub fn import_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
         let options = ImportBytes {
             data: Bytes::copy_from_slice(data.as_ref()),
@@ -239,9 +271,7 @@ impl Blobs {
         request: RangeSpecSeq,
     ) -> anyhow::Result<RangeSpecSeq> {
         match request.as_single() {
-            Some((0, ranges)) => {
-                self.get_missing_ranges_blob(hash, ranges).await
-            }
+            Some((0, ranges)) => self.get_missing_ranges_blob(hash, ranges).await,
             _ => self.get_missing_ranges_hash_seq(hash, request).await,
         }
     }
@@ -268,8 +298,12 @@ impl Blobs {
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
     }
 
-    async fn get_missing_ranges_hash_seq(&self, root: Hash, request: RangeSpecSeq) -> anyhow::Result<RangeSpecSeq> {
-        let mut root_bitfield = self.observe(root).await?;
+    async fn get_missing_ranges_hash_seq(
+        &self,
+        root: Hash,
+        request: RangeSpecSeq,
+    ) -> anyhow::Result<RangeSpecSeq> {
+        let root_bitfield = self.observe(root).await?;
         let mut hash_seq = LazyHashSeq::new(self.clone(), root);
         // let mut hashes = HashMap::new();
         let mut ranges = BTreeMap::new();
@@ -284,7 +318,7 @@ impl Blobs {
                 Err(_) => {
                     ranges.insert(offset, requested.to_chunk_ranges());
                     continue;
-                },
+                }
             };
             let local_bitfield = self.observe(hash).await?;
             let required_ranges = requested.to_chunk_ranges() - local_bitfield.ranges;
@@ -472,15 +506,34 @@ impl Blobs {
         Ok(())
     }
 
-    pub async fn sync_db(&self) -> super::Result<()> {
+    pub async fn list(
+        &self,
+    ) -> super::Result<quic_rpc::channel::spsc::Receiver<super::Result<Hash>>> {
+        let msg = ListBlobs;
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((SyncDb, tx)).await?;
+                let (tx, rx) = spsc::channel(32);
+                c.send((msg, tx)).await?;
                 rx
             }
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(SyncDb).await?;
+                let (rx, _) = r.write(msg).await?;
+                rx.into()
+            }
+        };
+        Ok(rx)
+    }
+
+    pub async fn sync_db(&self) -> super::Result<()> {
+        let msg = SyncDb;
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Local(c) => {
+                let (tx, rx) = oneshot::channel();
+                c.send((msg, tx)).await?;
+                rx
+            }
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(msg).await?;
                 rx.into()
             }
         };
@@ -809,6 +862,32 @@ impl ExportBaoResult {
         }
     }
 
+    /// Interprets this blob as a hash sequence and returns a stream of hashes.
+    ///
+    /// This will just ignore any errors and just return the hashes that it can read,
+    /// even for an incomplete blob.
+    pub fn hashes(self) -> impl Stream<Item = super::Result<Hash>> {
+        let mut stream = self.stream();
+        Gen::new(|co| async move {
+            while let Some(item) = stream.next().await {
+                match item {
+                    EncodedItem::Error(e) => {
+                        co.yield_(Err(super::Error::other(e))).await;
+                    }
+                    EncodedItem::Leaf(leaf) => {
+                        let Ok(slice) = HashSeqChunk::try_from(leaf) else {
+                            continue;
+                        };
+                        for hash in slice {
+                            co.yield_(Ok(hash)).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+    }
+
     pub async fn bao_to_vec(self) -> super::Result<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
@@ -920,3 +999,20 @@ impl ExportBaoResult {
         })
     }
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteBlobs {
+    pub hashes: Vec<Hash>,
+    pub force: bool,
+}
+
+/// Import the given bytes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBytes {
+    pub data: Bytes,
+    pub format: BlobFormat,
+    pub scope: Scope,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListBlobs;

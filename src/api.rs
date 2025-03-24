@@ -7,7 +7,7 @@ use quic_rpc::rpc::{listen, Handler};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 
-use crate::BlobFormat;
+use crate::{BlobFormat, Hash};
 pub mod blobs;
 pub mod proto;
 pub mod tags;
@@ -67,12 +67,6 @@ pub struct Tags {
     sender: ApiSender,
 }
 
-impl Tags {
-    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
-        Self::ref_cast(sender)
-    }
-}
-
 impl Store {
     pub fn tags(&self) -> &Tags {
         Tags::ref_from_sender(&self.sender)
@@ -98,11 +92,14 @@ impl Store {
                     Request::DeleteTags(msg) => local.send((msg, tx)),
                     Request::RenameTag(msg) => local.send((msg, tx)),
                     Request::ListTags(msg) => local.send((msg, tx)),
+                    Request::ListTempTags(msg) => local.send((msg, tx)),
 
                     Request::ImportBytes(msg) => local.send((msg, tx)),
                     Request::ImportByteStream(msg) => local.send((msg, tx)),
                     Request::ImportBao(msg) => local.send((msg, tx, rx)),
                     Request::ImportPath(msg) => local.send((msg, tx)),
+                    Request::ListBlobs(msg) => local.send((msg, tx)),
+                    Request::DeleteBlobs(msg) => local.send((msg, tx)),
 
                     Request::ExportBao(msg) => local.send((msg, tx)),
                     Request::ExportPath(msg) => local.send((msg, tx)),
@@ -137,14 +134,6 @@ impl std::fmt::Debug for Scope {
             f.debug_tuple("Scope").field(&self.0).finish()
         }
     }
-}
-
-/// Import the given bytes.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBytes {
-    pub data: Bytes,
-    pub format: BlobFormat,
-    pub scope: Scope,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

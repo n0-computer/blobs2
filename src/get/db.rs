@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     api::{self, blobs::Blobs, Store},
-    hashseq::HashSeq,
+    hashseq::{HashSeq, HashSeqIter},
     protocol::{GetRequest, RangeSpecSeq},
     util::channel::mpsc,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
@@ -18,9 +18,8 @@ use crate::{
 
 /// Trait to lazily get a connection
 pub trait GetConnection {
-    fn connection(
-        &mut self,
-    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
+    fn connection(&mut self)
+        -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
 }
 
 /// If we already have a connection, the impl is trivial
@@ -50,14 +49,14 @@ impl Dialer {
 }
 
 impl GetConnection for Dialer {
-
-    async fn connection(
-        &mut self,
-    ) -> Result<Connection, anyhow::Error> {
+    async fn connection(&mut self) -> Result<Connection, anyhow::Error> {
         if let Some(conn) = &self.conn {
             Ok(conn.clone())
         } else {
-            let conn = self.endpoint.connect(self.addr.clone(), crate::ALPN).await?;
+            let conn = self
+                .endpoint
+                .connect(self.addr.clone(), crate::ALPN)
+                .await?;
             self.conn = Some(conn.clone());
             Ok(conn)
         }
@@ -172,6 +171,15 @@ impl TryFrom<Leaf> for HashSeqChunk {
         let offset = leaf.offset;
         let chunk = HashSeq::try_from(leaf.data)?;
         Ok(Self { offset, chunk })
+    }
+}
+
+impl IntoIterator for HashSeqChunk {
+    type Item = Hash;
+    type IntoIter = HashSeqIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.chunk.into_iter()
     }
 }
 

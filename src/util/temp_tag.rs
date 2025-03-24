@@ -169,6 +169,12 @@ impl TempCounters {
 #[derive(Debug, Default)]
 pub(crate) struct TempTagScope(Mutex<TempCounterMap>);
 
+impl TempTagScope {
+    pub fn list(&self) -> impl Iterator<Item = HashAndFormat> {
+        self.0.lock().unwrap().keys()
+    }
+}
+
 impl TagDrop for TempTagScope {
     fn on_drop(&self, inner: &HashAndFormat) {
         trace!("Dropping temp tag {:?}", inner);

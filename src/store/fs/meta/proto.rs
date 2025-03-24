@@ -6,9 +6,9 @@ use nested_enum_utils::enum_conversions;
 use redb::{AccessGuard, StorageError};
 use tracing::Span;
 
-use super::ActorResult;
+use super::{ActorResult, ReadOnlyTables};
 use crate::{
-    api::proto::{ProcessExit, ShutdownMsg, SyncDbMsg},
+    api::proto::{DeleteBlobsMsg, ProcessExit, ShutdownMsg, SyncDbMsg},
     store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
     Hash,
@@ -47,6 +47,12 @@ pub struct Dump {
     pub span: Span,
 }
 
+#[derive(Debug)]
+pub struct Snapshot {
+    pub tx: tokio::sync::oneshot::Sender<ReadOnlyTables>,
+    pub span: Span,
+}
+
 pub struct Update {
     pub hash: Hash,
     pub state: EntryState<Bytes>,
@@ -81,28 +87,6 @@ impl fmt::Debug for Set {
     }
 }
 
-#[derive(Debug)]
-pub struct DeleteBlobs {
-    pub hashes: Vec<Hash>,
-    pub tx: oneshot::Sender<ActorResult<()>>,
-    pub span: Span,
-}
-
-/// Predicate for filtering entries in a redb table.
-pub(crate) type FilterPredicate<K, V> =
-    Box<dyn Fn(u64, AccessGuard<K>, AccessGuard<V>) -> Option<(K, V)> + Send + Sync>;
-
-/// Bulk query method: get entries from the blobs table
-#[derive(derive_more::Debug)]
-pub struct Blobs {
-    #[debug(skip)]
-    pub filter: FilterPredicate<Hash, EntryState>,
-    #[allow(clippy::type_complexity)]
-    pub tx:
-        oneshot::Sender<ActorResult<Vec<std::result::Result<(Hash, EntryState), StorageError>>>>,
-    pub span: Span,
-}
-
 /// Modification method: create a new unique tag and set it to a value.
 pub use crate::api::proto::CreateTagMsg;
 /// Modification method: remove a range of tags.
@@ -120,7 +104,6 @@ pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
     ListTags(ListTagsMsg),
-    Blobs(Blobs),
 }
 
 impl ReadOnlyCommand {
@@ -135,7 +118,6 @@ impl ReadOnlyCommand {
             Self::Get(x) => Some(&x.span),
             Self::Dump(x) => Some(&x.span),
             Self::ListTags(x) => x.parent_span_opt(),
-            Self::Blobs(x) => Some(&x.span),
         }
     }
 }
@@ -145,7 +127,7 @@ impl ReadOnlyCommand {
 pub enum ReadWriteCommand {
     Update(Update),
     Set(Set),
-    Delete(DeleteBlobs),
+    Delete(DeleteBlobsMsg),
     SetTag(SetTagMsg),
     DeleteTags(DeleteTagsMsg),
     RenameTag(RenameTagMsg),
@@ -179,6 +161,7 @@ impl ReadWriteCommand {
 pub enum TopLevelCommand {
     SyncDb(SyncDbMsg),
     Shutdown(ShutdownMsg),
+    Snapshot(Snapshot),
 }
 
 impl TopLevelCommand {
@@ -192,6 +175,7 @@ impl TopLevelCommand {
         match self {
             Self::SyncDb(x) => x.parent_span_opt(),
             Self::Shutdown(x) => x.parent_span_opt(),
+            Self::Snapshot(x) => Some(&x.span),
         }
     }
 }

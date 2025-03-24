@@ -35,9 +35,9 @@ use tracing::{instrument, trace};
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     api::{
-        blobs::{ImportByteStream, ImportMode, ImportPath, ImportProgress},
+        blobs::{ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress},
         proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
-        ImportBytes, Scope,
+        Scope,
     },
     store::{
         util::{MemOrFile, QuicRpcSenderProgressExt, DD},

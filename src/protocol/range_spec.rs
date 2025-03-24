@@ -190,12 +190,18 @@ impl RangeSpecSeq {
 
     /// A [`RangeSpecSeq`] getting the verified size for the first blob.
     pub fn verified_size() -> Self {
-        Self(smallvec![(0, RangeSpec::verified_size()), (0, RangeSpec::EMPTY)])
+        Self(smallvec![
+            (0, RangeSpec::verified_size()),
+            (0, RangeSpec::EMPTY)
+        ])
     }
 
     /// A [`RangeSpecSeq`] getting the entire first blob and verified sizes for all others.
     pub fn verified_child_sizes() -> Self {
-        Self(smallvec![(0, RangeSpec::all()), (1, RangeSpec::verified_size())])
+        Self(smallvec![
+            (0, RangeSpec::all()),
+            (1, RangeSpec::verified_size())
+        ])
     }
 
     /// Convenience function to create a [`RangeSpecSeq`] from a finite sequence of range sets.

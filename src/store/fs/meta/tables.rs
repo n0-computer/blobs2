@@ -66,7 +66,8 @@ impl ReadableTables for Tables<'_> {
 
 /// A struct similar to [`redb::ReadOnlyTable`] but for all tables that make up
 /// the blob store.
-pub(super) struct ReadOnlyTables {
+#[derive(Debug)]
+pub(crate) struct ReadOnlyTables {
     pub blobs: redb::ReadOnlyTable<Hash, EntryState>,
     pub tags: redb::ReadOnlyTable<Tag, HashAndFormat>,
     pub inline_data: redb::ReadOnlyTable<Hash, &'static [u8]>,

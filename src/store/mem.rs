@@ -35,8 +35,8 @@ use crate::{
     api::{
         self,
         blobs::{
-            Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportPath, ImportProgress,
-            Observe,
+            Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportBytes, ImportPath,
+            ImportProgress, Observe,
         },
         proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
@@ -44,7 +44,7 @@ use crate::{
             ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
         },
         tags::{self, Delete, TagInfo},
-        ImportBytes, Store,
+        Store,
     },
     store::{
         util::{
@@ -270,6 +270,15 @@ impl Actor {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
                 self.state.tags.insert(tag.clone(), content);
                 tx.send(Ok(tag)).await.ok();
+            }
+            Command::ListTempTags(cmd) => {
+                todo!()
+            }
+            Command::ListBlobs(cmd) => {
+                todo!()
+            }
+            Command::DeleteBlobs(cmd) => {
+                todo!()
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
                 tx.send(Ok(())).await.ok();

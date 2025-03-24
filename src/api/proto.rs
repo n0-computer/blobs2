@@ -18,13 +18,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     blobs::{
-        Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream, ImportPath,
-        ImportProgress, Observe,
+        self, Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream,
+        ImportBytes, ImportPath, ImportProgress, ListBlobs, Observe,
     },
     tags::{self, TagInfo},
-    ImportBytes, Shutdown, SyncDb,
+    Shutdown, SyncDb,
 };
-use crate::{store::util::Tag, Hash};
+use crate::{store::util::Tag, Hash, HashAndFormat};
 
 pub trait HashSpecific {
     fn hash(&self) -> Hash;
@@ -82,6 +82,8 @@ pub type RenameTagMsg = WithChannels<tags::Rename, StoreService>;
 
 pub type DeleteTagsMsg = WithChannels<tags::Delete, StoreService>;
 
+pub type DeleteBlobsMsg = WithChannels<blobs::DeleteBlobs, StoreService>;
+
 pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
 
 /// Debug tool to exit the process in the middle of a write transaction, for testing.
@@ -98,6 +100,8 @@ impl HashSpecific for CreateTagMsg {
     }
 }
 
+pub type ListBlobsMsg = WithChannels<ListBlobs, StoreService>;
+
 pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 
 #[derive(Debug, Clone)]
@@ -107,20 +111,24 @@ impl quic_rpc::Service for StoreService {}
 #[rpc_requests(StoreService, Command)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
+    #[rpc(tx = spsc::Sender<super::Result<Hash>>)]
+    ListBlobs(blobs::ListBlobs),
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
+    DeleteBlobs(blobs::DeleteBlobs),
     #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
-    ImportBao(ImportBao),
+    ImportBao(blobs::ImportBao),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
-    ExportBao(ExportBao),
+    ExportBao(blobs::ExportBao),
     #[rpc(tx = spsc::Sender<Bitfield>)]
-    Observe(Observe),
+    Observe(blobs::Observe),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportBytes(ImportBytes),
+    ImportBytes(blobs::ImportBytes),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportByteStream(ImportByteStream),
+    ImportByteStream(blobs::ImportByteStream),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportPath(ImportPath),
+    ImportPath(blobs::ImportPath),
     #[rpc(tx = spsc::Sender<ExportProgress>)]
-    ExportPath(ExportPath),
+    ExportPath(blobs::ExportPath),
     #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
     ListTags(tags::ListTags),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
@@ -131,6 +139,8 @@ pub enum Request {
     RenameTag(tags::Rename),
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
     CreateTag(tags::CreateTag),
+    #[rpc(tx = oneshot::Sender<Vec<HashAndFormat>>)]
+    ListTempTags(tags::TempTags),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]

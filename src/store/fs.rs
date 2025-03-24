@@ -65,6 +65,7 @@ use bytes::Bytes;
 use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
 use import::{ImportEntry, ImportSource};
+use meta::{list_blobs, Snapshot};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use quic_rpc::channel::spsc;
@@ -100,6 +101,7 @@ use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 use tracing::Instrument;
+mod gc;
 
 use super::{
     util::{observer::Observer, QuicRpcSenderProgressExt},
@@ -386,6 +388,31 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
+            Command::ListBlobs(cmd) => {
+                trace!("{cmd:?}");
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.db()
+                    .send(
+                        Snapshot {
+                            tx,
+                            span: cmd.span.clone(),
+                        }
+                        .into(),
+                    )
+                    .await
+                    .ok();
+                if let Ok(snapshot) = rx.await {
+                    self.spawn(list_blobs(snapshot, cmd));
+                }
+            }
+            Command::DeleteBlobs(cmd) => {
+                trace!("{cmd:?}");
+                self.db().send(cmd.into()).await.ok();
+            }
+            Command::ListTempTags(cmd) => {
+                trace!("{cmd:?}");
+                let tts = self.list_temp_tags();
+            }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");
                 self.spawn(import_bytes(cmd, self.context()));
@@ -458,6 +485,14 @@ impl Actor {
     fn create_temp_tag(&mut self, scope: Scope, hash: Hash, format: BlobFormat) -> TempTag {
         let temp_tags = self.temp_tags.entry(scope).or_default();
         temp_tags.temp_tag(HashAndFormat { hash, format })
+    }
+
+    fn list_temp_tags(&self) -> Vec<HashAndFormat> {
+        let mut res = Vec::new();
+        for temp_tags in self.temp_tags.values() {
+            res.extend(temp_tags.list());
+        }
+        res
     }
 
     fn log_task_result(&self, res: Result<(), JoinError>) {

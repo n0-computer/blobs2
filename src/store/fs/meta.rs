@@ -9,19 +9,21 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
-use redb::{Database, DatabaseError, ReadableTable};
+use quic_rpc::channel::spsc;
+use redb::{Database, DatabaseError, ReadTransaction, ReadableTable};
 
 use crate::{
     api::{
         self,
-        proto::{ShutdownMsg, SyncDbMsg},
+        blobs::{DeleteBlobs, ListBlobs},
+        proto::{DeleteBlobsMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg},
         tags::{self, CreateTag, Delete, ListTags, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
 };
 mod proto;
 pub use proto::*;
-mod tables;
+pub(crate) mod tables;
 use tables::{ReadOnlyTables, ReadableTables, Tables};
 use tracing::{debug, error, info_span, trace};
 
@@ -212,30 +214,6 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
     Ok(())
 }
 
-impl Blobs {
-    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
-        let Blobs { filter, tx, .. } = self;
-        let mut res = Vec::new();
-        let mut index = 0u64;
-        #[allow(clippy::explicit_counter_loop)]
-        for item in tables.blobs().iter()? {
-            match item {
-                Ok((k, v)) => {
-                    if let Some(item) = filter(index, k, v) {
-                        res.push(Ok(item));
-                    }
-                }
-                Err(e) => {
-                    res.push(Err(e));
-                }
-            }
-            index += 1;
-        }
-        tx.send(Ok(res));
-        Ok(())
-    }
-}
-
 impl Update {
     fn handle(self, tables: &mut Tables) -> ActorResult<()> {
         trace!("{self:?}");
@@ -393,13 +371,15 @@ impl Actor {
         match cmd {
             ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
             ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
-            ReadOnlyCommand::Blobs(cmd) => cmd.handle(tables),
             ReadOnlyCommand::ListTags(cmd) => handle_list_tags(cmd, tables).await,
         }
     }
 
-    async fn delete(tables: &mut Tables<'_>, cmd: DeleteBlobs) -> ActorResult<()> {
-        let DeleteBlobs { hashes, .. } = cmd;
+    async fn delete(tables: &mut Tables<'_>, cmd: DeleteBlobsMsg) -> ActorResult<()> {
+        let DeleteBlobsMsg {
+            inner: DeleteBlobs { hashes, force },
+            ..
+        } = cmd;
         for hash in hashes {
             if let Some(entry) = tables.blobs.remove(hash)? {
                 match entry.value() {
@@ -584,6 +564,13 @@ impl Actor {
                 // nothing to do here, since the database will be dropped
                 Some(cmd)
             }
+            TopLevelCommand::Snapshot(cmd) => {
+                trace!("{cmd:?}");
+                let txn = db.begin_read()?;
+                let snapshot = ReadOnlyTables::new(&txn)?;
+                cmd.tx.send(snapshot).ok();
+                None
+            }
         })
     }
 
@@ -728,4 +715,28 @@ fn load_outboard(
 
 pub(crate) fn raw_outboard_size(size: u64) -> u64 {
     BaoTree::new(size, IROH_BLOCK_SIZE).outboard_size()
+}
+
+pub async fn list_blobs(snapshot: ReadOnlyTables, cmd: ListBlobsMsg) {
+    let ListBlobsMsg { mut tx, inner, .. } = cmd;
+    match list_blobs_impl(snapshot, inner, &mut tx).await {
+        Ok(()) => {}
+        Err(e) => {
+            error!("error listing blobs: {}", e);
+            tx.send(Err(e)).await.ok();
+        }
+    }
+}
+
+async fn list_blobs_impl(
+    snapshot: ReadOnlyTables,
+    _cmd: ListBlobs,
+    tx: &mut spsc::Sender<api::Result<Hash>>,
+) -> api::Result<()> {
+    for item in snapshot.blobs.iter().map_err(api::Error::other)? {
+        let (k, _) = item.map_err(api::Error::other)?;
+        let k = k.value();
+        tx.send(Ok(k)).await.ok();
+    }
+    Ok(())
 }

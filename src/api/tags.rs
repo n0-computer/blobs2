@@ -5,11 +5,12 @@ use std::{
 
 use n0_future::{Stream, StreamExt};
 use quic_rpc::{channel::oneshot, ServiceRequest};
+use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::Tags;
-use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
+use super::{ApiSender, Tags};
+use crate::{store::util::Tag, util::temp_tag::TempTag, BlobFormat, Hash, HashAndFormat};
 
 /// Information about a tag.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +127,10 @@ impl ListTags {
     }
 }
 
+/// List all temp tags
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TempTags;
+
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Rename {
@@ -205,6 +210,28 @@ pub struct CreateTag {
 }
 
 impl Tags {
+    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
+        Self::ref_cast(sender)
+    }
+
+    pub async fn temp_tags(&self) -> super::Result<impl Stream<Item = HashAndFormat>> {
+        let options = TempTags;
+        trace!("{:?}", options);
+        let rx = match self.sender.request().await? {
+            ServiceRequest::Remote(r) => {
+                let (rx, _) = r.write(options).await?;
+                rx.into()
+            }
+            ServiceRequest::Local(l) => {
+                let (tx, rx) = oneshot::channel();
+                l.send((options, tx)).await?;
+                rx
+            }
+        };
+        let res = rx.await?;
+        Ok(futures_lite::stream::iter(res))
+    }
+
     /// List all tags with options.
     ///
     /// This is the most flexible way to list tags. All the other list methods are just convenience
@@ -214,13 +241,13 @@ impl Tags {
         options: ListTags,
     ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
-        let (tx, rx) = oneshot::channel();
         let rx = match self.sender.request().await? {
             ServiceRequest::Remote(r) => {
                 let (rx, _) = r.write(options).await?;
                 rx.into()
             }
             ServiceRequest::Local(l) => {
+                let (tx, rx) = oneshot::channel();
                 l.send((options, tx)).await?;
                 rx
             }

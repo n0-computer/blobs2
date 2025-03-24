@@ -1,5 +1,11 @@
 use bao_tree::{ChunkNum, ChunkRanges};
-use blobs2::{get::db::{execute_request, Dialer, GetConnection}, protocol::{GetRequest, RangeSpecSeq}, store::fs::FsStore, ticket::BlobTicket, HashAndFormat};
+use blobs2::{
+    get::db::{execute_request, Dialer, GetConnection},
+    protocol::{GetRequest, RangeSpecSeq},
+    store::fs::FsStore,
+    ticket::BlobTicket,
+    HashAndFormat,
+};
 use clap::Parser;
 use iroh::endpoint::Connection;
 
@@ -53,7 +59,10 @@ async fn main() -> anyhow::Result<()> {
     let mut dialer = Dialer::new(endpoint, ticket.node_addr().clone());
     let conn = dialer.connection().await?;
     println!("Connected to {:?}", addr);
-    let ranges = RangeSpecSeq::from_ranges_infinite([ChunkRanges::all(), ChunkRanges::from(ChunkNum(u64::MAX)..)]);
+    let ranges = RangeSpecSeq::from_ranges_infinite([
+        ChunkRanges::all(),
+        ChunkRanges::from(ChunkNum(u64::MAX)..),
+    ]);
     println!("Ranges: {:?}", ranges);
     execute_request(&store, conn, GetRequest::new(ticket.hash(), ranges)).await?;
     store.dump().await?;
