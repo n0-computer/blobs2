@@ -3130,6 +3130,7 @@ dependencies = [
  "binary-merge",
  "inplace-vec-builder",
  "ref-cast",
+ "serde",
  "smallvec",
 ]
 

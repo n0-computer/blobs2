@@ -1,7 +1,7 @@
-use std::{future::Future, num::NonZeroU64};
+use std::{future::Future, num::NonZeroU64, pin::Pin};
 
 use bao_tree::{io::Leaf, ChunkRanges};
-use iroh::endpoint::Connection;
+use iroh::{endpoint::Connection, Endpoint, NodeAddr};
 use tracing::{info, trace};
 
 use super::{
@@ -19,30 +19,48 @@ use crate::{
 /// Trait to lazily get a connection
 pub trait GetConnection {
     fn connection(
-        &self,
-    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static;
+        &mut self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
 }
 
 /// If we already have a connection, the impl is trivial
 impl GetConnection for Connection {
     fn connection(
-        &self,
-    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static {
+        &mut self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_ {
         let conn = self.clone();
         async { Ok(conn) }
     }
 }
 
-/// If we have a function that returns a future, we can use that
-impl<F, Fut> GetConnection for F
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<Connection, anyhow::Error>> + Send + 'static,
-{
-    fn connection(
-        &self,
-    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + 'static {
-        self()
+pub struct Dialer {
+    endpoint: Endpoint,
+    addr: NodeAddr,
+    conn: Option<Connection>,
+}
+
+impl Dialer {
+    pub fn new(endpoint: Endpoint, addr: NodeAddr) -> Self {
+        Self {
+            endpoint,
+            addr,
+            conn: None,
+        }
+    }
+}
+
+impl GetConnection for Dialer {
+
+    async fn connection(
+        &mut self,
+    ) -> Result<Connection, anyhow::Error> {
+        if let Some(conn) = &self.conn {
+            Ok(conn.clone())
+        } else {
+            let conn = self.endpoint.connect(self.addr.clone(), crate::ALPN).await?;
+            self.conn = Some(conn.clone());
+            Ok(conn)
+        }
     }
 }
 
@@ -66,7 +84,7 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
 
 // get a single blob, taking the locally available ranges into account
 async fn get_blob_impl(
-    conn: impl GetConnection,
+    mut conn: impl GetConnection,
     hash: Hash,
     store: &Store,
 ) -> anyhow::Result<Stats> {
@@ -179,16 +197,27 @@ impl LazyHashSeq {
         }
     }
 
+    pub async fn get_from_offset(&mut self, offset: u64) -> anyhow::Result<Option<Hash>> {
+        if offset == 0 {
+            Ok(Some(self.hash))
+        } else {
+            self.get(offset - 1).await
+        }
+    }
+
     pub async fn get(&mut self, child_offset: u64) -> anyhow::Result<Option<Hash>> {
+        // check if we have the hash in the current chunk
         if let Some(chunk) = &self.current_chunk {
             if let Some(hash) = chunk.get(child_offset) {
                 return Ok(Some(hash));
             }
         }
+        // load the chunk covering the offset
         let leaf = self
             .blobs
             .export_chunk(self.hash, child_offset * 32)
             .await?;
+        // return the hash if it is in the chunk, otherwise we are behind the end
         let hs = HashSeqChunk::try_from(leaf)?;
         Ok(hs.get(child_offset).map(|hash| {
             self.current_chunk = Some(hs);
@@ -207,7 +236,7 @@ pub async fn execute_request(
     let connected = start.next().await?;
     trace!("Getting header");
     // read the header
-    let mut next_child = match connected.next().await? {
+    let next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
             let header = at_start_root.next();
             let end = get_blob_ranges_impl(header, root, store).await?;
@@ -219,25 +248,33 @@ pub async fn execute_request(
         ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
         ConnectedNext::Closing(at_closing) => Err(at_closing),
     };
-    let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
     // read the rest, if any
-    let at_closing = loop {
-        let at_start_child = match next_child {
-            Ok(at_start_child) => at_start_child,
-            Err(at_closing) => break at_closing,
-        };
-        let offset = at_start_child.child_offset();
-        let Some(hash) = hash_seq.get(offset).await? else {
-            break at_start_child.finish();
-        };
-        info!("getting child {offset} {}", hash.fmt_short());
-        let header = at_start_child.next(hash);
-        let end = get_blob_ranges_impl(header, hash, store).await?;
-        next_child = match end.next() {
-            EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
-            EndBlobNext::Closing(at_closing) => Err(at_closing),
+    let at_closing = match next_child {
+        Ok(at_start_child) => {
+            let mut next_child = Ok(at_start_child);
+            // let hash_seq = HashSeq::try_from(store.export_bytes(root).await?)?;
+            let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
+            loop {
+                let at_start_child = match next_child {
+                    Ok(at_start_child) => at_start_child,
+                    Err(at_closing) => break at_closing,
+                };
+                let offset = at_start_child.child_offset();
+                let Some(hash) = hash_seq.get(offset).await? else {
+                    break at_start_child.finish();
+                };
+                info!("getting child {offset} {}", hash.fmt_short());
+                let header = at_start_child.next(hash);
+                let end = get_blob_ranges_impl(header, hash, store).await?;
+                next_child = match end.next() {
+                    EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+                    EndBlobNext::Closing(at_closing) => Err(at_closing),
+                }
+            }
         }
+        Err(at_closing) => at_closing,
     };
+    // read the rest, if any
     let stats = at_closing.next().await?;
     trace!(?stats, "get hash seq done");
     Ok(stats)
@@ -245,7 +282,7 @@ pub async fn execute_request(
 
 // get a single blob, taking the locally available ranges into account
 async fn get_hash_seq_impl(
-    conn: impl GetConnection,
+    mut conn: impl GetConnection,
     root: Hash,
     store: &Store,
 ) -> anyhow::Result<Stats> {

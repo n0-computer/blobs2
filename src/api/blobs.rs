@@ -29,11 +29,7 @@ use tracing::trace;
 
 use super::{ApiSender, ImportBytes, Scope, Shutdown, SyncDb};
 use crate::{
-    hashseq::HashSeq,
-    protocol::{RangeSpec, RangeSpecSeq},
-    store::util::observer::Aggregator,
-    util::temp_tag::TempTag,
-    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
+    get::db::LazyHashSeq, hashseq::HashSeq, protocol::{RangeSpec, RangeSpecSeq}, store::util::observer::Aggregator, util::temp_tag::TempTag, BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE
 };
 mod bitfield;
 pub use bitfield::{is_validated, Bitfield};
@@ -237,6 +233,19 @@ impl Blobs {
         })
     }
 
+    pub async fn get_missing_ranges(
+        &self,
+        hash: Hash,
+        request: RangeSpecSeq,
+    ) -> anyhow::Result<RangeSpecSeq> {
+        match request.as_single() {
+            Some((0, ranges)) => {
+                self.get_missing_ranges_blob(hash, ranges).await
+            }
+            _ => self.get_missing_ranges_hash_seq(hash, request).await,
+        }
+    }
+
     /// Return the missing ranges for the given hash or hashseq as
     pub async fn get_missing(
         &self,
@@ -247,6 +256,51 @@ impl Blobs {
             BlobFormat::Raw => self.get_missing_blob(data.hash).await?,
             BlobFormat::HashSeq => self.get_missing_hash_seq(data.hash).await?,
         })
+    }
+
+    async fn get_missing_ranges_blob(
+        &self,
+        hash: Hash,
+        ranges: &RangeSpec,
+    ) -> anyhow::Result<RangeSpecSeq> {
+        let local_ranges = self.observe(hash).await?.ranges;
+        let required_ranges = ranges.to_chunk_ranges() - local_ranges;
+        Ok(RangeSpecSeq::from_ranges([required_ranges]))
+    }
+
+    async fn get_missing_ranges_hash_seq(&self, root: Hash, request: RangeSpecSeq) -> anyhow::Result<RangeSpecSeq> {
+        let mut root_bitfield = self.observe(root).await?;
+        let mut hash_seq = LazyHashSeq::new(self.clone(), root);
+        // let mut hashes = HashMap::new();
+        let mut ranges = BTreeMap::new();
+        let mut iter = request.iter_non_empty();
+        let rest = loop {
+            let Some((offset, requested)) = iter.next() else {
+                break None;
+            };
+            let hash = match hash_seq.get_from_offset(offset).await {
+                Ok(Some(hash)) => hash,
+                Ok(None) => break Some(iter),
+                Err(_) => {
+                    ranges.insert(offset, requested.to_chunk_ranges());
+                    continue;
+                },
+            };
+            let local_bitfield = self.observe(hash).await?;
+            let required_ranges = requested.to_chunk_ranges() - local_bitfield.ranges;
+            // hashes.insert(hash, required_ranges.clone());
+            ranges.insert(offset, required_ranges);
+        };
+        if let Some(rest) = rest {
+            // todo: how to prevent infinite loop?
+            for (offset, requested) in rest {
+                ranges.insert(offset, requested.to_chunk_ranges());
+            }
+        }
+        let n = ranges.keys().last().copied().unwrap_or_default();
+        let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(ChunkRanges::all()));
+        let ranges = ranges.collect::<Vec<_>>();
+        Ok(RangeSpecSeq::from_ranges_infinite(ranges))
     }
 
     async fn get_missing_blob(&self, hash: Hash) -> super::Result<RangeSpecSeq> {
@@ -482,7 +536,6 @@ pub struct Observe {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportBao {
     pub hash: Hash,
-    #[serde(with = "crate::util::serde::chunk_ranges_serde")]
     pub ranges: ChunkRanges,
 }
 

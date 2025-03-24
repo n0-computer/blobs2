@@ -5,13 +5,13 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-bao-tree = { version = "0.13.0", path = "../bao-tree", features = ["experimental-mixed"] }
+bao-tree = { version = "0.13.0", path = "../bao-tree", features = ["experimental-mixed", "tokio_fsm", "validate", "serde"], default-features = false }
 bytes = { version = "1", features = ["serde"] }
 derive_more = { version = "2.0.1", features = ["from", "try_from", "into", "debug", "display", "deref", "deref_mut"] }
 futures-lite = "2.6.0"
 quinn = { package = "iroh-quinn", version = "0.13.0" }
 n0-future = "0.1.2"
-range-collections = "0.4.5"
+range-collections = { version = "0.4.5", features = ["serde"] }
 redb = "2.4.0"
 smallvec = { version = "1", features = ["serde", "const_new"] }
 thiserror = "2.0.11"
