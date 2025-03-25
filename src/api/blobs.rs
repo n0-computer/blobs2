@@ -62,11 +62,11 @@ impl Blobs {
                 rx
             }
             ServiceRequest::Remote(r) => {
-                let (rx, tx) = r.write(options).await?;
+                let (rx, _) = r.write(options).await?;
                 rx.into()
             }
         };
-        rx.await?;
+        rx.await??;
         Ok(())
     }
 
@@ -506,22 +506,22 @@ impl Blobs {
         Ok(())
     }
 
-    pub async fn list(
-        &self,
-    ) -> super::Result<quic_rpc::channel::spsc::Receiver<super::Result<Hash>>> {
+    pub fn list(&self) -> BlobsListResult {
         let msg = ListBlobs;
-        let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
-                let (tx, rx) = spsc::channel(32);
-                c.send((msg, tx)).await?;
-                rx
-            }
-            ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        Ok(rx)
+        let req = self.sender.request();
+        BlobsListResult::new(async move {
+            Ok(match req.await? {
+                ServiceRequest::Local(c) => {
+                    let (tx, rx) = spsc::channel(32);
+                    c.send((msg, tx)).await?;
+                    rx
+                }
+                ServiceRequest::Remote(r) => {
+                    let (rx, _) = r.write(msg).await?;
+                    rx.into()
+                }
+            })
+        })
     }
 
     pub async fn sync_db(&self) -> super::Result<()> {
@@ -846,6 +846,37 @@ impl IntoFuture for ImportBaoResult {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.inner)
+    }
+}
+pub struct BlobsListResult {
+    inner: n0_future::future::Boxed<super::Result<spsc::Receiver<super::Result<Hash>>>>,
+}
+
+impl BlobsListResult {
+    fn new(
+        fut: impl Future<Output = super::Result<spsc::Receiver<super::Result<Hash>>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+
+    pub async fn hashes(self) -> super::Result<Vec<Hash>> {
+        let mut rx = self.inner.await?;
+        let mut hashes = Vec::new();
+        while let Some(item) = rx.recv().await? {
+            hashes.push(item?);
+        }
+        Ok(hashes)
+    }
+
+    pub async fn stream(self) -> super::Result<impl Stream<Item = super::Result<Hash>>> {
+        let mut rx = self.inner.await?;
+        Ok(Gen::new(|co| async move {
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        }))
     }
 }
 

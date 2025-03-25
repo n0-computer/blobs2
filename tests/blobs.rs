@@ -72,6 +72,11 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let expected_hash = Hash::new(&expected);
         assert_eq!(actual_hash, Some(expected_hash));
     }
+
+    {
+        let hashes = blobs.list().hashes().await?;
+        assert_eq!(hashes.len(), 3);
+    }
     Ok(())
 }
 

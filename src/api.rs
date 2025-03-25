@@ -126,6 +126,10 @@ impl Store {
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Scope(u64);
 
+impl Scope {
+    pub const GLOBAL: Self = Self(0);
+}
+
 impl std::fmt::Debug for Scope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0 == 0 {

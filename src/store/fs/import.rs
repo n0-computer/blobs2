@@ -257,7 +257,7 @@ async fn import_byte_stream_impl(
         data,
         scope: batch,
     } = cmd;
-    let data = futures_lite::stream::iter(data).map(io::Result::Ok);
+    let data = n0_future::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
     tx.send(ImportProgress::Size {
         size: import_source.size(),

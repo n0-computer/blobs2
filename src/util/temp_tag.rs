@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::{BlobFormat, Hash, HashAndFormat};
+use crate::{api::Scope, BlobFormat, Hash, HashAndFormat};
 
 /// A hash and format pair that is protected from garbage collection.
 ///
@@ -20,6 +20,12 @@ pub struct TempTag {
     /// optional callback to call on drop
     #[serde(skip)]
     on_drop: Option<Weak<dyn TagDrop>>,
+}
+
+impl AsRef<Hash> for TempTag {
+    fn as_ref(&self) -> &Hash {
+        &self.inner.hash
+    }
 }
 
 /// A trait for things that can track liveness of blobs and collections.
@@ -163,6 +169,28 @@ impl TempCounters {
 
     fn is_empty(&self) -> bool {
         self.raw == 0 && self.hash_seq == 0
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TempTags(HashMap<Scope, Arc<TempTagScope>>);
+
+impl TempTags {
+    pub fn list(&self) -> Vec<HashAndFormat> {
+        self.0
+            .values()
+            .flat_map(|scope| scope.list())
+            .collect()
+    }
+
+    pub fn create(&mut self, scope: Scope, content: HashAndFormat) -> TempTag {
+        let scope = self.0.entry(scope).or_default();
+        let tag = scope.temp_tag(content);
+        tag
+    }
+
+    pub fn contains(&self, hash: Hash) -> bool {
+        self.0.values().any(|scope| scope.0.lock().unwrap().contains(&HashAndFormat::raw(hash)))
     }
 }
 
