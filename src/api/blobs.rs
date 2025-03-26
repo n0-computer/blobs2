@@ -342,7 +342,7 @@ impl Blobs {
         &self,
         hash: Hash,
         request: RangeSpecSeq,
-    ) -> anyhow::Result<RangeSpecSeq> {
+    ) -> super::FallibleRequestResult<RangeSpecSeq> {
         match request.as_single() {
             Some((0, ranges)) => self.get_missing_ranges_blob(hash, ranges).await,
             _ => self.get_missing_ranges_hash_seq(hash, request).await,
@@ -353,7 +353,7 @@ impl Blobs {
     pub async fn get_missing(
         &self,
         data: impl Into<HashAndFormat>,
-    ) -> anyhow::Result<RangeSpecSeq> {
+    ) -> super::FallibleRequestResult<RangeSpecSeq> {
         let data = data.into();
         Ok(match data.format {
             BlobFormat::Raw => self.get_missing_blob(data.hash).await?,
@@ -365,7 +365,7 @@ impl Blobs {
         &self,
         hash: Hash,
         ranges: &RangeSpec,
-    ) -> anyhow::Result<RangeSpecSeq> {
+    ) -> super::FallibleRequestResult<RangeSpecSeq> {
         let local_ranges = self.observe(hash).await?.ranges;
         let required_ranges = ranges.to_chunk_ranges() - local_ranges;
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
@@ -375,7 +375,7 @@ impl Blobs {
         &self,
         root: Hash,
         request: RangeSpecSeq,
-    ) -> anyhow::Result<RangeSpecSeq> {
+    ) -> super::FallibleRequestResult<RangeSpecSeq> {
         let root_bitfield = self.observe(root).await?;
         let mut hash_seq = LazyHashSeq::new(self.clone(), root);
         // let mut hashes = HashMap::new();
@@ -410,13 +410,13 @@ impl Blobs {
         Ok(RangeSpecSeq::from_ranges_infinite(ranges))
     }
 
-    async fn get_missing_blob(&self, hash: Hash) -> super::Result<RangeSpecSeq> {
+    async fn get_missing_blob(&self, hash: Hash) -> super::FallibleRequestResult<RangeSpecSeq> {
         let local_ranges = self.observe(hash).await?.ranges;
         let required_ranges = ChunkRanges::all() - local_ranges;
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
     }
 
-    async fn get_missing_hash_seq(&self, root: Hash) -> anyhow::Result<RangeSpecSeq> {
+    async fn get_missing_hash_seq(&self, root: Hash) -> super::FallibleRequestResult<RangeSpecSeq> {
         let local_bitfield = self.observe(root).await?;
         let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
         let mut stream = self.export_bao(root, local_bitfield.ranges).stream();
@@ -427,7 +427,7 @@ impl Blobs {
         while let Some(item) = stream.next().await {
             if let EncodedItem::Leaf(data) = item {
                 let offset = data.offset / 32 + 1;
-                let hs = HashSeq::try_from(data.data)?;
+                let hs = HashSeq::try_from(data.data).map_err(super::Error::other)?;
                 for (i, hash) in hs.into_iter().enumerate() {
                     let missing = if hashes.insert(hash) {
                         let local_bitmap = self.observe(hash).await?;
@@ -494,12 +494,13 @@ impl Blobs {
                     let (tx, rx) = r.write(options).await?;
                     let mut tx: spsc::Sender<_> = tx.into();
                     while let Some(item) = data.recv().await? {
-                        tx.send(item).await.map_err(super::Error::other)?;
+                        tx.send(item).await?;
                     }
                     rx.into()
                 }
             };
-            rx.await?
+            rx.await??;
+            Ok(())
         })
     }
 
@@ -509,14 +510,14 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         mut reader: R,
-    ) -> super::Result<R> {
+    ) -> super::FallibleRequestResult<R> {
         let (mut tx, rx) = spsc::channel(32);
-        let size = u64::from_le_bytes(reader.read::<8>().await?);
+        let size = u64::from_le_bytes(reader.read::<8>().await.map_err(super::Error::other)?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash == Hash::EMPTY {
                 Ok(reader)
             } else {
-                Err(super::Error::other("invalid size for hash"))
+                Err(super::Error::other("invalid size for hash").into())
             };
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
@@ -563,7 +564,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         stream: &mut quinn::RecvStream,
-    ) -> super::Result<()> {
+    ) -> super::FallibleRequestResult<()> {
         let reader = TokioStreamReader::new(stream);
         self.import_bao_reader(hash, ranges, reader).await?;
         Ok(())
@@ -574,7 +575,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         data: Bytes,
-    ) -> super::Result<()> {
+    ) -> super::FallibleRequestResult<()> {
         self.import_bao_reader(hash, ranges, data).await?;
         Ok(())
     }
@@ -963,11 +964,11 @@ impl ExportPathResult {
 /// This future will resolve once the import is complete, but *must* be polled even before!
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ImportBaoResult {
-    inner: n0_future::future::Boxed<super::Result<()>>,
+    inner: n0_future::future::Boxed<super::FallibleRequestResult<()>>,
 }
 
 impl ImportBaoResult {
-    fn new(fut: impl Future<Output = super::Result<()>> + Send + 'static) -> Self {
+    fn new(fut: impl Future<Output = super::FallibleRequestResult<()>> + Send + 'static) -> Self {
         Self {
             inner: Box::pin(fut),
         }
@@ -975,7 +976,7 @@ impl ImportBaoResult {
 }
 
 impl IntoFuture for ImportBaoResult {
-    type Output = super::Result<()>;
+    type Output = super::FallibleRequestResult<()>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
@@ -1056,7 +1057,7 @@ impl ExportBaoResult {
         })
     }
 
-    pub async fn bao_to_vec(self) -> super::Result<Vec<u8>> {
+    pub async fn bao_to_vec(self) -> super::FallibleRequestResult<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {

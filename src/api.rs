@@ -48,6 +48,12 @@ impl From<quic_rpc::rpc::WriteError> for FallibleRequestError {
     }
 }
 
+impl From<io::Error> for FallibleRequestError {
+    fn from(e: io::Error) -> Self {
+        Self::Inner(e.into())
+    }
+}
+
 pub type FallibleRequestResult<T> = std::result::Result<T, FallibleRequestError>;
 
 #[derive(Debug, thiserror::Error)]
