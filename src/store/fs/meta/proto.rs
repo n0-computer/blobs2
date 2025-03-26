@@ -3,12 +3,11 @@ use std::fmt;
 
 use bytes::Bytes;
 use nested_enum_utils::enum_conversions;
-use redb::{AccessGuard, StorageError};
 use tracing::Span;
 
 use super::{ActorResult, ReadOnlyTables};
 use crate::{
-    api::proto::{DeleteBlobsMsg, ProcessExit, ShutdownMsg, SyncDbMsg},
+    api::{blobs::ProcessExit, proto::{ClearProtectedMsg, DeleteBlobsMsg, BlobStatusMsg, ShutdownMsg, SyncDbMsg}},
     store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
     Hash,
@@ -34,7 +33,7 @@ impl fmt::Debug for Get {
 
 #[derive(Debug)]
 pub struct GetResult {
-    pub state: anyhow::Result<Option<EntryState<Bytes>>>,
+    pub state: ActorResult<Option<EntryState<Bytes>>>,
 }
 
 /// Get the entry state for a hash.
@@ -104,6 +103,8 @@ pub enum ReadOnlyCommand {
     Get(Get),
     Dump(Dump),
     ListTags(ListTagsMsg),
+    ClearProtected(ClearProtectedMsg),
+    GetBlobStatus(BlobStatusMsg),
 }
 
 impl ReadOnlyCommand {
@@ -118,6 +119,8 @@ impl ReadOnlyCommand {
             Self::Get(x) => Some(&x.span),
             Self::Dump(x) => Some(&x.span),
             Self::ListTags(x) => x.parent_span_opt(),
+            Self::ClearProtected(x) => x.parent_span_opt(),
+            Self::GetBlobStatus(x) => x.parent_span_opt(),
         }
     }
 }
@@ -127,7 +130,7 @@ impl ReadOnlyCommand {
 pub enum ReadWriteCommand {
     Update(Update),
     Set(Set),
-    Delete(DeleteBlobsMsg),
+    DeleteBlobw(DeleteBlobsMsg),
     SetTag(SetTagMsg),
     DeleteTags(DeleteTagsMsg),
     RenameTag(RenameTagMsg),
@@ -146,7 +149,7 @@ impl ReadWriteCommand {
         match self {
             Self::Update(x) => Some(&x.span),
             Self::Set(x) => Some(&x.span),
-            Self::Delete(x) => Some(&x.span),
+            Self::DeleteBlobw(x) => Some(&x.span),
             Self::SetTag(x) => x.parent_span_opt(),
             Self::DeleteTags(x) => x.parent_span_opt(),
             Self::RenameTag(x) => x.parent_span_opt(),

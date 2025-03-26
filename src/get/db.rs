@@ -1,4 +1,4 @@
-use std::{future::Future, num::NonZeroU64, pin::Pin};
+use std::{future::Future, num::NonZeroU64};
 
 use bao_tree::{io::Leaf, ChunkRanges};
 use iroh::{endpoint::Connection, Endpoint, NodeAddr};

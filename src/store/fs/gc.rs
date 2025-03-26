@@ -96,6 +96,7 @@ async fn gc_sweep_task(
     if !batch.is_empty() {
         store.blobs().delete(batch).await?;
     }
+    store.sync_db().await?;
     co.yield_(GcSweepEvent::CustomDebug(format!(
         "deleted {} blobs",
         count
@@ -126,12 +127,15 @@ fn gc_sweep<'a>(
     })
 }
 
+#[derive(Debug, Clone)]
 pub struct GcConfig {
     pub interval: std::time::Duration,
 }
 
 pub async fn gc_run_once(store: &Store, live: &mut HashSet<Hash>) -> crate::api::Result<()> {
     {
+        live.clear();
+        store.clear_protected().await?;
         let mut stream = gc_mark(&store, live);
         while let Some(ev) = stream.next().await {
             match ev {
@@ -173,7 +177,6 @@ pub async fn run_gc(store: Store, config: GcConfig) {
     let mut live = HashSet::new();
     loop {
         tokio::time::sleep(config.interval).await;
-        live.clear();
         if let Err(_) = gc_run_once(&store, &mut live).await {
             break;
         }
@@ -182,37 +185,125 @@ pub async fn run_gc(store: Store, config: GcConfig) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
-    use testresult::TestResult;
-    use crate::{api::{blobs::ImportBytes, Scope, Store}, hashseq::HashSeq, BlobFormat};
 
-    async fn gc_smoke(path: &Path, store: &Store) -> TestResult<()> {
+    use bao_tree::ChunkNum;
+    use testresult::TestResult;
+
+    use super::*;
+    use crate::{
+        api::{blobs::ImportBytesRequest, Scope, Store},
+        hashseq::HashSeq,
+        store::fs::{options::PathOptions, tests::create_n0_bao},
+        BlobFormat,
+    };
+
+    async fn gc_smoke(_path: &Path, store: &Store) -> TestResult<()> {
         let blobs = store.blobs();
-        let a = blobs.import_slice("a").hash().await?;
-        let b = blobs.import_slice("b").hash().await?;
-        let c = blobs.import_slice("c").hash().await?;
-        let d = blobs.import_slice("d").hash().await?;
-        let e = blobs.import_slice("e").hash().await?;
-        let f = blobs.import_slice("f").hash().await?;
-        let g = blobs.import_slice("g").hash().await?;
-        store.tags().set("c", c.hash_and_format()).await?;
-        let hs = [d.hash(), e.hash()].into_iter().collect::<HashSeq>();
-        let hs = blobs.import_bytes_with_opts(ImportBytes {
-            data: hs.into(),
-            format: BlobFormat::HashSeq,
-            scope: Scope::GLOBAL,
-        }).hash().await?;
-        drop(b);
-        drop(d);
-        drop(e);
-        drop(f);
-        drop(g);
+        let at = blobs.add_slice("a").temp_tag().await?;
+        let bt = blobs.add_slice("b").temp_tag().await?;
+        let ct = blobs.add_slice("c").temp_tag().await?;
+        let dt = blobs.add_slice("d").temp_tag().await?;
+        let et = blobs.add_slice("e").temp_tag().await?;
+        let ft = blobs.add_slice("f").temp_tag().await?;
+        let gt = blobs.add_slice("g").temp_tag().await?;
+        let a = *at.hash();
+        let b = *bt.hash();
+        let c = *ct.hash();
+        let d = *dt.hash();
+        let e = *et.hash();
+        let f = *ft.hash();
+        let g = *gt.hash();
+        store.tags().set("c", ct.hash_and_format()).await?;
+        let dehs = [d, e].into_iter().collect::<HashSeq>();
+        let hehs = blobs
+            .add_bytes_with_opts(ImportBytesRequest {
+                data: dehs.into(),
+                format: BlobFormat::HashSeq,
+                scope: Scope::GLOBAL,
+            })
+            .temp_tag()
+            .await?;
+        let fghs = [f, g].into_iter().collect::<HashSeq>();
+        let fghs = blobs
+            .add_bytes_with_opts(ImportBytesRequest {
+                data: fghs.into(),
+                format: BlobFormat::HashSeq,
+                scope: Scope::GLOBAL,
+            })
+            .temp_tag()
+            .await?;
+        store.tags().set("fg", fghs.hash_and_format()).await?;
+        drop(fghs);
+        drop(bt);
         let mut live = HashSet::new();
         gc_run_once(store, &mut live).await?;
-        drop(a);
-        drop(c);
-        drop(hs);
+        // a is protected because we keep the temp tag
+        assert!(live.contains(&a));
+        assert!(store.has(a).await?);
+        // b is not protected because we drop the temp tag
+        assert!(!live.contains(&b));
+        assert!(!store.has(b).await?);
+        // c is protected because we set an explicit tag
+        assert!(live.contains(&c));
+        assert!(store.has(c).await?);
+        // d and e are protected because they are part of a hashseq protected by a temp tag
+        assert!(live.contains(&d));
+        assert!(store.has(d).await?);
+        assert!(live.contains(&e));
+        assert!(store.has(e).await?);
+        // f and g are protected because they are part of a hashseq protected by a tag
+        assert!(live.contains(&f));
+        assert!(store.has(f).await?);
+        assert!(live.contains(&g));
+        assert!(store.has(g).await?);
+        drop(at);
+        drop(hehs);
+        Ok(())
+    }
+
+    async fn gc_file_delete(path: &Path, store: &Store) -> TestResult<()> {
+        let mut live = HashSet::new();
+        let options = PathOptions::new(&path.join("db"));
+        // create a large complete file and check that the data and outboard files are deleted by gc
+        {
+            let a = store
+                .blobs()
+                .add_slice(vec![0u8; 8000000])
+                .temp_tag()
+                .await?;
+            let ah = a.hash();
+            let data_path = options.data_path(ah);
+            let outboard_path = options.outboard_path(ah);
+            assert!(data_path.exists());
+            assert!(outboard_path.exists());
+            assert!(store.has(*ah).await?);
+            drop(a);
+            gc_run_once(store, &mut live).await?;
+            assert!(!data_path.exists());
+            assert!(!outboard_path.exists());
+        }
+        // create a large partial file and check that the data and outboard file as well as
+        // the sizes and bitfield files are deleted by gc
+        {
+            let data = vec![1u8; 8000000];
+            let ranges = ChunkRanges::from(..ChunkNum(19));
+            let (bh, b_bao) = create_n0_bao(&data, &ranges)?;
+            store.import_bao_bytes(bh, ranges, b_bao.into()).await?;
+            let data_path = options.data_path(&bh);
+            let outboard_path = options.outboard_path(&bh);
+            let sizes_path = options.sizes_path(&bh);
+            let bitfield_path = options.bitfield_path(&bh);
+            assert!(data_path.exists());
+            assert!(outboard_path.exists());
+            assert!(sizes_path.exists());
+            assert!(bitfield_path.exists());
+            gc_run_once(store, &mut live).await?;
+            assert!(!data_path.exists());
+            assert!(!outboard_path.exists());
+            assert!(!sizes_path.exists());
+            assert!(!bitfield_path.exists());
+        }
         Ok(())
     }
 
@@ -223,7 +314,7 @@ mod tests {
         let db_path = testdir.path().join("db");
         let store = crate::store::fs::FsStore::load(&db_path).await?;
         gc_smoke(testdir.path(), &store).await?;
+        gc_file_delete(testdir.path(), &store).await?;
         Ok(())
     }
-
 }

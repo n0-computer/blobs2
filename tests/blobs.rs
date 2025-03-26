@@ -13,7 +13,6 @@ use blobs2::{
 };
 use n0_future::StreamExt;
 use testresult::TestResult;
-use tracing::info;
 
 /// Interesting sizes for testing.
 pub const INTERESTING_SIZES: [usize; 8] = [
@@ -32,7 +31,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
     {
         let expected = b"hello".to_vec();
         let expected_hash = Hash::new(&expected);
-        let tt = blobs.import_bytes(expected.clone()).hash().await?;
+        let tt = blobs.add_bytes(expected.clone()).temp_tag().await?;
         let hash = *tt.hash();
         assert_eq!(hash, expected_hash);
         let actual = blobs.export_bytes(hash).await?;
@@ -44,13 +43,13 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let expected = b"somestuffinafile".to_vec();
         let temp1 = path.join("test1");
         std::fs::write(&temp1, &expected)?;
-        let tt = blobs.import_path(temp1).hash().await?;
+        let tt = blobs.add_path(temp1).temp_tag().await?;
         let hash = *tt.hash();
         let expected_hash = Hash::new(&expected);
         assert_eq!(hash, expected_hash);
 
         let temp2 = path.join("test2");
-        blobs.export_path(hash, &temp2).finish().await?;
+        blobs.export(hash, &temp2).finish().await?;
         let actual = std::fs::read(&temp2)?;
         assert_eq!(actual, expected);
     }
@@ -60,7 +59,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let expected = vec![0u8; 1024 * 1024];
         let temp1 = path.join("test3");
         std::fs::write(&temp1, &expected)?;
-        let mut stream = blobs.import_path(temp1).stream().await?;
+        let mut stream = blobs.add_path(temp1).stream().await?;
         let mut res = None;
         while let Some(item) = stream.next().await {
             if let ImportProgress::Done { tt } = item {

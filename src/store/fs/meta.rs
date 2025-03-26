@@ -1,6 +1,7 @@
 //! The metadata database
 #![allow(clippy::result_large_err)]
 use std::{
+    collections::HashSet,
     io,
     ops::{Bound, Deref, DerefMut},
     path::PathBuf,
@@ -10,14 +11,14 @@ use std::{
 use bao_tree::BaoTree;
 use bytes::Bytes;
 use quic_rpc::channel::spsc;
-use redb::{Database, DatabaseError, ReadTransaction, ReadableTable};
+use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{
     api::{
         self,
-        blobs::{DeleteBlobs, ListBlobs},
-        proto::{DeleteBlobsMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg},
-        tags::{self, CreateTag, Delete, ListTags, SetTag, TagInfo},
+        blobs::{BlobStatus, DeleteRequest, BlobStatusRequest, ListRequest},
+        proto::{ClearProtectedMsg, DeleteBlobsMsg, BlobStatusMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg},
+        tags::{self, CreateTagRequest, Delete, ListTags, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
 };
@@ -53,18 +54,13 @@ pub enum ActorError {
     Commit(#[from] redb::CommitError),
     #[error("storage error: {0}")]
     Storage(#[from] redb::StorageError),
-    #[error("io error: {0}")]
-    Io(#[from] io::Error),
     #[error("inconsistent database state: {0}")]
     Inconsistent(String),
-    #[error("error during database migration: {0}")]
-    Migration(#[source] anyhow::Error),
 }
 
 impl From<ActorError> for io::Error {
     fn from(e: ActorError) -> Self {
         match e {
-            ActorError::Io(e) => e,
             e => io::Error::other(e),
         }
     }
@@ -96,7 +92,7 @@ impl Db {
             )
             .await?;
         let res = rx.await?;
-        res.state
+        Ok(res.state?)
     }
 
     /// Send a command. This exists so the main actor can directly forward commands.
@@ -112,68 +108,108 @@ impl Db {
     }
 }
 
-impl Get {
-    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
-        trace!("{self:?}");
-        let Get { hash, tx, .. } = self;
-        let Some(entry) = tables.blobs().get(hash)? else {
-            tx.send(GetResult { state: Ok(None) });
-            return Ok(());
-        };
-        let entry = entry.value();
-        let entry = match entry {
+fn handle_get(cmd: Get, tables: &impl ReadableTables) -> ActorResult<()> {
+    trace!("{cmd:?}");
+    let Get { hash, tx, .. } = cmd;
+    let Some(entry) = tables.blobs().get(hash)? else {
+        tx.send(GetResult { state: Ok(None) });
+        return Ok(());
+    };
+    let entry = entry.value();
+    let entry = match entry {
+        EntryState::Complete {
+            data_location,
+            outboard_location,
+        } => {
+            let data_location = load_data(tables, data_location, &hash)?;
+            let outboard_location = load_outboard(tables, outboard_location, &hash)?;
             EntryState::Complete {
                 data_location,
                 outboard_location,
-            } => {
-                let data_location = load_data(tables, data_location, &hash)?;
-                let outboard_location = load_outboard(tables, outboard_location, &hash)?;
-                EntryState::Complete {
-                    data_location,
-                    outboard_location,
-                }
             }
-            EntryState::Partial { size } => EntryState::Partial { size },
-        };
-        tx.send(GetResult {
-            state: Ok(Some(entry)),
-        });
-        Ok(())
-    }
+        }
+        EntryState::Partial { size } => EntryState::Partial { size },
+    };
+    tx.send(GetResult {
+        state: Ok(Some(entry)),
+    });
+    Ok(())
 }
 
-impl Dump {
-    fn handle(self, tables: &impl ReadableTables) -> ActorResult<()> {
-        trace!("{self:?}");
-        let cmd = self;
-        trace!("dumping database");
-        for e in tables.blobs().iter()? {
-            let (k, v) = e?;
-            let k = k.value();
-            let v = v.value();
-            println!("blobs: {} -> {:?}", k.to_hex(), v);
-        }
-        for e in tables.tags().iter()? {
-            let (k, v) = e?;
-            let k = k.value();
-            let v = v.value();
-            println!("tags: {} -> {:?}", k, v);
-        }
-        for e in tables.inline_data().iter()? {
-            let (k, v) = e?;
-            let k = k.value();
-            let v = v.value();
-            println!("inline_data: {} -> {:?}", k.to_hex(), v.len());
-        }
-        for e in tables.inline_outboard().iter()? {
-            let (k, v) = e?;
-            let k = k.value();
-            let v = v.value();
-            println!("inline_outboard: {} -> {:?}", k.to_hex(), v.len());
-        }
-        cmd.tx.send(Ok(()));
-        Ok(())
+fn handle_dump(cmd: Dump, tables: &impl ReadableTables) -> ActorResult<()> {
+    trace!("{cmd:?}");
+    trace!("dumping database");
+    for e in tables.blobs().iter()? {
+        let (k, v) = e?;
+        let k = k.value();
+        let v = v.value();
+        println!("blobs: {} -> {:?}", k.to_hex(), v);
     }
+    for e in tables.tags().iter()? {
+        let (k, v) = e?;
+        let k = k.value();
+        let v = v.value();
+        println!("tags: {} -> {:?}", k, v);
+    }
+    for e in tables.inline_data().iter()? {
+        let (k, v) = e?;
+        let k = k.value();
+        let v = v.value();
+        println!("inline_data: {} -> {:?}", k.to_hex(), v.len());
+    }
+    for e in tables.inline_outboard().iter()? {
+        let (k, v) = e?;
+        let k = k.value();
+        let v = v.value();
+        println!("inline_outboard: {} -> {:?}", k.to_hex(), v.len());
+    }
+    cmd.tx.send(Ok(()));
+    Ok(())
+}
+
+async fn handle_clear_protected(
+    cmd: ClearProtectedMsg,
+    protected: &mut HashSet<Hash>,
+) -> ActorResult<()> {
+    trace!("{cmd:?}");
+    protected.clear();
+    cmd.tx.send(Ok(())).await.ok();
+    Ok(())
+}
+
+async fn handle_get_blob_status(msg: BlobStatusMsg, tables: &impl ReadableTables) -> ActorResult<()> {
+    trace!("{msg:?}");
+    let BlobStatusMsg {
+        inner: BlobStatusRequest { hash },
+        tx,
+        ..
+    } = msg;
+    let res = match tables.blobs().get(hash)? {
+        Some(entry) => {
+            match entry.value() {
+                EntryState::Complete {
+                    data_location,
+                    ..
+                } => match data_location {
+                    DataLocation::Inline(_) => {
+                        let Some(data) = tables.inline_data().get(hash)? else {
+                            return Err(ActorError::Inconsistent(format!(
+                                "inconsistent database state: {} not found",
+                                hash.to_hex()
+                            )));
+                        };
+                        BlobStatus::Complete { size: data.value().len() as u64 }
+                    },
+                    DataLocation::Owned(size) => BlobStatus::Complete { size },
+                    DataLocation::External(_, size) => BlobStatus::Complete { size },
+                }
+                EntryState::Partial { size } => BlobStatus::Partial { size },
+            }
+        }
+        None => BlobStatus::NotFound,
+    };
+    tx.send(res).await.ok();
+    Ok(())
 }
 
 async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> ActorResult<()> {
@@ -214,93 +250,95 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
     Ok(())
 }
 
-impl Update {
-    fn handle(self, tables: &mut Tables) -> ActorResult<()> {
-        trace!("{self:?}");
-        let Update {
-            hash, state, tx, ..
-        } = self;
-        trace!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
-        let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
-        let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
-            EntryState::Complete {
-                data_location,
-                outboard_location,
-            } => {
-                let (data_location, data) = data_location.split_inline_data();
-                let (outboard_location, outboard) = outboard_location.split_inline_data();
-                (
-                    EntryState::Complete {
-                        data_location,
-                        outboard_location,
-                    },
-                    data,
-                    outboard,
-                )
+fn handle_update(
+    cmd: Update,
+    protected: &mut HashSet<Hash>,
+    tables: &mut Tables,
+) -> ActorResult<()> {
+    trace!("{cmd:?}");
+    let Update {
+        hash, state, tx, ..
+    } = cmd;
+    protected.insert(hash);
+    trace!("updating hash {} to {}", hash.to_hex(), state.fmt_short());
+    let old_entry_opt = tables.blobs.get(hash)?.map(|e| e.value());
+    let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
+        EntryState::Complete {
+            data_location,
+            outboard_location,
+        } => {
+            let (data_location, data) = data_location.split_inline_data();
+            let (outboard_location, outboard) = outboard_location.split_inline_data();
+            (
+                EntryState::Complete {
+                    data_location,
+                    outboard_location,
+                },
+                data,
+                outboard,
+            )
+        }
+        EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
+    };
+    let state = match old_entry_opt {
+        Some(old) => {
+            let partial_to_complete = old.is_partial() && state.is_complete();
+            let res = EntryState::union(old, state)?;
+            if partial_to_complete {
+                tables
+                    .ftx
+                    .delete(hash, [BaoFilePart::Sizes, BaoFilePart::Bitfield]);
             }
-            EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
-        };
-        let state = match old_entry_opt {
-            Some(old) => {
-                let partial_to_complete = old.is_partial() && state.is_complete();
-                let res = EntryState::union(old, state)?;
-                if partial_to_complete {
-                    tables
-                        .ftx
-                        .delete(hash, [BaoFilePart::Sizes, BaoFilePart::Bitfield]);
-                }
-                res
-            }
-            None => state,
-        };
-        tables.blobs.insert(hash, state)?;
-        if let Some(data) = data {
-            tables.inline_data.insert(hash, data.as_ref())?;
+            res
         }
-        if let Some(outboard) = outboard {
-            tables.inline_outboard.insert(hash, outboard.as_ref())?;
-        }
-        if let Some(tx) = tx {
-            tx.send(Ok(()));
-        }
-        Ok(())
+        None => state,
+    };
+    tables.blobs.insert(hash, state)?;
+    if let Some(data) = data {
+        tables.inline_data.insert(hash, data.as_ref())?;
     }
+    if let Some(outboard) = outboard {
+        tables.inline_outboard.insert(hash, outboard.as_ref())?;
+    }
+    if let Some(tx) = tx {
+        tx.send(Ok(()));
+    }
+    Ok(())
 }
 
-impl Set {
-    fn handle(self, tables: &mut Tables) -> ActorResult<()> {
-        trace!("{self:?}");
-        let Set {
-            state, hash, tx, ..
-        } = self;
-        let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
-            EntryState::Complete {
-                data_location,
-                outboard_location,
-            } => {
-                let (data_location, data) = data_location.split_inline_data();
-                let (outboard_location, outboard) = outboard_location.split_inline_data();
-                (
-                    EntryState::Complete {
-                        data_location,
-                        outboard_location,
-                    },
-                    data,
-                    outboard,
-                )
-            }
-            EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
-        };
-        tables.blobs.insert(hash, state)?;
-        if let Some(data) = data {
-            tables.inline_data.insert(hash, data.as_ref())?;
+fn handle_set(cmd: Set, protected: &mut HashSet<Hash>, tables: &mut Tables) -> ActorResult<()> {
+    trace!("{cmd:?}");
+    let Set {
+        state, hash, tx, ..
+    } = cmd;
+    protected.insert(hash);
+    let (state, data, outboard): (_, Option<Bytes>, Option<Bytes>) = match state {
+        EntryState::Complete {
+            data_location,
+            outboard_location,
+        } => {
+            let (data_location, data) = data_location.split_inline_data();
+            let (outboard_location, outboard) = outboard_location.split_inline_data();
+            (
+                EntryState::Complete {
+                    data_location,
+                    outboard_location,
+                },
+                data,
+                outboard,
+            )
         }
-        if let Some(outboard) = outboard {
-            tables.inline_outboard.insert(hash, outboard.as_ref())?;
-        }
-        tx.send(Ok(()));
-        Ok(())
+        EntryState::Partial { size } => (EntryState::Partial { size }, None, None),
+    };
+    tables.blobs.insert(hash, state)?;
+    if let Some(data) = data {
+        tables.inline_data.insert(hash, data.as_ref())?;
     }
+    if let Some(outboard) = outboard {
+        tables.inline_outboard.insert(hash, outboard.as_ref())?;
+    }
+    tx.send(Ok(()));
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -326,6 +364,7 @@ pub struct Actor {
     cmds: PeekableReceiver<Command>,
     ds: DeleteHandle,
     options: BatchOptions,
+    protected: HashSet<Hash>,
 }
 
 impl Actor {
@@ -354,10 +393,12 @@ impl Actor {
             cmds,
             ds,
             options,
+            protected: Default::default(),
         })
     }
 
     async fn handle_readonly(
+        protected: &mut HashSet<Hash>,
         tables: &impl ReadableTables,
         cmd: ReadOnlyCommand,
         op: TxnNum,
@@ -369,18 +410,27 @@ impl Actor {
         );
         let _guard = span.enter();
         match cmd {
-            ReadOnlyCommand::Get(cmd) => cmd.handle(tables),
-            ReadOnlyCommand::Dump(cmd) => cmd.handle(tables),
+            ReadOnlyCommand::Get(cmd) => handle_get(cmd, tables),
+            ReadOnlyCommand::Dump(cmd) => handle_dump(cmd, tables),
             ReadOnlyCommand::ListTags(cmd) => handle_list_tags(cmd, tables).await,
+            ReadOnlyCommand::ClearProtected(cmd) => handle_clear_protected(cmd, protected).await,
+            ReadOnlyCommand::GetBlobStatus(cmd) => handle_get_blob_status(cmd, tables).await,
         }
     }
 
-    async fn delete(tables: &mut Tables<'_>, cmd: DeleteBlobsMsg) -> ActorResult<()> {
+    async fn delete(
+        protected: &mut HashSet<Hash>,
+        tables: &mut Tables<'_>,
+        cmd: DeleteBlobsMsg,
+    ) -> ActorResult<()> {
         let DeleteBlobsMsg {
-            inner: DeleteBlobs { hashes, force },
+            inner: DeleteRequest { hashes, force },
             ..
         } = cmd;
         for hash in hashes {
+            if !force && protected.contains(&hash) {
+                continue;
+            }
             if let Some(entry) = tables.blobs.remove(hash)? {
                 match entry.value() {
                     EntryState::Complete {
@@ -422,6 +472,7 @@ impl Actor {
                 }
             }
         }
+        cmd.tx.send(Ok(())).await.ok();
         Ok(())
     }
 
@@ -442,7 +493,7 @@ impl Actor {
     async fn create_tag(tables: &mut Tables<'_>, cmd: CreateTagMsg) -> ActorResult<()> {
         trace!("{cmd:?}");
         let CreateTagMsg {
-            inner: CreateTag { content: hash },
+            inner: CreateTagRequest { content: hash },
             tx,
             ..
         } = cmd;
@@ -500,6 +551,7 @@ impl Actor {
     }
 
     async fn handle_readwrite(
+        protected: &mut HashSet<Hash>,
         tables: &mut Tables<'_>,
         cmd: ReadWriteCommand,
         op: TxnNum,
@@ -511,9 +563,9 @@ impl Actor {
         );
         let _guard = span.enter();
         match cmd {
-            ReadWriteCommand::Update(cmd) => cmd.handle(tables),
-            ReadWriteCommand::Set(cmd) => cmd.handle(tables),
-            ReadWriteCommand::Delete(cmd) => Self::delete(tables, cmd).await,
+            ReadWriteCommand::Update(cmd) => handle_update(cmd, protected, tables),
+            ReadWriteCommand::Set(cmd) => handle_set(cmd, protected, tables),
+            ReadWriteCommand::DeleteBlobw(cmd) => Self::delete(protected, tables, cmd).await,
             ReadWriteCommand::SetTag(cmd) => Self::set_tag(tables, cmd).await,
             ReadWriteCommand::CreateTag(cmd) => Self::create_tag(tables, cmd).await,
             ReadWriteCommand::DeleteTags(cmd) => Self::delete_tags(tables, cmd).await,
@@ -525,13 +577,18 @@ impl Actor {
     }
 
     async fn handle_non_toplevel(
+        protected: &mut HashSet<Hash>,
         tables: &mut Tables<'_>,
         cmd: NonTopLevelCommand,
         op: TxnNum,
     ) -> ActorResult<()> {
         match cmd {
-            NonTopLevelCommand::ReadOnly(cmd) => Self::handle_readonly(tables, cmd, op).await,
-            NonTopLevelCommand::ReadWrite(cmd) => Self::handle_readwrite(tables, cmd, op).await,
+            NonTopLevelCommand::ReadOnly(cmd) => {
+                Self::handle_readonly(protected, tables, cmd, op).await
+            }
+            NonTopLevelCommand::ReadWrite(cmd) => {
+                Self::handle_readwrite(protected, tables, cmd, op).await
+            }
         }
     }
 
@@ -598,7 +655,7 @@ impl Actor {
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::read_only).await {
-                        Self::handle_readonly(&tables, cmd, op).await?;
+                        Self::handle_readonly(&mut self.protected, &tables, cmd, op).await?;
                         n += 1;
                         if t0.elapsed() > options.max_read_duration {
                             break;
@@ -617,7 +674,8 @@ impl Actor {
                     let t0 = Instant::now();
                     let mut n = 0;
                     while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
-                        Self::handle_non_toplevel(&mut tables, cmd, op).await?;
+                        Self::handle_non_toplevel(&mut self.protected, &mut tables, cmd, op)
+                            .await?;
                         n += 1;
                         if t0.elapsed() > options.max_write_duration {
                             break;
@@ -730,7 +788,7 @@ pub async fn list_blobs(snapshot: ReadOnlyTables, cmd: ListBlobsMsg) {
 
 async fn list_blobs_impl(
     snapshot: ReadOnlyTables,
-    _cmd: ListBlobs,
+    _cmd: ListRequest,
     tx: &mut spsc::Sender<api::Result<Hash>>,
 ) -> api::Result<()> {
     for item in snapshot.blobs.iter().map_err(api::Error::other)? {

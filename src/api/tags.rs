@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use super::{ApiSender, Tags};
-use crate::{store::util::Tag, util::temp_tag::TempTag, BlobFormat, Hash, HashAndFormat};
+use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
 
 /// Information about a tag.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,7 +205,7 @@ pub struct SetTag {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CreateTag {
+pub struct CreateTagRequest {
     pub content: HashAndFormat,
 }
 

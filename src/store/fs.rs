@@ -64,6 +64,7 @@ use bao_tree::{
 use bytes::Bytes;
 use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
+use gc::run_gc;
 use import::{ImportEntry, ImportSource};
 use meta::{list_blobs, Snapshot};
 use n0_future::{future::yield_now, io};
@@ -74,9 +75,9 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        blobs::{is_validated, ExportBao, ExportPath, ImportBao},
+        blobs::{is_validated, BatchRequest, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
         proto::{
-            self, Command, ExportBaoMsg, ExportPathMsg, HashSpecific, ImportBaoMsg, ObserveMsg,
+            self, BatchMsg, Command, ExportBaoMsg, ExportPathMsg, HashSpecific, ImportBaoMsg, ObserveMsg
         },
         ApiSender, Scope,
     },
@@ -86,7 +87,7 @@ use crate::{
     },
     util::{
         channel::{mpsc, oneshot},
-        temp_tag::{TagCounter, TempTag, TempTagScope},
+        temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
     },
 };
 mod bao_file;
@@ -105,7 +106,7 @@ mod gc;
 
 use super::{
     util::{observer::Observer, QuicRpcSenderProgressExt},
-    BlobFormat, HashAndFormat,
+    HashAndFormat,
 };
 use crate::api::{
     self,
@@ -132,12 +133,19 @@ fn temp_name() -> String {
 pub enum InternalCommand {
     Dump(meta::Dump),
     FinishImport(ImportEntryMsg),
+    ClearScope(ClearScope),
+}
+
+#[derive(Debug)]
+pub struct ClearScope {
+    pub scope: Scope,
 }
 
 impl InternalCommand {
     pub fn parent_span(&self) -> tracing::Span {
         match self {
             Self::Dump(_) => tracing::Span::current(),
+            Self::ClearScope(_) => tracing::Span::current(),
             Self::FinishImport(cmd) => cmd
                 .parent_span_opt()
                 .cloned()
@@ -161,6 +169,15 @@ struct TaskContext {
     pub protect: ProtectHandle,
 }
 
+impl TaskContext {
+    pub async fn clear_scope(&self, scope: Scope) {
+        self.internal_cmd_tx
+            .send(ClearScope { scope }.into())
+            .await
+            .ok();
+    }
+}
+
 #[derive(Debug)]
 struct Actor {
     // Context that can be cheaply shared with tasks.
@@ -174,7 +191,7 @@ struct Actor {
     // handles
     handles: HashMap<Hash, Slot>,
     // temp tags
-    temp_tags: HashMap<Scope, Arc<TempTagScope>>,
+    temp_tags: TempTags,
     // our private tokio runtime. It has to live somewhere.
     _rt: RtWrapper,
 }
@@ -205,8 +222,7 @@ impl HashContext {
     }
 
     /// Update the entry state in the database, and wait for completion.
-    pub async fn update(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> io::Result<()> {
-        let hash = hash.into();
+    pub async fn update(&self, hash: Hash, state: EntryState<Bytes>) -> io::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.db()
             .send(
@@ -224,8 +240,7 @@ impl HashContext {
     }
 
     /// Update the entry state in the database, and wait for completion.
-    pub async fn set(&self, hash: impl Into<Hash>, state: EntryState<Bytes>) -> io::Result<()> {
-        let hash = hash.into();
+    pub async fn set(&self, hash: Hash, state: EntryState<Bytes>) -> io::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.db()
             .send(
@@ -243,8 +258,7 @@ impl HashContext {
         Ok(())
     }
 
-    pub async fn get_or_create(&self, hash: impl Into<Hash>) -> api::Result<BaoFileHandle> {
-        let hash = hash.into();
+    pub async fn get_or_create(&self, hash: Hash) -> api::Result<BaoFileHandle> {
         if hash == Hash::EMPTY {
             return Ok(self.ctx.empty.clone());
         }
@@ -319,6 +333,11 @@ impl Slot {
         slot.as_ref().and_then(|weak| weak.upgrade())
     }
 
+    pub async fn is_live(&self) -> bool {
+        let slot = self.0.lock().await;
+        slot.as_ref().map(|weak| weak.is_live()).unwrap_or(false)
+    }
+
     /// Get the handle if it exists and is still alive, otherwise load it from the database.
     /// If there is nothing in the database, create a new in-memory handle.
     ///
@@ -356,6 +375,26 @@ impl Actor {
         self.tasks.spawn(fut.instrument(span));
     }
 
+    async fn clear_dead_handles(&mut self) {
+        let mut to_remove = Vec::new();
+        for (hash, slot) in &self.handles {
+            if !slot.is_live().await {
+                to_remove.push(*hash);
+            }
+        }
+        for hash in to_remove {
+            if let Some(slot) = self.handles.remove(&hash) {
+                // do a quick check if the handle has become alive in the meantime, and reinsert it
+                let guard = slot.0.lock().await;
+                let is_live = guard.as_ref().map(|x| x.is_live()).unwrap_or_default();
+                if is_live {
+                    drop(guard);
+                    self.handles.insert(hash, slot);
+                }
+            }
+        }
+    }
+
     async fn handle_command(&mut self, cmd: Command) {
         let span = cmd.parent_span();
         let _entered = span.enter();
@@ -388,6 +427,15 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
+            Command::ClearProtected(cmd) => {
+                trace!("{cmd:?}");
+                self.clear_dead_handles().await;
+                self.db().send(cmd.into()).await.ok();
+            }
+            Command::GetBlobStatus(cmd) => {
+                trace!("{cmd:?}");
+                self.db().send(cmd.into()).await.ok();
+            }
             Command::ListBlobs(cmd) => {
                 trace!("{cmd:?}");
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -409,9 +457,14 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
+            Command::Batch(cmd) => {
+                let (id, scope) = self.temp_tags.create_scope();
+                self.spawn(handle_batch(cmd, id, scope, self.context()));
+            }
             Command::ListTempTags(cmd) => {
                 trace!("{cmd:?}");
-                let tts = self.list_temp_tags();
+                let tts = self.temp_tags.list();
+                cmd.tx.send(tts).await.ok();
             }
             Command::ImportBytes(cmd) => {
                 trace!("{cmd:?}");
@@ -449,8 +502,7 @@ impl Actor {
     }
 
     /// Create a hash context for a given hash.
-    fn hash_context(&mut self, hash: impl Into<Hash>) -> HashContext {
-        let hash = hash.into();
+    fn hash_context(&mut self, hash: Hash) -> HashContext {
         HashContext {
             slot: self.handles.entry(hash).or_default().clone(),
             ctx: self.context.clone(),
@@ -465,6 +517,10 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
+            InternalCommand::ClearScope(cmd) => {
+                trace!("{cmd:?}");
+                self.temp_tags.end_scope(cmd.scope);
+            }
             InternalCommand::FinishImport(mut cmd) => {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
@@ -474,25 +530,19 @@ impl Actor {
                         })
                         .await
                         .ok();
+                } else {
+                    let tt = self.temp_tags.create(
+                        cmd.scope,
+                        HashAndFormat {
+                            hash: cmd.hash,
+                            format: cmd.format,
+                        },
+                    );
+                    let ctx = self.hash_context(cmd.hash);
+                    self.spawn(finish_import(cmd, tt, ctx));
                 }
-                let tt = self.create_temp_tag(cmd.scope, cmd.hash, cmd.format);
-                let ctx = self.hash_context(cmd.hash);
-                self.spawn(finish_import(cmd, tt, ctx));
             }
         }
-    }
-
-    fn create_temp_tag(&mut self, scope: Scope, hash: Hash, format: BlobFormat) -> TempTag {
-        let temp_tags = self.temp_tags.entry(scope).or_default();
-        temp_tags.temp_tag(HashAndFormat { hash, format })
-    }
-
-    fn list_temp_tags(&self) -> Vec<HashAndFormat> {
-        let mut res = Vec::new();
-        for temp_tags in self.temp_tags.values() {
-            res.extend(temp_tags.list());
-        }
-        res
     }
 
     fn log_task_result(&self, res: Result<(), JoinError>) {
@@ -598,6 +648,25 @@ impl Drop for RtWrapper {
             trace!("dropped tokio runtime");
         }
     }
+}
+
+async fn handle_batch(cmd: BatchMsg, id: Scope, scope: Arc<TempTagScope>, ctx: Arc<TaskContext>) {
+    if let Err(cause) = handle_batch_impl(cmd, id, &scope).await {
+        error!("batch failed: {cause}");
+    }
+    ctx.clear_scope(id).await;
+}
+
+async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) -> api::Result<()> {
+    let BatchMsg { tx, mut rx, .. } = cmd;
+    tx.send(id).await.map_err(api::Error::other)?;
+    while let Some(msg) = rx.recv().await? {
+        match msg {
+            BatchResponse::Drop(msg) => scope.on_drop(&msg),
+            BatchResponse::Ping => {}
+        }
+    }
+    Ok(())
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
@@ -726,7 +795,7 @@ async fn finish_import_impl(import_data: ImportEntry, ctx: HashContext) -> io::R
 async fn import_bao(cmd: ImportBaoMsg, ctx: HashContext) {
     trace!("{cmd:?}");
     let ImportBaoMsg {
-        inner: ImportBao { size, hash },
+        inner: ImportBaoRequest { size, hash },
         rx,
         tx,
         ..
@@ -817,11 +886,11 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
 }
 
 async fn export_bao_impl(
-    cmd: ExportBao,
+    cmd: ExportBaoRequest,
     tx: &mut spsc::Sender<EncodedItem>,
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
-    let ExportBao { ranges, hash } = cmd;
+    let ExportBaoRequest { ranges, hash } = cmd;
     trace!(
         "exporting bao: {hash} {ranges:?} size={}",
         handle.current_size()?
@@ -962,6 +1031,7 @@ impl FsStore {
         let handle = rt.handle().clone();
         let (commands_tx, commands_rx) = mpsc::channel(100);
         let (fs_commands_tx, fs_commands_rx) = mpsc::channel(100);
+        let gc_config = options.gc.clone();
         let actor = handle
             .spawn(Actor::new(
                 path.join("blobs.db"),
@@ -973,7 +1043,11 @@ impl FsStore {
             ))
             .await??;
         handle.spawn(actor.run());
-        Ok(FsStore::new(commands_tx.into(), fs_commands_tx))
+        let store = FsStore::new(commands_tx.into(), fs_commands_tx);
+        if let Some(config) = gc_config {
+            handle.spawn(run_gc(store.clone(), config));
+        }
+        Ok(store)
     }
 }
 
@@ -1059,7 +1133,7 @@ pub mod tests {
 
     /// Create n0 flavoured bao. Note that this can be used to request ranges below a chunk group size,
     /// which can not be exported via bao because we don't store hashes below the chunk group level.
-    fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(Hash, Vec<u8>)> {
+    pub fn create_n0_bao(data: &[u8], ranges: &ChunkRanges) -> anyhow::Result<(Hash, Vec<u8>)> {
         let outboard = PreOrderMemOutboard::create(data, IROH_BLOCK_SIZE);
         let mut encoded = Vec::new();
         let size = data.len() as u64;
@@ -1160,7 +1234,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.import_byte_stream(stream).await.hash().await?;
+            let tt = store.add_stream(stream).await.temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1184,7 +1258,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.import_bytes(expected.clone()).hash().await?;
+            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1212,7 +1286,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.import_bytes(expected.clone()).hash().await?;
+            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             let actual = store.export_bytes(expected_hash).await?;
             // check that the data is there
@@ -1245,7 +1319,7 @@ pub mod tests {
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.import_path(&path).hash().await?;
+            let tt = store.add_path(&path).temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1267,10 +1341,10 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let tt = store.import_bytes(expected.clone()).hash().await?;
+            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             let out_path = testdir.path().join(format!("out-{}", size));
-            store.export_path(expected_hash, &out_path).finish().await?;
+            store.export(expected_hash, &out_path).finish().await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
         }
@@ -1592,7 +1666,7 @@ pub mod tests {
             for size in sizes {
                 let data = test_data(size);
                 let data = data;
-                store.import_bytes(data.clone()).hash().await?;
+                store.add_bytes(data.clone()).temp_tag().await?;
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1634,7 +1708,7 @@ pub mod tests {
         for size in sizes {
             let data = vec![0u8; size];
             let data = Bytes::from(data);
-            let tt = store.import_bytes(data.clone()).hash().await?;
+            let tt = store.add_bytes(data.clone()).temp_tag().await?;
             data_by_hash.insert(*tt.hash(), data);
             hashes.push(tt);
         }
@@ -1642,7 +1716,7 @@ pub mod tests {
         for tt in &hashes {
             let hash = *tt.hash();
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export_path(hash, path).finish().await?;
+            store.export(hash, path).finish().await?;
         }
         for tt in &hashes {
             let hash = tt.hash();

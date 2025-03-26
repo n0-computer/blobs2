@@ -35,8 +35,8 @@ use crate::{
     api::{
         self,
         blobs::{
-            Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportBytes, ImportPath,
-            ImportProgress, Observe,
+            Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest, ImportBytesRequest, ImportPath,
+            ImportProgress, ObserveRequest,
         },
         proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
@@ -125,7 +125,7 @@ impl Actor {
     async fn handle_command(&mut self, cmd: Command) -> Option<ShutdownMsg> {
         match cmd {
             Command::ImportBao(ImportBaoMsg {
-                inner: ImportBao { hash, size },
+                inner: ImportBaoRequest { hash, size },
                 rx: data,
                 tx,
                 ..
@@ -135,7 +135,7 @@ impl Actor {
                     .spawn(import_bao_task(entry.clone(), size, data, tx));
             }
             Command::Observe(ObserveMsg {
-                inner: Observe { hash },
+                inner: ObserveRequest { hash },
                 tx,
                 ..
             }) => {
@@ -145,7 +145,7 @@ impl Actor {
                 entry.add_observer(tx);
             }
             Command::ImportBytes(ImportBytesMsg {
-                inner: ImportBytes { data, .. },
+                inner: ImportBytesRequest { data, .. },
                 tx,
                 ..
             }) => {
@@ -159,7 +159,7 @@ impl Actor {
                 self.import_tasks.spawn(import_path(cmd));
             }
             Command::ExportBao(ExportBaoMsg {
-                inner: ExportBao { hash, ranges },
+                inner: ExportBaoRequest { hash, ranges },
                 tx,
                 ..
             }) => {
@@ -263,7 +263,7 @@ impl Actor {
                 tx.send(Ok(())).await.ok();
             }
             Command::CreateTag(CreateTagMsg {
-                inner: tags::CreateTag { content },
+                inner: tags::CreateTagRequest { content },
                 tx,
                 ..
             }) => {
@@ -271,13 +271,22 @@ impl Actor {
                 self.state.tags.insert(tag.clone(), content);
                 tx.send(Ok(tag)).await.ok();
             }
-            Command::ListTempTags(cmd) => {
+            Command::ListTempTags(_cmd) => {
                 todo!()
             }
-            Command::ListBlobs(cmd) => {
+            Command::ListBlobs(_cmd) => {
                 todo!()
             }
-            Command::DeleteBlobs(cmd) => {
+            Command::GetBlobStatus(_cmd) => {
+                todo!()
+            }
+            Command::DeleteBlobs(_cmd) => {
+                todo!()
+            }
+            Command::Batch(_cmd) => {
+                todo!()
+            }
+            Command::ClearProtected(_cmd) => {
                 todo!()
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
@@ -761,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
         let store = Store::memory();
-        let tt = store.import_bytes(vec![0u8; 1024 * 64]).hash().await?;
+        let tt = store.add_bytes(vec![0u8; 1024 * 64]).temp_tag().await?;
         let hash = *tt.hash();
         println!("hash: {:?}", hash);
         let mut stream = store.export_bao(hash, ChunkRanges::all()).stream();

@@ -173,24 +173,38 @@ impl TempCounters {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct TempTags(HashMap<Scope, Arc<TempTagScope>>);
+pub(crate) struct TempTags {
+    scopes: HashMap<Scope, Arc<TempTagScope>>,
+    next_scope: u64,
+}
 
 impl TempTags {
+
+    pub fn create_scope(&mut self) -> (Scope, Arc<TempTagScope>) {
+        let id = Scope(self.next_scope);
+        self.next_scope += 1;
+        let scope = self.scopes.entry(id).or_default();
+        (id, scope.clone())
+    }
+
+    pub fn end_scope(&mut self, scope: Scope) {
+        self.scopes.remove(&scope);
+    }
+
     pub fn list(&self) -> Vec<HashAndFormat> {
-        self.0
-            .values()
-            .flat_map(|scope| scope.list())
-            .collect()
+        self.scopes.values().flat_map(|scope| scope.list()).collect()
     }
 
     pub fn create(&mut self, scope: Scope, content: HashAndFormat) -> TempTag {
-        let scope = self.0.entry(scope).or_default();
+        let scope = self.scopes.entry(scope).or_default();
         let tag = scope.temp_tag(content);
         tag
     }
 
     pub fn contains(&self, hash: Hash) -> bool {
-        self.0.values().any(|scope| scope.0.lock().unwrap().contains(&HashAndFormat::raw(hash)))
+        self.scopes
+            .values()
+            .any(|scope| scope.0.lock().unwrap().contains(&HashAndFormat::raw(hash)))
     }
 }
 

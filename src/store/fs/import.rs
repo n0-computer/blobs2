@@ -35,7 +35,7 @@ use tracing::{instrument, trace};
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     api::{
-        blobs::{ImportByteStream, ImportBytes, ImportMode, ImportPath, ImportProgress},
+        blobs::{ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress},
         proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
         Scope,
     },
@@ -191,7 +191,7 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
 }
 
 async fn import_bytes_tiny_impl(
-    cmd: ImportBytes,
+    cmd: ImportBytesRequest,
     tx: &mut spsc::Sender<ImportProgress>,
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
@@ -593,6 +593,7 @@ mod tests {
             },
             batch: Default::default(),
             path: PathOptions::new(dir.path()),
+            gc: None,
         });
         // test different sizes, below, at, and above the inline threshold
         let sizes = [

@@ -18,11 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     blobs::{
-        self, Bitfield, ExportBao, ExportPath, ExportProgress, ImportBao, ImportByteStream,
-        ImportBytes, ImportPath, ImportProgress, ListBlobs, Observe,
-    },
-    tags::{self, TagInfo},
-    Shutdown, SyncDb,
+        self, BatchResponse, Bitfield, BlobStatus, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest, ImportByteStream, ImportBytesRequest, ImportPath, ImportProgress, ListRequest, ObserveRequest
+    }, tags::{self, TagInfo}, ClearProtected, Scope, ShutdownRequest, SyncDb
 };
 use crate::{store::util::Tag, Hash, HashAndFormat};
 
@@ -34,27 +31,17 @@ pub trait HashSpecific {
     }
 }
 
-pub type ImportBaoMsg = WithChannels<ImportBao, StoreService>;
-
 impl HashSpecific for ImportBaoMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.hash
     }
 }
 
-pub type ShutdownMsg = WithChannels<Shutdown, StoreService>;
-
-pub type ObserveMsg = WithChannels<Observe, StoreService>;
-
 impl HashSpecific for ObserveMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.hash
     }
 }
-
-pub type ImportBytesMsg = WithChannels<ImportBytes, StoreService>;
-
-pub type ExportBaoMsg = WithChannels<ExportBao, StoreService>;
 
 impl HashSpecific for ExportBaoMsg {
     fn hash(&self) -> crate::Hash {
@@ -72,37 +59,30 @@ impl HashSpecific for ExportPathMsg {
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
 
+pub type ImportBaoMsg = WithChannels<ImportBaoRequest, StoreService>;
+pub type ShutdownMsg = WithChannels<ShutdownRequest, StoreService>;
+pub type ObserveMsg = WithChannels<ObserveRequest, StoreService>;
+pub type ImportBytesMsg = WithChannels<ImportBytesRequest, StoreService>;
+pub type ExportBaoMsg = WithChannels<ExportBaoRequest, StoreService>;
 pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
-
 pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
-
 pub type ListTagsMsg = WithChannels<tags::ListTags, StoreService>;
-
 pub type RenameTagMsg = WithChannels<tags::Rename, StoreService>;
-
 pub type DeleteTagsMsg = WithChannels<tags::Delete, StoreService>;
-
-pub type DeleteBlobsMsg = WithChannels<blobs::DeleteBlobs, StoreService>;
-
+pub type DeleteBlobsMsg = WithChannels<blobs::DeleteRequest, StoreService>;
 pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
-
-/// Debug tool to exit the process in the middle of a write transaction, for testing.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessExit {
-    pub code: i32,
-}
-
-pub type CreateTagMsg = WithChannels<tags::CreateTag, StoreService>;
+pub type ClearProtectedMsg = WithChannels<ClearProtected, StoreService>;
+pub type BlobStatusMsg = WithChannels<blobs::BlobStatusRequest, StoreService>;
+pub type BatchMsg = WithChannels<blobs::BatchRequest, StoreService>;
+pub type CreateTagMsg = WithChannels<tags::CreateTagRequest, StoreService>;
+pub type ListBlobsMsg = WithChannels<blobs::ListRequest, StoreService>;
+pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.content.hash
     }
 }
-
-pub type ListBlobsMsg = WithChannels<ListBlobs, StoreService>;
-
-pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
 
 #[derive(Debug, Clone)]
 pub struct StoreService;
@@ -112,17 +92,21 @@ impl quic_rpc::Service for StoreService {}
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     #[rpc(tx = spsc::Sender<super::Result<Hash>>)]
-    ListBlobs(blobs::ListBlobs),
+    ListBlobs(blobs::ListRequest),
+    #[rpc(tx = oneshot::Sender<Scope>, rx = spsc::Receiver<BatchResponse>)]
+    Batch(blobs::BatchRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    DeleteBlobs(blobs::DeleteBlobs),
+    DeleteBlobs(blobs::DeleteRequest),
     #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
-    ImportBao(blobs::ImportBao),
+    ImportBao(blobs::ImportBaoRequest),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
-    ExportBao(blobs::ExportBao),
+    ExportBao(blobs::ExportBaoRequest),
     #[rpc(tx = spsc::Sender<Bitfield>)]
-    Observe(blobs::Observe),
+    Observe(blobs::ObserveRequest),
+    #[rpc(tx = oneshot::Sender<BlobStatus>)]
+    GetBlobStatus(blobs::BlobStatusRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportBytes(blobs::ImportBytes),
+    ImportBytes(blobs::ImportBytesRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
     ImportByteStream(blobs::ImportByteStream),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
@@ -138,33 +122,13 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     RenameTag(tags::Rename),
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
-    CreateTag(tags::CreateTag),
+    CreateTag(tags::CreateTagRequest),
     #[rpc(tx = oneshot::Sender<Vec<HashAndFormat>>)]
     ListTempTags(tags::TempTags),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]
-    Shutdown(Shutdown),
-}
-
-#[allow(dead_code)]
-#[derive(Debug, derive_more::From)]
-pub enum Command2 {
-    ImportBao(ImportBaoMsg),
-    ExportBao(ExportBaoMsg),
-
-    Observe(ObserveMsg),
-    ImportBytes(ImportBytesMsg),
-    ImportByteStream(ImportByteStreamMsg),
-    ImportPath(ImportPathMsg),
-    ExportPath(ExportPathMsg),
-
-    ListTags(ListTagsMsg),
-    RenameTag(RenameTagMsg),
-    DeleteTags(DeleteTagsMsg),
-    SetTag(SetTagMsg),
-    CreateTag(CreateTagMsg),
-
-    SyncDb(SyncDbMsg),
-    Shutdown(ShutdownMsg),
+    Shutdown(ShutdownRequest),
+    #[rpc(tx = oneshot::Sender<super::Result<()>>)]
+    ClearProtected(ClearProtected),
 }

@@ -1,10 +1,3 @@
-use std::io::Cursor;
-
-use bao_tree::{
-    blake3,
-    io::{outboard::PreOrderOutboard, sync::CreateOutboard},
-    BaoTree,
-};
 use iroh::{protocol::Router, Endpoint};
 use n0_future::StreamExt;
 use testresult::TestResult;
@@ -18,8 +11,7 @@ use crate::{
         tests::{test_data, INTERESTING_SIZES},
         FsStore,
     },
-    util::outboard_with_progress::NoProgress,
-    Hash, HashAndFormat, IROH_BLOCK_SIZE,
+    Hash, HashAndFormat,
 };
 
 #[tokio::test]
@@ -32,7 +24,7 @@ async fn two_nodes_blobs() -> TestResult<()> {
     let store2 = FsStore::load(&db2_path).await?;
     let sizes = INTERESTING_SIZES;
     for size in sizes {
-        store1.import_bytes(test_data(size)).hash().await?;
+        store1.add_bytes(test_data(size)).temp_tag().await?;
     }
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
@@ -68,11 +60,11 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let mut hashes = Vec::new();
     for size in sizes {
-        let hash = store1.import_bytes(test_data(size)).hash().await?;
+        let hash = store1.add_bytes(test_data(size)).temp_tag().await?;
         hashes.push(hash);
     }
     let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
-    let root_tt = store1.import_bytes(hash_seq).hash().await?;
+    let root_tt = store1.add_bytes(hash_seq).temp_tag().await?;
     let root = *root_tt.hash();
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
@@ -105,11 +97,11 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let mut hashes = Vec::new();
     // add all the sizes
     for size in sizes {
-        let hash = store.import_bytes(test_data(size)).hash().await?;
+        let hash = store.add_bytes(test_data(size)).temp_tag().await?;
         hashes.push(hash);
     }
     let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
-    let root_tt = store.import_bytes(hash_seq).hash().await?;
+    let root_tt = store.add_bytes(hash_seq).temp_tag().await?;
     let root = *root_tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
@@ -140,7 +132,7 @@ async fn node_serve_blobs() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     // add all the sizes
     for size in sizes {
-        store.import_bytes(test_data(size)).hash().await?;
+        store.add_bytes(test_data(size)).temp_tag().await?;
     }
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
@@ -172,7 +164,10 @@ async fn node_smoke() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
-    let tt = store.import_bytes(b"hello world".to_vec()).hash().await?;
+    let tt = store
+        .add_bytes(b"hello world".to_vec())
+        .temp_tag()
+        .await?;
     let hash = *tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
@@ -201,7 +196,7 @@ async fn test_export_chunk() -> TestResult {
     let blobs = store.blobs();
     for size in [1024 * 18 + 1] {
         let data = vec![0u8; size];
-        let tt = store.import_slice(&data).hash().await?;
+        let tt = store.add_slice(&data).temp_tag().await?;
         let hash = *tt.hash();
         let c = blobs.export_chunk(hash, 0).await;
         println!("{:?}", c);

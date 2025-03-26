@@ -80,7 +80,7 @@ impl Actor {
                 .ok();
             }
             Command::Observe(ObserveMsg {
-                inner: blobs::Observe { hash },
+                inner: blobs::ObserveRequest { hash },
                 tx,
                 ..
             }) => {
@@ -92,7 +92,7 @@ impl Actor {
                 }
             }
             Command::ExportBao(ExportBaoMsg {
-                inner: blobs::ExportBao { hash, ranges },
+                inner: blobs::ExportBaoRequest { hash, ranges },
                 tx,
                 ..
             }) => {

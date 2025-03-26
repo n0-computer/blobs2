@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use super::{meta::raw_outboard_size, temp_name};
+use super::{gc::GcConfig, meta::raw_outboard_size, temp_name};
 use crate::Hash;
 
 /// Options for directories used by the file store.
@@ -110,6 +110,8 @@ pub struct Options {
     pub inline: InlineOptions,
     /// Transaction batching options.
     pub batch: BatchOptions,
+    /// Gc configuration.
+    pub gc: Option<GcConfig>,
 }
 
 impl Options {
@@ -119,6 +121,7 @@ impl Options {
             path: PathOptions::new(root),
             inline: InlineOptions::default(),
             batch: BatchOptions::default(),
+            gc: None,
         }
     }
 

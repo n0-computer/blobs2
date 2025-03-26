@@ -16,7 +16,6 @@ impl Debug for HashSeq {
     }
 }
 
-
 impl<'a> FromIterator<&'a Hash> for HashSeq {
     fn from_iter<T: IntoIterator<Item = &'a Hash>>(iter: T) -> Self {
         iter.into_iter().map(|hash| *hash).collect()

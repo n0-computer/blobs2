@@ -1,13 +1,11 @@
 //! The user facing API of the store.
 use std::{io, marker::PhantomData, net::SocketAddr, ops::Deref, sync::Arc};
 
-use bytes::Bytes;
 use proto::Request;
 use quic_rpc::rpc::{listen, Handler};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlobFormat, Hash};
 pub mod blobs;
 pub mod proto;
 pub mod tags;
@@ -93,6 +91,7 @@ impl Store {
                     Request::RenameTag(msg) => local.send((msg, tx)),
                     Request::ListTags(msg) => local.send((msg, tx)),
                     Request::ListTempTags(msg) => local.send((msg, tx)),
+                    Request::GetBlobStatus(msg) => local.send((msg, tx)),
 
                     Request::ImportBytes(msg) => local.send((msg, tx)),
                     Request::ImportByteStream(msg) => local.send((msg, tx)),
@@ -100,12 +99,14 @@ impl Store {
                     Request::ImportPath(msg) => local.send((msg, tx)),
                     Request::ListBlobs(msg) => local.send((msg, tx)),
                     Request::DeleteBlobs(msg) => local.send((msg, tx)),
+                    Request::Batch(msg) => local.send((msg, tx, rx)),
 
                     Request::ExportBao(msg) => local.send((msg, tx)),
                     Request::ExportPath(msg) => local.send((msg, tx)),
 
                     Request::Observe(msg) => local.send((msg, tx)),
 
+                    Request::ClearProtected(msg) => local.send((msg, tx)),
                     Request::SyncDb(msg) => local.send((msg, tx)),
                     Request::Shutdown(msg) => local.send((msg, tx)),
                 }
@@ -124,7 +125,7 @@ impl Store {
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Scope(u64);
+pub struct Scope(pub(crate) u64);
 
 impl Scope {
     pub const GLOBAL: Self = Self(0);
@@ -144,4 +145,7 @@ impl std::fmt::Debug for Scope {
 pub struct SyncDb;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Shutdown;
+pub struct ShutdownRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearProtected;
