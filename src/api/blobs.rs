@@ -67,7 +67,7 @@ impl<'a> Batch<'a> {
         self.blobs.add_bytes_with_opts(options)
     }
 
-    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RequestResult<TempTag> {
+    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
         let value = value.into();
         let msg = CreateTempTagRequest {
             scope: self.scope,
@@ -94,7 +94,7 @@ impl Blobs {
         Self::ref_cast(sender)
     }
 
-    pub async fn batch(&self) -> super::RequestResult<Batch<'_>> {
+    pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
         let msg = BatchRequest;
         trace!("{msg:?}");
         let (rx, tx) = match self.sender.request().await? {
@@ -598,7 +598,7 @@ impl Blobs {
         })
     }
 
-    pub async fn status(&self, hash: impl Into<Hash>) -> super::RequestResult<BlobStatus> {
+    pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
         let hash = hash.into();
         let msg = BlobStatusRequest { hash };
         let rx = match self.sender.request().await? {
@@ -615,7 +615,7 @@ impl Blobs {
         Ok(rx.await?)
     }
 
-    pub async fn has(&self, hash: impl Into<Hash>) -> super::RequestResult<bool> {
+    pub async fn has(&self, hash: impl Into<Hash>) -> super::RpcResult<bool> {
         match self.status(hash).await? {
             BlobStatus::Complete { .. } => Ok(true),
             _ => Ok(false),
@@ -639,7 +639,7 @@ impl Blobs {
         Ok(())
     }
 
-    pub async fn shutdown(&self) -> super::RequestResult<()> {
+    pub async fn shutdown(&self) -> super::RpcResult<()> {
         let msg = ShutdownRequest;
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
@@ -819,13 +819,13 @@ pub enum ExportMode {
 
 pub struct ImportResult<'a> {
     blobs: &'a Blobs,
-    inner: n0_future::future::Boxed<super::RequestResult<spsc::Receiver<ImportProgress>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ImportProgress>>>,
 }
 
 impl<'a> ImportResult<'a> {
     fn new(
         blobs: &'a Blobs,
-        fut: impl Future<Output = super::RequestResult<spsc::Receiver<ImportProgress>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ImportProgress>>> + Send + 'static,
     ) -> Self {
         Self {
             blobs,
@@ -887,7 +887,7 @@ impl<'a> ImportResult<'a> {
 /// Calling [`ObserveResult::aggregated`] will return a stream of states,
 /// where each state is the current state at the time of the update.
 pub struct ObserveResult {
-    inner: n0_future::future::Boxed<super::RequestResult<spsc::Receiver<Bitfield>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<Bitfield>>>,
 }
 
 impl IntoFuture for ObserveResult {
@@ -908,14 +908,14 @@ impl IntoFuture for ObserveResult {
 
 impl ObserveResult {
     fn new(
-        fut: impl Future<Output = super::RequestResult<spsc::Receiver<Bitfield>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<Bitfield>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
         }
     }
 
-    pub async fn aggregated(self) -> super::RequestResult<Aggregator<Bitfield>> {
+    pub async fn aggregated(self) -> super::RpcResult<Aggregator<Bitfield>> {
         let rx = self.inner.await?.try_into().unwrap();
         Ok(Aggregator::new(rx))
     }
@@ -924,7 +924,7 @@ impl ObserveResult {
     /// current state, and the following bitfields are updates.
     ///
     /// Once a blob is complete, there will be no more updates.
-    pub async fn stream(self) -> super::RequestResult<impl Stream<Item = Bitfield>> {
+    pub async fn stream(self) -> super::RpcResult<impl Stream<Item = Bitfield>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -935,12 +935,12 @@ impl ObserveResult {
 }
 
 pub struct ExportPathResult {
-    inner: n0_future::future::Boxed<super::RequestResult<spsc::Receiver<ExportProgress>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ExportProgress>>>,
 }
 
 impl ExportPathResult {
     fn new(
-        fut: impl Future<Output = super::RequestResult<spsc::Receiver<ExportProgress>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportProgress>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -985,12 +985,12 @@ impl IntoFuture for ImportBaoResult {
     }
 }
 pub struct BlobsListResult {
-    inner: n0_future::future::Boxed<super::RequestResult<spsc::Receiver<super::Result<Hash>>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
 }
 
 impl BlobsListResult {
     fn new(
-        fut: impl Future<Output = super::RequestResult<spsc::Receiver<super::Result<Hash>>>>
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<super::Result<Hash>>>>
             + Send
             + 'static,
     ) -> Self {
@@ -1008,7 +1008,7 @@ impl BlobsListResult {
         Ok(hashes)
     }
 
-    pub async fn stream(self) -> super::RequestResult<impl Stream<Item = super::Result<Hash>>> {
+    pub async fn stream(self) -> super::RpcResult<impl Stream<Item = super::Result<Hash>>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -1019,12 +1019,12 @@ impl BlobsListResult {
 }
 
 pub struct ExportBaoResult {
-    inner: n0_future::future::Boxed<super::RequestResult<spsc::Receiver<EncodedItem>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoResult {
     fn new(
-        fut: impl Future<Output = super::RequestResult<spsc::Receiver<EncodedItem>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),

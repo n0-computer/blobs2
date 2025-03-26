@@ -221,7 +221,7 @@ impl Tags {
         Self::ref_cast(sender)
     }
 
-    pub async fn list_temp_tags(&self) -> super::RequestResult<impl Stream<Item = HashAndFormat>> {
+    pub async fn list_temp_tags(&self) -> super::RpcResult<impl Stream<Item = HashAndFormat>> {
         let options = ListTempTagsRequest;
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
@@ -246,7 +246,7 @@ impl Tags {
     pub async fn list_with_opts(
         &self,
         options: ListTags,
-    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Remote(r) => {
@@ -305,7 +305,7 @@ impl Tags {
     pub async fn list_range<R, E>(
         &self,
         range: R,
-    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>>
+    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>>
     where
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
@@ -317,19 +317,19 @@ impl Tags {
     pub async fn list_prefix(
         &self,
         prefix: impl AsRef<[u8]>,
-    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::prefix(prefix.as_ref())).await
     }
 
     /// Lists all tags.
-    pub async fn list(&self) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
+    pub async fn list(&self) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::all()).await
     }
 
     /// Lists all tags with a hash_seq format.
     pub async fn list_hash_seq(
         &self,
-    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::hash_seq()).await
     }
 

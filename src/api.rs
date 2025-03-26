@@ -13,8 +13,8 @@ pub mod tags;
 pub(crate) type ApiSender =
     quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>;
 
-pub type RequestError = quic_rpc::Error;
-pub type RequestResult<T> = std::result::Result<T, RequestError>;
+pub type RpcError = quic_rpc::Error;
+pub type RpcResult<T> = std::result::Result<T, RpcError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FallibleRequestError {
@@ -23,6 +23,8 @@ pub enum FallibleRequestError {
     #[error("inner error: {0}")]
     Inner(#[from] Error),
 }
+
+pub type FallibleRequestResult<T> = std::result::Result<T, FallibleRequestError>;
 
 impl From<quic_rpc::channel::SendError> for FallibleRequestError {
     fn from(e: quic_rpc::channel::SendError) -> Self {
@@ -54,8 +56,6 @@ impl From<io::Error> for FallibleRequestError {
     }
 }
 
-pub type FallibleRequestResult<T> = std::result::Result<T, FallibleRequestError>;
-
 #[derive(Debug, thiserror::Error)]
 pub enum ExportBaoError {
     #[error("send error: {0}")]
@@ -82,13 +82,13 @@ impl From<ExportBaoError> for Error {
     }
 }
 
-impl From<RequestError> for ExportBaoError {
-    fn from(e: RequestError) -> Self {
+impl From<RpcError> for ExportBaoError {
+    fn from(e: RpcError) -> Self {
         match e {
-            RequestError::Recv(e) => Self::Recv(e),
-            RequestError::Send(e) => Self::Send(e),
-            RequestError::Request(e) => Self::Request(e),
-            RequestError::Write(e) => Self::Io(e.into()),
+            RpcError::Recv(e) => Self::Recv(e),
+            RpcError::Send(e) => Self::Send(e),
+            RpcError::Request(e) => Self::Request(e),
+            RpcError::Write(e) => Self::Io(e.into()),
         }
     }
 }
@@ -117,8 +117,8 @@ impl Error {
     }
 }
 
-impl From<RequestError> for Error {
-    fn from(e: RequestError) -> Self {
+impl From<RpcError> for Error {
+    fn from(e: RpcError) -> Self {
         Self::Io(e.into())
     }
 }

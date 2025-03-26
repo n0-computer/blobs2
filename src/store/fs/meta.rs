@@ -16,10 +16,8 @@ use redb::{Database, DatabaseError, ReadableTable};
 use crate::{
     api::{
         self,
-        blobs::{BlobStatus, BlobStatusRequest, DeleteRequest, ListRequest},
-        proto::{
-            BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg,
-        },
+        blobs::{BlobStatus, DeleteRequest, BlobStatusRequest, ListRequest},
+        proto::{ClearProtectedMsg, DeleteBlobsMsg, BlobStatusMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg},
         tags::{self, CreateTagRequest, Delete, ListTags, SetTag, TagInfo},
     },
     util::channel::{mpsc, oneshot},
@@ -179,10 +177,7 @@ async fn handle_clear_protected(
     Ok(())
 }
 
-async fn handle_get_blob_status(
-    msg: BlobStatusMsg,
-    tables: &impl ReadableTables,
-) -> ActorResult<()> {
+async fn handle_get_blob_status(msg: BlobStatusMsg, tables: &impl ReadableTables) -> ActorResult<()> {
     trace!("{msg:?}");
     let BlobStatusMsg {
         inner: BlobStatusRequest { hash },
@@ -190,24 +185,27 @@ async fn handle_get_blob_status(
         ..
     } = msg;
     let res = match tables.blobs().get(hash)? {
-        Some(entry) => match entry.value() {
-            EntryState::Complete { data_location, .. } => match data_location {
-                DataLocation::Inline(_) => {
-                    let Some(data) = tables.inline_data().get(hash)? else {
-                        return Err(ActorError::Inconsistent(format!(
-                            "inconsistent database state: {} not found",
-                            hash.to_hex()
-                        )));
-                    };
-                    BlobStatus::Complete {
-                        size: data.value().len() as u64,
-                    }
+        Some(entry) => {
+            match entry.value() {
+                EntryState::Complete {
+                    data_location,
+                    ..
+                } => match data_location {
+                    DataLocation::Inline(_) => {
+                        let Some(data) = tables.inline_data().get(hash)? else {
+                            return Err(ActorError::Inconsistent(format!(
+                                "inconsistent database state: {} not found",
+                                hash.to_hex()
+                            )));
+                        };
+                        BlobStatus::Complete { size: data.value().len() as u64 }
+                    },
+                    DataLocation::Owned(size) => BlobStatus::Complete { size },
+                    DataLocation::External(_, size) => BlobStatus::Complete { size },
                 }
-                DataLocation::Owned(size) => BlobStatus::Complete { size },
-                DataLocation::External(_, size) => BlobStatus::Complete { size },
-            },
-            EntryState::Partial { size } => BlobStatus::Partial { size },
-        },
+                EntryState::Partial { size } => BlobStatus::Partial { size },
+            }
+        }
         None => BlobStatus::NotFound,
     };
     tx.send(res).await.ok();
@@ -486,7 +484,7 @@ impl Actor {
             ..
         } = cmd;
         let res = tables.tags.insert(tag, value).map(|_| ());
-        tx.send(res.map_err(|_| crate::api::Error::other("storage")))
+        tx.send(res.map_err(crate::api::Error::other))
             .await
             .ok();
         Ok(())
