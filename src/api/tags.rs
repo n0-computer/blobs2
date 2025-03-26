@@ -9,7 +9,7 @@ use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{ApiSender, Tags};
+use super::{ApiSender, Scope, Tags};
 use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
 
 /// Information about a tag.
@@ -129,7 +129,14 @@ impl ListTags {
 
 /// List all temp tags
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TempTags;
+pub struct CreateTempTagRequest {
+    pub scope: Scope,
+    pub value: HashAndFormat,
+}
+
+/// List all temp tags
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListTempTagsRequest;
 
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
@@ -206,7 +213,7 @@ pub struct SetTag {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTagRequest {
-    pub content: HashAndFormat,
+    pub value: HashAndFormat,
 }
 
 impl Tags {
@@ -214,12 +221,12 @@ impl Tags {
         Self::ref_cast(sender)
     }
 
-    pub async fn temp_tags(&self) -> super::Result<impl Stream<Item = HashAndFormat>> {
-        let options = TempTags;
+    pub async fn list_temp_tags(&self) -> super::RequestResult<impl Stream<Item = HashAndFormat>> {
+        let options = ListTempTagsRequest;
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(options).await?;
+                let (_, rx) = r.write(options).await?;
                 rx.into()
             }
             ServiceRequest::Local(l) => {
@@ -239,11 +246,11 @@ impl Tags {
     pub async fn list_with_opts(
         &self,
         options: ListTags,
-    ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(options).await?;
+                let (_, rx) = r.write(options).await?;
                 rx.into()
             }
             ServiceRequest::Local(l) => {
@@ -257,12 +264,15 @@ impl Tags {
     }
 
     /// Get the value of a single tag
-    pub async fn get(&self, name: impl AsRef<[u8]>) -> super::Result<Option<TagInfo>> {
+    pub async fn get(
+        &self,
+        name: impl AsRef<[u8]>,
+    ) -> super::FallibleRequestResult<Option<TagInfo>> {
         let mut stream = self.list_with_opts(ListTags::single(name.as_ref())).await?;
-        stream.next().await.transpose()
+        Ok(stream.next().await.transpose()?)
     }
 
-    pub async fn set_with_opts(&self, options: SetTag) -> super::Result<()> {
+    pub async fn set_with_opts(&self, options: SetTag) -> super::FallibleRequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
@@ -271,18 +281,19 @@ impl Tags {
                 rx
             }
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(options).await?;
+                let (_, rx) = r.write(options).await?;
                 rx.into()
             }
         };
-        rx.await?
+        rx.await??;
+        Ok(())
     }
 
     pub async fn set(
         &self,
         name: impl AsRef<[u8]>,
         value: impl Into<HashAndFormat>,
-    ) -> super::Result<()> {
+    ) -> super::FallibleRequestResult<()> {
         self.set_with_opts(SetTag {
             name: Tag::from(name.as_ref()),
             value: value.into(),
@@ -294,7 +305,7 @@ impl Tags {
     pub async fn list_range<R, E>(
         &self,
         range: R,
-    ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>>
+    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>>
     where
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
@@ -306,22 +317,24 @@ impl Tags {
     pub async fn list_prefix(
         &self,
         prefix: impl AsRef<[u8]>,
-    ) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::prefix(prefix.as_ref())).await
     }
 
     /// Lists all tags.
-    pub async fn list(&self) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+    pub async fn list(&self) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::all()).await
     }
 
     /// Lists all tags with a hash_seq format.
-    pub async fn list_hash_seq(&self) -> super::Result<impl Stream<Item = super::Result<TagInfo>>> {
+    pub async fn list_hash_seq(
+        &self,
+    ) -> super::RequestResult<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListTags::hash_seq()).await
     }
 
     /// Deletes a tag.
-    pub async fn delete_with_opts(&self, options: Delete) -> super::Result<()> {
+    pub async fn delete_with_opts(&self, options: Delete) -> super::FallibleRequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
@@ -330,20 +343,21 @@ impl Tags {
                 rx
             }
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(options).await?;
+                let (_, rx) = r.write(options).await?;
                 rx.into()
             }
         };
-        rx.await.map_err(|_e| io::Error::other("error"))?
+        rx.await??;
+        Ok(())
     }
 
     /// Deletes a tag.
-    pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::Result<()> {
+    pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::FallibleRequestResult<()> {
         self.delete_with_opts(Delete::single(name.as_ref())).await
     }
 
     /// Deletes a range of tags.
-    pub async fn delete_range<R, E>(&self, range: R) -> super::Result<()>
+    pub async fn delete_range<R, E>(&self, range: R) -> super::FallibleRequestResult<()>
     where
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
@@ -352,12 +366,15 @@ impl Tags {
     }
 
     /// Delete all tags with the given prefix.
-    pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> super::Result<()> {
+    pub async fn delete_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+    ) -> super::FallibleRequestResult<()> {
         self.delete_with_opts(Delete::prefix(prefix.as_ref())).await
     }
 
     /// Delete all tags. Use with care. After this, all data will be garbage collected.
-    pub async fn delete_all(&self) -> super::Result<()> {
+    pub async fn delete_all(&self) -> super::FallibleRequestResult<()> {
         self.delete_with_opts(Delete {
             from: None,
             to: None,
@@ -368,7 +385,7 @@ impl Tags {
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename_with_opts(&self, options: Rename) -> super::Result<()> {
+    pub async fn rename_with_opts(&self, options: Rename) -> super::FallibleRequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             ServiceRequest::Local(c) => {
@@ -377,17 +394,22 @@ impl Tags {
                 rx
             }
             ServiceRequest::Remote(r) => {
-                let (rx, _) = r.write(options).await?;
+                let (_, rx) = r.write(options).await?;
                 rx.into()
             }
         };
-        rx.await?
+        rx.await??;
+        Ok(())
     }
 
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> super::Result<()> {
+    pub async fn rename(
+        &self,
+        from: impl AsRef<[u8]>,
+        to: impl AsRef<[u8]>,
+    ) -> super::FallibleRequestResult<()> {
         self.rename_with_opts(Rename {
             from: Tag::from(from.as_ref()),
             to: Tag::from(to.as_ref()),

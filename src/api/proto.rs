@@ -18,10 +18,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     blobs::{
-        self, BatchResponse, Bitfield, BlobStatus, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest, ImportByteStream, ImportBytesRequest, ImportPath, ImportProgress, ListRequest, ObserveRequest
-    }, tags::{self, TagInfo}, ClearProtected, Scope, ShutdownRequest, SyncDb
+        self, BatchResponse, Bitfield, BlobStatus, ExportBaoRequest, ExportPath, ExportProgress,
+        ImportBaoRequest, ImportByteStream, ImportBytesRequest, ImportPath, ImportProgress,
+        ListRequest, ObserveRequest,
+    },
+    tags::{self, TagInfo},
+    ClearProtected, Scope, ShutdownRequest, SyncDb,
 };
-use crate::{store::util::Tag, Hash, HashAndFormat};
+use crate::{store::util::Tag, util::temp_tag::TempTag, Hash, HashAndFormat};
 
 pub trait HashSpecific {
     fn hash(&self) -> Hash;
@@ -77,10 +81,11 @@ pub type BatchMsg = WithChannels<blobs::BatchRequest, StoreService>;
 pub type CreateTagMsg = WithChannels<tags::CreateTagRequest, StoreService>;
 pub type ListBlobsMsg = WithChannels<blobs::ListRequest, StoreService>;
 pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
+pub type CreateTempTagMsg = WithChannels<tags::CreateTempTagRequest, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
-        self.inner.content.hash
+        self.inner.value.hash
     }
 }
 
@@ -124,7 +129,9 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
     CreateTag(tags::CreateTagRequest),
     #[rpc(tx = oneshot::Sender<Vec<HashAndFormat>>)]
-    ListTempTags(tags::TempTags),
+    ListTempTags(tags::ListTempTagsRequest),
+    #[rpc(tx = oneshot::Sender<TempTag>)]
+    CreateTempTag(tags::CreateTempTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SyncDb(SyncDb),
     #[rpc(tx = oneshot::Sender<()>)]

@@ -417,7 +417,7 @@ impl BaoTreeSender {
 }
 
 impl bao_tree::io::mixed::Sender for BaoTreeSender {
-    type Error = spsc::SendError;
+    type Error = quic_rpc::channel::SendError;
     async fn send(&mut self, item: EncodedItem) -> std::result::Result<(), Self::Error> {
         self.0.send(item).await
     }

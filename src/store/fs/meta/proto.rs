@@ -7,7 +7,10 @@ use tracing::Span;
 
 use super::{ActorResult, ReadOnlyTables};
 use crate::{
-    api::{blobs::ProcessExit, proto::{ClearProtectedMsg, DeleteBlobsMsg, BlobStatusMsg, ShutdownMsg, SyncDbMsg}},
+    api::{
+        blobs::ProcessExit,
+        proto::{BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ShutdownMsg, SyncDbMsg},
+    },
     store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
     Hash,

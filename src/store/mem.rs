@@ -35,8 +35,8 @@ use crate::{
     api::{
         self,
         blobs::{
-            Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest, ImportBytesRequest, ImportPath,
-            ImportProgress, ObserveRequest,
+            Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest,
+            ImportBytesRequest, ImportPath, ImportProgress, ObserveRequest,
         },
         proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
@@ -263,13 +263,16 @@ impl Actor {
                 tx.send(Ok(())).await.ok();
             }
             Command::CreateTag(CreateTagMsg {
-                inner: tags::CreateTagRequest { content },
+                inner: tags::CreateTagRequest { value },
                 tx,
                 ..
             }) => {
                 let tag = Tag::auto(SystemTime::now(), |tag| self.state.tags.contains_key(tag));
-                self.state.tags.insert(tag.clone(), content);
+                self.state.tags.insert(tag.clone(), value);
                 tx.send(Ok(tag)).await.ok();
+            }
+            Command::CreateTempTag(_cmd) => {
+                todo!()
             }
             Command::ListTempTags(_cmd) => {
                 todo!()

@@ -54,7 +54,7 @@ pub(super) async fn gc_mark_task<'a>(
         roots.insert(info.hash_and_format());
     }
     trace!("traversing temp roots");
-    let mut tts = store.tags().temp_tags().await?;
+    let mut tts = store.tags().list_temp_tags().await?;
     while let Some(tt) = tts.next().await {
         trace!("adding temp root {:?}", tt);
         roots.insert(tt);
@@ -214,7 +214,7 @@ mod tests {
         let e = *et.hash();
         let f = *ft.hash();
         let g = *gt.hash();
-        store.tags().set("c", ct.hash_and_format()).await?;
+        store.tags().set("c", *ct.hash_and_format()).await?;
         let dehs = [d, e].into_iter().collect::<HashSeq>();
         let hehs = blobs
             .add_bytes_with_opts(ImportBytesRequest {
@@ -233,7 +233,7 @@ mod tests {
             })
             .temp_tag()
             .await?;
-        store.tags().set("fg", fghs.hash_and_format()).await?;
+        store.tags().set("fg", *fghs.hash_and_format()).await?;
         drop(fghs);
         drop(bt);
         let mut live = HashSet::new();

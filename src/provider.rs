@@ -137,5 +137,5 @@ pub async fn send_blob(
     ranges: ChunkRanges,
     writer: &mut SendStream,
 ) -> api::Result<()> {
-    store.export_bao(hash, ranges).write_quinn(writer).await
+    Ok(store.export_bao(hash, ranges).write_quinn(writer).await?)
 }

@@ -75,10 +75,12 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        blobs::{is_validated, BatchRequest, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
+        blobs::{is_validated, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
         proto::{
-            self, BatchMsg, Command, ExportBaoMsg, ExportPathMsg, HashSpecific, ImportBaoMsg, ObserveMsg
+            self, BatchMsg, Command, CreateTempTagMsg, ExportBaoMsg, ExportPathMsg, HashSpecific,
+            ImportBaoMsg, ObserveMsg,
         },
+        tags::CreateTempTagRequest,
         ApiSender, Scope,
     },
     store::{
@@ -375,6 +377,15 @@ impl Actor {
         self.tasks.spawn(fut.instrument(span));
     }
 
+    async fn create_temp_tag(&mut self, cmd: CreateTempTagMsg) {
+        let CreateTempTagMsg { tx, inner, .. } = cmd;
+        let mut tt = self.temp_tags.create(inner.scope, inner.value);
+        if tx.is_rpc() {
+            tt.leak();
+        }
+        tx.send(tt).await.ok();
+    }
+
     async fn clear_dead_handles(&mut self) {
         let mut to_remove = Vec::new();
         for (hash, slot) in &self.handles {
@@ -458,8 +469,13 @@ impl Actor {
                 self.db().send(cmd.into()).await.ok();
             }
             Command::Batch(cmd) => {
+                trace!("{cmd:?}");
                 let (id, scope) = self.temp_tags.create_scope();
                 self.spawn(handle_batch(cmd, id, scope, self.context()));
+            }
+            Command::CreateTempTag(cmd) => {
+                trace!("{cmd:?}");
+                self.create_temp_tag(cmd).await;
             }
             Command::ListTempTags(cmd) => {
                 trace!("{cmd:?}");
@@ -659,6 +675,7 @@ async fn handle_batch(cmd: BatchMsg, id: Scope, scope: Arc<TempTagScope>, ctx: A
 
 async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) -> api::Result<()> {
     let BatchMsg { tx, mut rx, .. } = cmd;
+    trace!("created scope {}", id);
     tx.send(id).await.map_err(api::Error::other)?;
     while let Some(msg) = rx.recv().await? {
         match msg {
@@ -1100,7 +1117,7 @@ impl FsStore {
 #[cfg(test)]
 pub mod tests {
     use core::panic;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use bao_tree::{
         io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
@@ -1352,7 +1369,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_minimal() -> TestResult<()> {
+    async fn test_import_bao_minimal() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [1];
@@ -1373,7 +1390,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_simple() -> TestResult<()> {
+    async fn test_import_bao_simple() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [1048576];
@@ -1395,7 +1412,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_persistence_full() -> TestResult<()> {
+    async fn test_import_bao_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = INTERESTING_SIZES;
@@ -1429,7 +1446,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_persistence_just_size() -> TestResult<()> {
+    async fn test_import_bao_persistence_just_size() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
@@ -1476,7 +1493,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_persistence_two_stages() -> TestResult<()> {
+    async fn test_import_bao_persistence_two_stages() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
@@ -1549,7 +1566,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_persistence_observe() -> TestResult<()> {
+    async fn test_import_bao_persistence_observe() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
@@ -1599,7 +1616,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bao_persistence_recover() -> TestResult<()> {
+    async fn test_import_bao_persistence_recover() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = [
@@ -1656,7 +1673,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn import_bytes_persistence_full() -> TestResult<()> {
+    async fn test_import_bytes_persistence_full() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let sizes = INTERESTING_SIZES;
@@ -1689,6 +1706,43 @@ pub mod tests {
             store.shutdown().await?;
         }
         Ok(())
+    }
+
+    async fn test_batch(store: &Store) -> TestResult<()> {
+        let batch = store.blobs().batch().await?;
+        let tt1 = batch.temp_tag(Hash::new("foo")).await?;
+        let tt2 = batch.add_slice("boo").temp_tag().await?;
+        let tts = store
+            .tags()
+            .list_temp_tags()
+            .await?
+            .collect::<HashSet<_>>()
+            .await;
+        assert!(tts.contains(tt1.hash_and_format()));
+        assert!(tts.contains(tt2.hash_and_format()));
+        drop(batch);
+        store.sync_db().await?;
+        let tts = store
+            .tags()
+            .list_temp_tags()
+            .await?
+            .collect::<HashSet<_>>()
+            .await;
+        // temp tag went out of scope, so it does not work anymore
+        assert!(!tts.contains(tt1.hash_and_format()));
+        assert!(!tts.contains(tt2.hash_and_format()));
+        drop(tt1);
+        drop(tt2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_fs() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        let store = FsStore::load(db_dir).await?;
+        test_batch(&store).await
     }
 
     #[tokio::test]

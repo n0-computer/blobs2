@@ -13,6 +13,82 @@ pub mod tags;
 pub(crate) type ApiSender =
     quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>;
 
+pub type RequestError = quic_rpc::Error;
+pub type RequestResult<T> = std::result::Result<T, RequestError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FallibleRequestError {
+    #[error("rpc error: {0}")]
+    Rpc(#[from] quic_rpc::Error),
+    #[error("inner error: {0}")]
+    Inner(#[from] Error),
+}
+
+impl From<quic_rpc::channel::SendError> for FallibleRequestError {
+    fn from(e: quic_rpc::channel::SendError) -> Self {
+        Self::Rpc(e.into())
+    }
+}
+
+impl From<quic_rpc::channel::RecvError> for FallibleRequestError {
+    fn from(e: quic_rpc::channel::RecvError) -> Self {
+        Self::Rpc(e.into())
+    }
+}
+
+impl From<quic_rpc::RequestError> for FallibleRequestError {
+    fn from(e: quic_rpc::RequestError) -> Self {
+        Self::Rpc(e.into())
+    }
+}
+
+impl From<quic_rpc::rpc::WriteError> for FallibleRequestError {
+    fn from(e: quic_rpc::rpc::WriteError) -> Self {
+        Self::Rpc(e.into())
+    }
+}
+
+pub type FallibleRequestResult<T> = std::result::Result<T, FallibleRequestError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExportBaoError {
+    #[error("send error: {0}")]
+    Send(#[from] quic_rpc::channel::SendError),
+    #[error("recv error: {0}")]
+    Recv(#[from] quic_rpc::channel::RecvError),
+    #[error("request error: {0}")]
+    Request(#[from] quic_rpc::RequestError),
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+    #[error("encode error: {0}")]
+    Inner(#[from] bao_tree::io::EncodeError),
+}
+
+impl From<ExportBaoError> for Error {
+    fn from(e: ExportBaoError) -> Self {
+        match e {
+            ExportBaoError::Send(e) => Self::Io(e.into()),
+            ExportBaoError::Recv(e) => Self::Io(e.into()),
+            ExportBaoError::Request(e) => Self::Io(e.into()),
+            ExportBaoError::Io(e) => Self::Io(e),
+            ExportBaoError::Inner(e) => Self::Io(e.into()),
+        }
+    }
+}
+
+impl From<RequestError> for ExportBaoError {
+    fn from(e: RequestError) -> Self {
+        match e {
+            RequestError::Recv(e) => Self::Recv(e),
+            RequestError::Send(e) => Self::Send(e),
+            RequestError::Request(e) => Self::Request(e),
+            RequestError::Write(e) => Self::Io(e.into()),
+        }
+    }
+}
+
+pub type ExportBaoResult<T> = std::result::Result<T, ExportBaoError>;
+
 #[derive(Debug, derive_more::Display, derive_more::From, Serialize, Deserialize)]
 pub enum Error {
     #[serde(with = "crate::util::serde::io_error_serde")]
@@ -32,6 +108,45 @@ impl Error {
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         Self::Io(io::Error::other(msg.into()))
+    }
+}
+
+impl From<RequestError> for Error {
+    fn from(e: RequestError) -> Self {
+        Self::Io(e.into())
+    }
+}
+
+impl From<FallibleRequestError> for Error {
+    fn from(e: FallibleRequestError) -> Self {
+        match e {
+            FallibleRequestError::Rpc(e) => Self::Io(e.into()),
+            FallibleRequestError::Inner(e) => e,
+        }
+    }
+}
+
+impl From<quic_rpc::channel::RecvError> for Error {
+    fn from(e: quic_rpc::channel::RecvError) -> Self {
+        Self::Io(e.into())
+    }
+}
+
+impl From<quic_rpc::rpc::WriteError> for Error {
+    fn from(e: quic_rpc::rpc::WriteError) -> Self {
+        Self::Io(e.into())
+    }
+}
+
+impl From<quic_rpc::RequestError> for Error {
+    fn from(e: quic_rpc::RequestError) -> Self {
+        Self::Io(e.into())
+    }
+}
+
+impl From<quic_rpc::channel::SendError> for Error {
+    fn from(e: quic_rpc::channel::SendError) -> Self {
+        Self::Io(e.into())
     }
 }
 
@@ -90,7 +205,10 @@ impl Store {
                     Request::DeleteTags(msg) => local.send((msg, tx)),
                     Request::RenameTag(msg) => local.send((msg, tx)),
                     Request::ListTags(msg) => local.send((msg, tx)),
+
                     Request::ListTempTags(msg) => local.send((msg, tx)),
+                    Request::CreateTempTag(msg) => local.send((msg, tx)),
+
                     Request::GetBlobStatus(msg) => local.send((msg, tx)),
 
                     Request::ImportBytes(msg) => local.send((msg, tx)),
@@ -124,7 +242,9 @@ impl Store {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
+)]
 pub struct Scope(pub(crate) u64);
 
 impl Scope {

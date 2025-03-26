@@ -111,8 +111,8 @@ impl TempTag {
     }
 
     /// The hash and format of the pinned item
-    pub fn hash_and_format(&self) -> HashAndFormat {
-        self.inner
+    pub fn hash_and_format(&self) -> &HashAndFormat {
+        &self.inner
     }
 
     /// Keep the item alive until the end of the process
@@ -179,10 +179,9 @@ pub(crate) struct TempTags {
 }
 
 impl TempTags {
-
     pub fn create_scope(&mut self) -> (Scope, Arc<TempTagScope>) {
-        let id = Scope(self.next_scope);
         self.next_scope += 1;
+        let id = Scope(self.next_scope);
         let scope = self.scopes.entry(id).or_default();
         (id, scope.clone())
     }
@@ -192,7 +191,10 @@ impl TempTags {
     }
 
     pub fn list(&self) -> Vec<HashAndFormat> {
-        self.scopes.values().flat_map(|scope| scope.list()).collect()
+        self.scopes
+            .values()
+            .flat_map(|scope| scope.list())
+            .collect()
     }
 
     pub fn create(&mut self, scope: Scope, content: HashAndFormat) -> TempTag {

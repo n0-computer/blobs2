@@ -343,7 +343,7 @@ async fn get_import_source(
 struct OutboardProgress(spsc::Sender<ImportProgress>);
 
 impl Progress for OutboardProgress {
-    type Error = quic_rpc::channel::spsc::SendError;
+    type Error = quic_rpc::channel::SendError;
 
     async fn progress(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {
         // if offset.0 % 1024 != 0 {
