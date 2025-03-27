@@ -116,7 +116,7 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-) -> api::FallibleRequestResult<AtEndBlob> {
+) -> api::RequestResult<AtEndBlob> {
     let (mut content, size) = header.next().await.map_err(api::Error::other)?;
     let Some(size) = NonZeroU64::new(size) else {
         return if hash == Hash::EMPTY {
@@ -131,7 +131,7 @@ async fn get_blob_ranges_impl(
     let (tx, rx) = mpsc::channel(buffer_size);
     let complete = store.import_bao(hash, size, rx);
     let write = async move {
-        api::FallibleRequestResult::Ok(loop {
+        api::RequestResult::Ok(loop {
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res.map_err(api::Error::other)?;

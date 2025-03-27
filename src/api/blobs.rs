@@ -22,7 +22,7 @@ use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
 use quic_rpc::{
     channel::{oneshot, spsc},
-    ServiceRequest,
+    Request,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
@@ -75,12 +75,12 @@ impl<'a> Batch<'a> {
         };
         let request = self.blobs.sender.request().await?;
         let rx = match request {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(msg).await?;
                 rx.into()
             }
@@ -98,13 +98,13 @@ impl Blobs {
         let msg = BatchRequest;
         trace!("{msg:?}");
         let (rx, tx) = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 let (out_tx, out_rx) = spsc::channel(32);
                 c.send((msg, tx, out_rx)).await?;
                 (rx, out_tx)
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (tx, rx) = r.write(msg).await?;
                 (rx.into(), tx.into())
             }
@@ -121,16 +121,16 @@ impl Blobs {
     pub async fn delete_with_opts(
         &self,
         options: DeleteRequest,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         trace!("{options:?}");
         let request = self.sender.request().await?;
         let rx = match request {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
@@ -142,7 +142,7 @@ impl Blobs {
     pub async fn delete(
         &self,
         hashes: impl IntoIterator<Item = impl Into<Hash>>,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         self.delete_with_opts(DeleteRequest {
             hashes: hashes.into_iter().map(Into::into).collect(),
             force: false,
@@ -173,12 +173,12 @@ impl Blobs {
         let request = self.sender.request();
         ImportResult::new(self, async move {
             let rx = match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((options, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(options).await?;
                     rx.into()
                 }
@@ -192,12 +192,12 @@ impl Blobs {
         let request = self.sender.request();
         ImportResult::new(self, async move {
             Ok(match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((options, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(options).await?;
                     rx.into()
                 }
@@ -239,12 +239,12 @@ impl Blobs {
         let request = self.sender.request();
         ImportResult::new(self, async move {
             let rx = match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((inner, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(inner).await?;
                     rx.into()
                 }
@@ -258,12 +258,12 @@ impl Blobs {
         let request = self.sender.request();
         ExportBaoResult::new(async move {
             Ok(match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((options, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(options).await?;
                     rx.into()
                 }
@@ -325,11 +325,11 @@ impl Blobs {
         let request = self.sender.request();
         ObserveResult::new(async move {
             let rx = match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     c.send((ObserveRequest { hash }, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(ObserveRequest { hash }).await?;
                     rx.into()
                 }
@@ -342,7 +342,7 @@ impl Blobs {
         &self,
         hash: Hash,
         request: RangeSpecSeq,
-    ) -> super::FallibleRequestResult<RangeSpecSeq> {
+    ) -> super::RequestResult<RangeSpecSeq> {
         match request.as_single() {
             Some((0, ranges)) => self.get_missing_ranges_blob(hash, ranges).await,
             _ => self.get_missing_ranges_hash_seq(hash, request).await,
@@ -353,7 +353,7 @@ impl Blobs {
     pub async fn get_missing(
         &self,
         data: impl Into<HashAndFormat>,
-    ) -> super::FallibleRequestResult<RangeSpecSeq> {
+    ) -> super::RequestResult<RangeSpecSeq> {
         let data = data.into();
         Ok(match data.format {
             BlobFormat::Raw => self.get_missing_blob(data.hash).await?,
@@ -365,7 +365,7 @@ impl Blobs {
         &self,
         hash: Hash,
         ranges: &RangeSpec,
-    ) -> super::FallibleRequestResult<RangeSpecSeq> {
+    ) -> super::RequestResult<RangeSpecSeq> {
         let local_ranges = self.observe(hash).await?.ranges;
         let required_ranges = ranges.to_chunk_ranges() - local_ranges;
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
@@ -375,7 +375,7 @@ impl Blobs {
         &self,
         root: Hash,
         request: RangeSpecSeq,
-    ) -> super::FallibleRequestResult<RangeSpecSeq> {
+    ) -> super::RequestResult<RangeSpecSeq> {
         let root_bitfield = self.observe(root).await?;
         let mut hash_seq = LazyHashSeq::new(self.clone(), root);
         // let mut hashes = HashMap::new();
@@ -410,13 +410,13 @@ impl Blobs {
         Ok(RangeSpecSeq::from_ranges_infinite(ranges))
     }
 
-    async fn get_missing_blob(&self, hash: Hash) -> super::FallibleRequestResult<RangeSpecSeq> {
+    async fn get_missing_blob(&self, hash: Hash) -> super::RequestResult<RangeSpecSeq> {
         let local_ranges = self.observe(hash).await?.ranges;
         let required_ranges = ChunkRanges::all() - local_ranges;
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
     }
 
-    async fn get_missing_hash_seq(&self, root: Hash) -> super::FallibleRequestResult<RangeSpecSeq> {
+    async fn get_missing_hash_seq(&self, root: Hash) -> super::RequestResult<RangeSpecSeq> {
         let local_bitfield = self.observe(root).await?;
         let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
         let mut stream = self.export_bao(root, local_bitfield.ranges).stream();
@@ -454,12 +454,12 @@ impl Blobs {
         let request = self.sender.request();
         ExportPathResult::new(async move {
             Ok(match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((options, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(options).await?;
                     rx.into()
                 }
@@ -485,12 +485,12 @@ impl Blobs {
         let request = self.sender.request();
         ImportBaoResult::new(async move {
             let rx = match request.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = oneshot::channel();
                     c.send((options, tx, data)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (tx, rx) = r.write(options).await?;
                     let mut tx: spsc::Sender<_> = tx.into();
                     while let Some(item) = data.recv().await? {
@@ -510,7 +510,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         mut reader: R,
-    ) -> super::FallibleRequestResult<R> {
+    ) -> super::RequestResult<R> {
         let (mut tx, rx) = spsc::channel(32);
         let size = u64::from_le_bytes(reader.read::<8>().await.map_err(super::Error::other)?);
         let Some(size) = NonZeroU64::new(size) else {
@@ -564,7 +564,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         stream: &mut quinn::RecvStream,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         let reader = TokioStreamReader::new(stream);
         self.import_bao_reader(hash, ranges, reader).await?;
         Ok(())
@@ -575,7 +575,7 @@ impl Blobs {
         hash: Hash,
         ranges: ChunkRanges,
         data: Bytes,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         self.import_bao_reader(hash, ranges, data).await?;
         Ok(())
     }
@@ -585,12 +585,12 @@ impl Blobs {
         let req = self.sender.request();
         BlobsListResult::new(async move {
             Ok(match req.await? {
-                ServiceRequest::Local(c) => {
+                Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
                     c.send((msg, tx)).await?;
                     rx
                 }
-                ServiceRequest::Remote(r) => {
+                Request::Remote(r) => {
                     let (_, rx) = r.write(msg).await?;
                     rx.into()
                 }
@@ -602,12 +602,12 @@ impl Blobs {
         let hash = hash.into();
         let msg = BlobStatusRequest { hash };
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(msg).await?;
                 rx.into()
             }
@@ -622,15 +622,15 @@ impl Blobs {
         }
     }
 
-    pub async fn sync_db(&self) -> super::FallibleRequestResult<()> {
+    pub async fn sync_db(&self) -> super::RequestResult<()> {
         let msg = SyncDb;
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(msg).await?;
                 rx.into()
             }
@@ -642,12 +642,12 @@ impl Blobs {
     pub async fn shutdown(&self) -> super::RpcResult<()> {
         let msg = ShutdownRequest;
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = quic_rpc::channel::oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(msg).await?;
                 rx.into()
             }
@@ -656,15 +656,15 @@ impl Blobs {
         Ok(())
     }
 
-    pub async fn clear_protected(&self) -> super::FallibleRequestResult<()> {
+    pub async fn clear_protected(&self) -> super::RequestResult<()> {
         let msg = ClearProtected;
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(msg).await?;
                 rx.into()
             }
@@ -833,7 +833,7 @@ impl<'a> ImportResult<'a> {
         }
     }
 
-    pub async fn temp_tag(self) -> super::FallibleRequestResult<TempTag> {
+    pub async fn temp_tag(self) -> super::RequestResult<TempTag> {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await {
@@ -851,7 +851,7 @@ impl<'a> ImportResult<'a> {
         }
     }
 
-    pub async fn with_named_tag(self, name: impl AsRef<[u8]>) -> super::FallibleRequestResult<()> {
+    pub async fn with_named_tag(self, name: impl AsRef<[u8]>) -> super::RequestResult<()> {
         let blobs = self.blobs.clone();
         let tt = self.temp_tag().await?;
         let tags = Tags::ref_from_sender(&blobs.sender);
@@ -860,16 +860,16 @@ impl<'a> ImportResult<'a> {
         Ok(())
     }
 
-    pub async fn with_tag(self) -> super::FallibleRequestResult<Tag> {
+    pub async fn with_tag(self) -> super::RequestResult<Tag> {
         let blobs = self.blobs.clone();
         let tt = self.temp_tag().await?;
         let tags = Tags::ref_from_sender(&blobs.sender);
-        let tag = todo!(); // tags.create(*tt.hash_and_format()).await?;
+        let tag = tags.create(*tt.hash_and_format()).await?;
         drop(tt);
         Ok(tag)
     }
 
-    pub async fn stream(self) -> super::FallibleRequestResult<impl Stream<Item = ImportProgress>> {
+    pub async fn stream(self) -> super::RequestResult<impl Stream<Item = ImportProgress>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -891,7 +891,7 @@ pub struct ObserveResult {
 }
 
 impl IntoFuture for ObserveResult {
-    type Output = super::FallibleRequestResult<Bitfield>;
+    type Output = super::RequestResult<Bitfield>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
@@ -947,7 +947,7 @@ impl ExportPathResult {
         }
     }
 
-    pub async fn finish(self) -> super::FallibleRequestResult<()> {
+    pub async fn finish(self) -> super::RequestResult<()> {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await? {
@@ -964,11 +964,11 @@ impl ExportPathResult {
 /// This future will resolve once the import is complete, but *must* be polled even before!
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ImportBaoResult {
-    inner: n0_future::future::Boxed<super::FallibleRequestResult<()>>,
+    inner: n0_future::future::Boxed<super::RequestResult<()>>,
 }
 
 impl ImportBaoResult {
-    fn new(fut: impl Future<Output = super::FallibleRequestResult<()>> + Send + 'static) -> Self {
+    fn new(fut: impl Future<Output = super::RequestResult<()>> + Send + 'static) -> Self {
         Self {
             inner: Box::pin(fut),
         }
@@ -976,7 +976,7 @@ impl ImportBaoResult {
 }
 
 impl IntoFuture for ImportBaoResult {
-    type Output = super::FallibleRequestResult<()>;
+    type Output = super::RequestResult<()>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
@@ -999,7 +999,7 @@ impl BlobsListResult {
         }
     }
 
-    pub async fn hashes(self) -> super::FallibleRequestResult<Vec<Hash>> {
+    pub async fn hashes(self) -> super::RequestResult<Vec<Hash>> {
         let mut rx = self.inner.await?;
         let mut hashes = Vec::new();
         while let Some(item) = rx.recv().await? {
@@ -1057,7 +1057,7 @@ impl ExportBaoResult {
         })
     }
 
-    pub async fn bao_to_vec(self) -> super::FallibleRequestResult<Vec<u8>> {
+    pub async fn bao_to_vec(self) -> super::RequestResult<Vec<u8>> {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {

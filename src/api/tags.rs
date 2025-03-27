@@ -4,7 +4,7 @@ use std::{
 };
 
 use n0_future::{Stream, StreamExt};
-use quic_rpc::{channel::oneshot, ServiceRequest};
+use quic_rpc::{channel::oneshot, Request};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
@@ -225,11 +225,11 @@ impl Tags {
         let options = ListTempTagsRequest;
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
-            ServiceRequest::Local(l) => {
+            Request::Local(l) => {
                 let (tx, rx) = oneshot::channel();
                 l.send((options, tx)).await?;
                 rx
@@ -249,11 +249,11 @@ impl Tags {
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
-            ServiceRequest::Local(l) => {
+            Request::Local(l) => {
                 let (tx, rx) = oneshot::channel();
                 l.send((options, tx)).await?;
                 rx
@@ -267,20 +267,20 @@ impl Tags {
     pub async fn get(
         &self,
         name: impl AsRef<[u8]>,
-    ) -> super::FallibleRequestResult<Option<TagInfo>> {
+    ) -> super::RequestResult<Option<TagInfo>> {
         let mut stream = self.list_with_opts(ListTags::single(name.as_ref())).await?;
         Ok(stream.next().await.transpose()?)
     }
 
-    pub async fn set_with_opts(&self, options: SetTag) -> super::FallibleRequestResult<()> {
+    pub async fn set_with_opts(&self, options: SetTag) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
@@ -293,7 +293,7 @@ impl Tags {
         &self,
         name: impl AsRef<[u8]>,
         value: impl Into<HashAndFormat>,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         self.set_with_opts(SetTag {
             name: Tag::from(name.as_ref()),
             value: value.into(),
@@ -334,15 +334,15 @@ impl Tags {
     }
 
     /// Deletes a tag.
-    pub async fn delete_with_opts(&self, options: Delete) -> super::FallibleRequestResult<()> {
+    pub async fn delete_with_opts(&self, options: Delete) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = quic_rpc::channel::oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
@@ -352,12 +352,12 @@ impl Tags {
     }
 
     /// Deletes a tag.
-    pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::FallibleRequestResult<()> {
+    pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::RequestResult<()> {
         self.delete_with_opts(Delete::single(name.as_ref())).await
     }
 
     /// Deletes a range of tags.
-    pub async fn delete_range<R, E>(&self, range: R) -> super::FallibleRequestResult<()>
+    pub async fn delete_range<R, E>(&self, range: R) -> super::RequestResult<()>
     where
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
@@ -369,12 +369,12 @@ impl Tags {
     pub async fn delete_prefix(
         &self,
         prefix: impl AsRef<[u8]>,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         self.delete_with_opts(Delete::prefix(prefix.as_ref())).await
     }
 
     /// Delete all tags. Use with care. After this, all data will be garbage collected.
-    pub async fn delete_all(&self) -> super::FallibleRequestResult<()> {
+    pub async fn delete_all(&self) -> super::RequestResult<()> {
         self.delete_with_opts(Delete {
             from: None,
             to: None,
@@ -385,15 +385,15 @@ impl Tags {
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename_with_opts(&self, options: Rename) -> super::FallibleRequestResult<()> {
+    pub async fn rename_with_opts(&self, options: Rename) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
-            ServiceRequest::Local(c) => {
+            Request::Local(c) => {
                 let (tx, rx) = quic_rpc::channel::oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
-            ServiceRequest::Remote(r) => {
+            Request::Remote(r) => {
                 let (_, rx) = r.write(options).await?;
                 rx.into()
             }
@@ -409,10 +409,33 @@ impl Tags {
         &self,
         from: impl AsRef<[u8]>,
         to: impl AsRef<[u8]>,
-    ) -> super::FallibleRequestResult<()> {
+    ) -> super::RequestResult<()> {
         self.rename_with_opts(Rename {
             from: Tag::from(from.as_ref()),
             to: Tag::from(to.as_ref()),
+        })
+        .await
+    }
+
+    pub async fn create_with_opts(&self, options: CreateTagRequest) -> super::RequestResult<Tag> {
+        trace!("{:?}", options);
+        let rx = match self.sender.request().await? {
+            Request::Local(c) => {
+                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                c.send((options, tx)).await?;
+                rx
+            }
+            Request::Remote(r) => {
+                let (_, rx) = r.write(options).await?;
+                rx.into()
+            }
+        };
+        Ok(rx.await??)
+    }
+
+    pub async fn create(&self, value: impl Into<HashAndFormat>) -> super::RequestResult<Tag> {
+        self.create_with_opts(CreateTagRequest {
+            value: value.into(),
         })
         .await
     }

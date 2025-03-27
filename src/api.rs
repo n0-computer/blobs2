@@ -13,44 +13,47 @@ pub mod tags;
 pub(crate) type ApiSender =
     quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>;
 
+/// Error for all rpc interactions.
 pub type RpcError = quic_rpc::Error;
 pub type RpcResult<T> = std::result::Result<T, RpcError>;
 
 #[derive(Debug, thiserror::Error)]
-pub enum FallibleRequestError {
+pub enum RequestError {
+    /// Request failed due to rpc error.
     #[error("rpc error: {0}")]
     Rpc(#[from] quic_rpc::Error),
+    /// Request failed due an actual error.
     #[error("inner error: {0}")]
     Inner(#[from] Error),
 }
 
-pub type FallibleRequestResult<T> = std::result::Result<T, FallibleRequestError>;
+pub type RequestResult<T> = std::result::Result<T, RequestError>;
 
-impl From<quic_rpc::channel::SendError> for FallibleRequestError {
+impl From<quic_rpc::channel::SendError> for RequestError {
     fn from(e: quic_rpc::channel::SendError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::channel::RecvError> for FallibleRequestError {
+impl From<quic_rpc::channel::RecvError> for RequestError {
     fn from(e: quic_rpc::channel::RecvError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::RequestError> for FallibleRequestError {
+impl From<quic_rpc::RequestError> for RequestError {
     fn from(e: quic_rpc::RequestError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::rpc::WriteError> for FallibleRequestError {
+impl From<quic_rpc::rpc::WriteError> for RequestError {
     fn from(e: quic_rpc::rpc::WriteError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<io::Error> for FallibleRequestError {
+impl From<io::Error> for RequestError {
     fn from(e: io::Error) -> Self {
         Self::Inner(e.into())
     }
@@ -123,11 +126,11 @@ impl From<RpcError> for Error {
     }
 }
 
-impl From<FallibleRequestError> for Error {
-    fn from(e: FallibleRequestError) -> Self {
+impl From<RequestError> for Error {
+    fn from(e: RequestError) -> Self {
         match e {
-            FallibleRequestError::Rpc(e) => Self::Io(e.into()),
-            FallibleRequestError::Inner(e) => e,
+            RequestError::Rpc(e) => Self::Io(e.into()),
+            RequestError::Inner(e) => e,
         }
     }
 }
