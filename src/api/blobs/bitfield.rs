@@ -23,12 +23,18 @@ pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
 }
 
 /// The state of a bitfield, or an update to a bitfield
-#[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bitfield {
     /// The ranges that were added
     pub ranges: ChunkRanges,
     /// Possible update to the size information. can this be just a u64?
     pub size: u64,
+}
+
+impl Default for Bitfield {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl Serialize for Bitfield {
