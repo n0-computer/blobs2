@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     // let args = ReceiveArgs::parse();
     // let ticket = args.ticket;
-    let ticket: BlobTicket = "blobab4oufiyx2xh4ikh7yye4pfsdtjh3v7i53ltntsyexc2nqup7fsciajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaiafetez2t722ayaycuab4x7vubqcfthupgeaiqksmqsd5ecxg7h732aeoqi2a45idvm7gg2g6555znn".parse().unwrap();
+    let ticket: BlobTicket = "blobadp7jtzebap5f7qkyqs3bqolu2jidzquqsbjnyzvwm2psfn5rztbaajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaqaauaqaakm3sayaj57y2b62muae674na6m3sayaycuab4uzxebqc6bra2oajzeub2khp26aibktirqlu44ejzmf2a4lww7kdyffrfrj".parse().unwrap();
     let dirname = format!(".sendme2-recv-{}", ticket.hash().to_hex());
     let store = FsStore::load(dirname).await?;
     let blobs = store.blobs();
@@ -56,19 +56,19 @@ async fn main() -> anyhow::Result<()> {
     // }
     // let ranges = blobs.get_missing(content).await?;
     // let ranges: RangeSpecSeq = RangeSpecSeq::verified_child_sizes();
-    let mut dialer = Dialer::new(endpoint, ticket.node_addr().clone());
+    let mut dialer = Dialer::new(endpoint.clone(), ticket.node_addr().clone());
     let conn = dialer.connection().await?;
     println!("Connected to {:?}", addr);
-    let ranges = RangeSpecSeq::from_ranges_infinite([
-        ChunkRanges::all(),
-        ChunkRanges::from(ChunkNum(u64::MAX)..),
-    ]);
-    println!("Ranges: {:?}", ranges);
-    execute_request(&store, conn, GetRequest::new(ticket.hash(), ranges)).await?;
-    store.dump().await?;
-    return Ok(());
-    // let stats = get_one_by_one(connection, content);
-    let stats = blobs2::get::db::get_all(dialer, content, &store);
+    // let ranges = RangeSpecSeq::from_ranges_infinite([
+    //     ChunkRanges::all(),
+    //     ChunkRanges::from(ChunkNum(u64::MAX)..),
+    // ]);
+    // println!("Ranges: {:?}", ranges);
+    // execute_request(&store, conn, GetRequest::new(ticket.hash(), ranges)).await?;
+    // store.dump().await?;
+    // return Ok(());
+    let stats = get_one_by_one(conn, content);
+    // let stats = blobs2::get::db::get_all(dialer, content, &store);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = ctrl_c => {

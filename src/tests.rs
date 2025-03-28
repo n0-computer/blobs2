@@ -162,12 +162,18 @@ async fn two_nodes_size_request() -> TestResult<()> {
             RangeSpec::EMPTY
         ])
     );
-    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, sizes)).await?;
-    for size in INTERESTING_SIZES {
-        let hash = Hash::new(test_data(size));
-        let bitfield = store2.observe(hash).await?;
-        println!("size: {} bitfield: {:?}", size, bitfield);
-    }
+    get::db::execute_request(&store2, conn.clone(), GetRequest::new(root.hash, sizes)).await?;
+
+    let missing = store2.missing(root).await?;
+    // let missing_chunks = missing.chunks();
+    // println!("{:?} {:?}", missing, missing_chunks);
+    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, missing)).await?;
+    check_presence(&store2, &INTERESTING_SIZES).await?;
+    // for size in INTERESTING_SIZES {
+    //     let hash = Hash::new(test_data(size));
+    //     let bitfield = store2.observe(hash).await?;
+    //     println!("size: {} bitfield: {:?}", size, bitfield);
+    // }
     Ok(())
 }
 

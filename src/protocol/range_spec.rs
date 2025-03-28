@@ -83,6 +83,22 @@ impl RangeSpec {
         self.0.len() == 1 && self.0[0] == 0
     }
 
+    /// Returns the number of chunks selected by this [`RangeSpec`], as a tuple
+    /// with the minimum and maximum number of chunks.
+    pub fn chunks(&self) -> (u64, Option<u64>) {
+        let mut min = 0;
+        for i in 0..self.0.len() / 2 {
+            min += self.0[2 * i + 1];
+        }
+        let max = if self.0.len() % 2 != 0 {
+            // spec is open ended
+            None
+        } else {
+            Some(min)
+        };
+        (min, max)
+    }
+
     /// Creates a [`ChunkRanges`] from this [`RangeSpec`].
     pub fn to_chunk_ranges(&self) -> ChunkRanges {
         // this is zero allocation for single ranges
@@ -275,6 +291,31 @@ impl RangeSpecSeq {
     /// that is all further blobs have selected chunks spans.
     pub fn iter_non_empty(&self) -> NonEmptyRequestRangeSpecIter<'_> {
         NonEmptyRequestRangeSpecIter::new(self.iter())
+    }
+
+    /// True if this range spec sequence repeats the last range spec forever.
+    pub fn is_infinite(&self) -> bool {
+        self.0
+            .last()
+            .map(|(_, spec)| !spec.is_empty())
+            .unwrap_or_default()
+    }
+
+    /// Returns the number of chunks selected by this [`RangeSpecSeq`], as a tuple
+    /// with the minimum and maximum number of chunks.
+    pub fn chunks(&self) -> (u64, Option<u64>) {
+        if self.0.is_empty() {
+            return (0, Some(0));
+        }
+        let mut min = 0;
+        let mut max = if self.is_infinite() { None } else { Some(0) };
+        // this is tricky. The count for each element is the number of times the *previous* element is repeated.
+        for ((_, ranges), (count, _)) in self.0.iter().zip(self.0.iter().skip(1)) {
+            let (rmin, rmax) = ranges.chunks();
+            min += rmin * *count;
+            max = max.and_then(|m| rmax.map(|rmax| m + rmax * *count));
+        }
+        (min, max)
     }
 }
 

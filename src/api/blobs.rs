@@ -483,7 +483,9 @@ impl Blobs {
     async fn get_missing_hash_seq(&self, root: Hash) -> RequestResult<RangeSpecSeq> {
         let local_bitfield = self.observe(root).await?;
         let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
-        let mut stream = self.export_bao(root, local_bitfield.ranges).stream();
+        let mut stream = self
+            .export_bao(root, local_bitfield.ranges.clone())
+            .stream();
         let mut hashes = HashSet::new();
         hashes.insert(root);
         let mut ranges = BTreeMap::new();
@@ -505,11 +507,16 @@ impl Blobs {
                 }
             }
         }
-        // let required_ranges = ChunkRanges::all() - local_ranges;
-        let n = ranges.keys().last().copied().unwrap_or_default();
+        let n = if local_bitfield.is_validated() {
+            local_bitfield.size / 32
+        } else {
+            ranges.keys().last().copied().unwrap_or_default()
+        };
         let ranges = (0..=n).map(|i| ranges.remove(&i).unwrap_or(RangeSpec::all()));
-        let ranges = ranges.collect::<Vec<_>>();
-        println!("ranges: {:?}", ranges);
+        let mut ranges = ranges.collect::<Vec<_>>();
+        if local_bitfield.is_validated() {
+            ranges.push(RangeSpec::EMPTY);
+        }
         Ok(RangeSpecSeq::new(ranges))
     }
 
