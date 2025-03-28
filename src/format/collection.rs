@@ -7,7 +7,11 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    get::{fsm, Stats}, hashseq::HashSeq, Hash
+    api::{blobs::ImportBytesRequest, Scope, Store},
+    get::{fsm, Stats},
+    hashseq::HashSeq,
+    util::temp_tag::TempTag,
+    BlobFormat, Hash,
 };
 
 /// A collection of blobs
@@ -179,6 +183,26 @@ impl Collection {
             "names and links length mismatch"
         );
         Ok(Self::from_parts(hs.into_iter().skip(1), meta))
+    }
+
+    /// Store a collection in a store. returns the root hash of the collection
+    /// as a TempTag.
+    pub async fn store(self, db: &Store) -> anyhow::Result<TempTag> {
+        let (links, meta) = self.into_parts();
+        let meta_bytes = postcard::to_stdvec(&meta)?;
+        let meta_tag = db.add_bytes(meta_bytes).temp_tag().await?;
+        let links_bytes = std::iter::once(*meta_tag.hash())
+            .chain(links)
+            .collect::<HashSeq>();
+        let links_tag = db
+            .add_bytes_with_opts(ImportBytesRequest {
+                data: links_bytes.into(),
+                format: BlobFormat::HashSeq,
+                scope: Scope::GLOBAL,
+            })
+            .temp_tag()
+            .await?;
+        Ok(links_tag)
     }
 
     /// Split a collection into a sequence of links and metadata

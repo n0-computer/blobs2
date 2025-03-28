@@ -943,7 +943,10 @@ async fn export_path_impl(
 ) -> api::Result<()> {
     let ExportPath { mode, target, .. } = cmd;
     if !target.is_absolute() {
-        return Err(api::Error::io(io::ErrorKind::InvalidInput, "path is not absolute"));
+        return Err(api::Error::io(
+            io::ErrorKind::InvalidInput,
+            "path is not absolute",
+        ));
     }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;

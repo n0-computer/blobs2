@@ -1,7 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use blobs2::{
-    api::{blobs::{ExportMode, ExportPath}, Store}, format::collection::Collection, get::db::{Dialer, GetConnection}, store::fs::FsStore, ticket::BlobTicket, HashAndFormat
+    api::{
+        blobs::{ExportMode, ExportPath},
+        Store,
+    },
+    format::collection::Collection,
+    get::db::{Dialer, GetConnection},
+    store::fs::FsStore,
+    ticket::BlobTicket,
+    HashAndFormat,
 };
 use clap::Parser;
 use iroh::endpoint::Connection;
@@ -58,13 +66,11 @@ async fn export(db: &Store, collection: Collection) -> anyhow::Result<()> {
             eprintln!("You can remove the file or directory and try again. The download will not be repeated.");
             anyhow::bail!("target {} already exists", target.display());
         }
-        db.export_with_opts(
-            ExportPath {
-                hash: *hash,
-                target,
-                mode: ExportMode::TryReference,
-            }
-        )
+        db.export_with_opts(ExportPath {
+            hash: *hash,
+            target,
+            mode: ExportMode::TryReference,
+        })
         .finish()
         .await?;
     }
