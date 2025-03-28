@@ -410,16 +410,17 @@ impl BaoFileStorage {
         Ok(match self {
             BaoFileStorage::PartialMem(mut ms) => {
                 // check if we need to switch to file mode, otherwise write to memory
-                if max_offset(batch) <= ctx.options.inline.max_data_inlined {
+                let (state, update) = if max_offset(batch) <= ctx.options.inline.max_data_inlined {
                     ms.write_batch(size, batch, ranges)?;
                     if ms.bitfield.state().is_complete() {
-                        let (state, update) = ms.into_complete(hash, ctx)?;
-                        send_update(permit, hash, update);
-                        state.into()
-                    } else if ms.bitfield.state().is_validated() {
-                        ms.into()
+                        let (cs, update) = ms.into_complete(hash, ctx)?;
+                        (cs.into(), update)
                     } else {
-                        ms.into()
+                        let fs = ms.persist(ctx, hash)?;
+                        let update = EntryState::Partial {
+                            size: fs.bitfield.state().validated_size(),
+                        };
+                        (fs.into(), update)
                     }
                 } else {
                     // *first* switch to file mode, *then* write the batch.
@@ -431,19 +432,17 @@ impl BaoFileStorage {
                     let mut fs = ms.persist(ctx, hash)?;
                     fs.write_batch(size, batch, ranges)?;
                     if fs.bitfield.state().is_complete() {
-                        let (state, update) = fs.into_complete(hash, ctx)?;
-                        send_update(permit, hash, update);
-                        state.into()
+                        let (cs, update) = fs.into_complete(hash, ctx)?;
+                        (cs.into(), update)
                     } else {
-                        let size = if fs.bitfield.state().is_validated() {
-                            Some(fs.bitfield.state().size)
-                        } else {
-                            None
+                        let update = EntryState::Partial {
+                            size: fs.bitfield.state().validated_size(),
                         };
-                        send_update(permit, hash, EntryState::Partial { size });
-                        fs.into()
+                        (fs.into(), update)
                     }
-                }
+                };
+                send_update(permit, hash, update);
+                state
             }
             BaoFileStorage::Partial(mut fs) => {
                 let validated_before = fs.bitfield.state().is_validated();

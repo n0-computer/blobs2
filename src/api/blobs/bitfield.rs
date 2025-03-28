@@ -111,6 +111,15 @@ impl Bitfield {
             self.ranges.is_all()
         }
     }
+
+    /// Get the validated size if the bitfield is validated
+    pub fn validated_size(&self) -> Option<u64> {
+        if self.is_validated() {
+            Some(self.size)
+        } else {
+            None
+        }
+    }
 }
 
 fn choose_size(a: &Bitfield, b: &Bitfield) -> u64 {
