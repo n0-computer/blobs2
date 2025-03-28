@@ -181,7 +181,7 @@ impl RangeSpecSeq {
         }
     }
 
-    /// Just the first blob.
+    /// Request just the first blob.
     pub fn root() -> Self {
         Self::from_ranges([ChunkRanges::all()])
     }
@@ -233,6 +233,9 @@ impl RangeSpecSeq {
     ///
     /// This will merge adjacent range specs with the same value and thus make
     /// sure that the resulting sequence is as compact as possible.
+    ///
+    /// It will *not*, however, attach an empty range spec at the end, so unless you do this
+    /// yourself the generated sequence will repeat the last range spec forever.
     pub fn new(children: impl IntoIterator<Item = RangeSpec>) -> Self {
         let mut count = 0;
         let mut res = SmallVec::new();
