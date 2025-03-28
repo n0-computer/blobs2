@@ -1,17 +1,23 @@
+use std::path::PathBuf;
+
+use bao_tree::ChunkRanges;
 use iroh::{protocol::Router, Endpoint};
 use n0_future::StreamExt;
+use tempfile::TempDir;
 use testresult::TestResult;
 use tracing::info;
 
 use crate::{
+    api::Store,
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
+    protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::fs::{
         tests::{test_data, INTERESTING_SIZES},
         FsStore,
     },
-    Hash, HashAndFormat,
+    BlobFormat, Hash, HashAndFormat,
 };
 
 #[tokio::test]
@@ -49,25 +55,45 @@ async fn two_nodes_blobs() -> TestResult<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn two_nodes_hash_seq() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let testdir = tempfile::tempdir()?;
+async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<HashAndFormat> {
+    let batch = blobs.batch().await?;
+    let mut tts = Vec::new();
+    for size in sizes {
+        tts.push(batch.add_bytes(test_data(*size)).temp_tag().await?);
+    }
+    let hash_seq = tts.iter().map(|tt| *tt.hash()).collect::<HashSeq>();
+    let root = batch
+        .add_bytes_with_opts((hash_seq, BlobFormat::HashSeq))
+        .with_named_tag("hs")
+        .await?;
+    Ok(root)
+}
+
+async fn check_presence(store: &Store, sizes: &[usize]) -> TestResult<()> {
+    for size in sizes {
+        let expected = test_data(*size);
+        let hash = Hash::new(&expected);
+        let actual = store
+            .export_bao(hash, ChunkRanges::all())
+            .data_to_bytes()
+            .await?;
+        assert_eq!(actual, expected);
+    }
+    Ok(())
+}
+
+async fn two_node_test_setup() -> TestResult<(
+    TempDir,
+    (Router, FsStore, PathBuf),
+    (Router, FsStore, PathBuf),
+)> {
+    let testdir = tempfile::tempdir().unwrap();
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
-    let store1 = FsStore::load(&db1_path).await?;
-    let store2 = FsStore::load(&db2_path).await?;
-    let sizes = INTERESTING_SIZES;
-    let mut hashes = Vec::new();
-    for size in sizes {
-        let hash = store1.add_bytes(test_data(size)).temp_tag().await?;
-        hashes.push(hash);
-    }
-    let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
-    let root_tt = store1.add_bytes(hash_seq).temp_tag().await?;
-    let root = *root_tt.hash();
-    let ep1 = Endpoint::builder().discovery_n0().bind().await?;
-    let ep2 = Endpoint::builder().bind().await?;
+    let store1 = FsStore::load(&db1_path).await.unwrap();
+    let store2 = FsStore::load(&db2_path).await.unwrap();
+    let ep1 = Endpoint::builder().discovery_n0().bind().await.unwrap();
+    let ep2 = Endpoint::builder().bind().await.unwrap();
     let blobs1 = Blobs::new(&store1, ep1.clone());
     let blobs2 = Blobs::new(&store2, ep2.clone());
     let r1 = Router::builder(ep1)
@@ -78,9 +104,70 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
         .accept(crate::ALPN, blobs2)
         .spawn()
         .await?;
+    Ok((testdir, (r1, store1, db1_path), (r2, store2, db2_path)))
+}
+
+#[tokio::test]
+async fn two_nodes_hash_seq() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
+    let sizes = INTERESTING_SIZES;
+    let root = add_test_hash_seq(&store1, &sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    get::db::get_all(conn, HashAndFormat::hash_seq(root), &store2).await?;
+    get::db::get_all(conn, root, &store2).await?;
+    check_presence(&store2, &sizes).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_nodes_size_request() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let (testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let sizes = INTERESTING_SIZES;
+    let root = add_test_hash_seq(&store1, &sizes).await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    let sizes = store2.verified_size(root).await?;
+    assert_eq!(sizes, RangeSpecSeq::verified_child_sizes());
+    // get the first 3 items (hash_seq, and 2 children)
+    get::db::execute_request(
+        &store2,
+        conn.clone(),
+        GetRequest::new(
+            root.hash,
+            RangeSpecSeq::new([
+                RangeSpec::all(),
+                RangeSpec::all(),
+                RangeSpec::all(),
+                RangeSpec::EMPTY,
+            ]),
+        ),
+    )
+    .await?;
+    // check that sizes for the data we have already are omitted
+    let sizes = store2.verified_size(root).await?;
+    assert_eq!(
+        sizes,
+        RangeSpecSeq::new([
+            RangeSpec::EMPTY,
+            RangeSpec::EMPTY,
+            RangeSpec::EMPTY,
+            RangeSpec::verified_size(),
+            RangeSpec::verified_size(),
+            RangeSpec::verified_size(),
+            RangeSpec::verified_size(),
+            RangeSpec::verified_size(),
+            RangeSpec::verified_size(),
+            RangeSpec::EMPTY
+        ])
+    );
+    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, sizes)).await?;
+    for size in INTERESTING_SIZES {
+        let hash = Hash::new(test_data(size));
+        let bitfield = store2.observe(hash).await?;
+        println!("size: {} bitfield: {:?}", size, bitfield);
+    }
     Ok(())
 }
 

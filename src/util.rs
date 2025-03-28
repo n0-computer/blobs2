@@ -120,7 +120,6 @@ pub mod outboard_with_progress {
     {
         // do not allocate for small trees
         let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
-        println!("tree: {:?}", tree);
         // debug_assert!(buffer.len() == tree.chunk_group_bytes());
         for item in tree.post_order_chunks_iter() {
             match item {

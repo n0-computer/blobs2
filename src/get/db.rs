@@ -32,6 +32,15 @@ impl GetConnection for Connection {
     }
 }
 
+impl GetConnection for &Connection {
+    fn connection(
+        &mut self,
+    ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_ {
+        let conn = self.clone();
+        async { Ok(conn) }
+    }
+}
+
 pub struct Dialer {
     endpoint: Endpoint,
     addr: NodeAddr,

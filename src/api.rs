@@ -271,7 +271,7 @@ impl std::fmt::Debug for Scope {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SyncDb;
+pub struct SyncDbRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ShutdownRequest;

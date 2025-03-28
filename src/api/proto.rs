@@ -20,10 +20,10 @@ use super::{
     blobs::{
         self, BatchResponse, Bitfield, BlobStatus, ExportBaoRequest, ExportPath, ExportProgress,
         ImportBaoRequest, ImportByteStream, ImportBytesRequest, ImportPath, ImportProgress,
-        ListRequest, ObserveRequest,
+        ObserveRequest,
     },
     tags::{self, TagInfo},
-    ClearProtected, Scope, ShutdownRequest, SyncDb,
+    ClearProtected, Scope, ShutdownRequest, SyncDbRequest,
 };
 use crate::{store::util::Tag, util::temp_tag::TempTag, Hash, HashAndFormat};
 
@@ -71,16 +71,16 @@ pub type ExportBaoMsg = WithChannels<ExportBaoRequest, StoreService>;
 pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
 pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
 pub type ListTagsMsg = WithChannels<tags::ListTags, StoreService>;
-pub type RenameTagMsg = WithChannels<tags::Rename, StoreService>;
-pub type DeleteTagsMsg = WithChannels<tags::Delete, StoreService>;
+pub type RenameTagMsg = WithChannels<tags::RenameRequest, StoreService>;
+pub type DeleteTagsMsg = WithChannels<tags::DeleteRequest, StoreService>;
 pub type DeleteBlobsMsg = WithChannels<blobs::DeleteRequest, StoreService>;
-pub type SetTagMsg = WithChannels<tags::SetTag, StoreService>;
+pub type SetTagMsg = WithChannels<tags::SetTagRequest, StoreService>;
 pub type ClearProtectedMsg = WithChannels<ClearProtected, StoreService>;
 pub type BlobStatusMsg = WithChannels<blobs::BlobStatusRequest, StoreService>;
 pub type BatchMsg = WithChannels<blobs::BatchRequest, StoreService>;
 pub type CreateTagMsg = WithChannels<tags::CreateTagRequest, StoreService>;
 pub type ListBlobsMsg = WithChannels<blobs::ListRequest, StoreService>;
-pub type SyncDbMsg = WithChannels<SyncDb, StoreService>;
+pub type SyncDbMsg = WithChannels<SyncDbRequest, StoreService>;
 pub type CreateTempTagMsg = WithChannels<tags::CreateTempTagRequest, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
@@ -121,11 +121,11 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
     ListTags(tags::ListTags),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    SetTag(tags::SetTag),
+    SetTag(tags::SetTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    DeleteTags(tags::Delete),
+    DeleteTags(tags::DeleteRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    RenameTag(tags::Rename),
+    RenameTag(tags::RenameRequest),
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
     CreateTag(tags::CreateTagRequest),
     #[rpc(tx = oneshot::Sender<Vec<HashAndFormat>>)]
@@ -133,7 +133,7 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<TempTag>)]
     CreateTempTag(tags::CreateTempTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    SyncDb(SyncDb),
+    SyncDb(SyncDbRequest),
     #[rpc(tx = oneshot::Sender<()>)]
     Shutdown(ShutdownRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]

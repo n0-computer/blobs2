@@ -262,7 +262,7 @@ impl PartialFileStorage {
                     let o0 = leaf.offset;
                     // divide by chunk size, multiply by 8
                     let index = (leaf.offset >> (tree.block_size().chunk_log() + 10)) << 3;
-                    tracing::trace!(
+                    trace!(
                         "write_batch f={:?} o={} l={}",
                         self.data,
                         o0,
@@ -416,6 +416,8 @@ impl BaoFileStorage {
                         let (state, update) = ms.into_complete(hash, ctx)?;
                         send_update(permit, hash, update);
                         state.into()
+                    } else if ms.bitfield.state().is_validated() {
+                        ms.into()
                     } else {
                         ms.into()
                     }

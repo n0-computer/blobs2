@@ -43,7 +43,7 @@ use crate::{
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ListTagsMsg,
             ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
         },
-        tags::{self, Delete, TagInfo},
+        tags::{self, DeleteRequest, TagInfo},
         Store,
     },
     store::{
@@ -173,7 +173,7 @@ impl Actor {
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
-                    inner: Delete { from, to },
+                    inner: DeleteRequest { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -198,7 +198,7 @@ impl Actor {
             }
             Command::RenameTag(cmd) => {
                 let RenameTagMsg {
-                    inner: tags::Rename { from, to },
+                    inner: tags::RenameRequest { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -255,7 +255,7 @@ impl Actor {
                 tx.send(tags.collect()).await.ok();
             }
             Command::SetTag(SetTagMsg {
-                inner: tags::SetTag { name: tag, value },
+                inner: tags::SetTagRequest { name: tag, value },
                 tx,
                 ..
             }) => {

@@ -140,7 +140,7 @@ pub struct ListTempTagsRequest;
 
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Rename {
+pub struct RenameRequest {
     /// Old tag name
     pub from: Tag,
     /// New tag name
@@ -149,14 +149,14 @@ pub struct Rename {
 
 /// Options for a delete operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Delete {
+pub struct DeleteRequest {
     /// Optional from tag (inclusive)
     pub from: Option<Tag>,
     /// Optional to tag (exclusive)
     pub to: Option<Tag>,
 }
 
-impl Delete {
+impl DeleteRequest {
     /// Delete a single tag
     pub fn single(name: &[u8]) -> Self {
         let name = Tag::from(name);
@@ -206,7 +206,7 @@ where
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetTag {
+pub struct SetTagRequest {
     pub name: Tag,
     pub value: HashAndFormat,
 }
@@ -264,15 +264,12 @@ impl Tags {
     }
 
     /// Get the value of a single tag
-    pub async fn get(
-        &self,
-        name: impl AsRef<[u8]>,
-    ) -> super::RequestResult<Option<TagInfo>> {
+    pub async fn get(&self, name: impl AsRef<[u8]>) -> super::RequestResult<Option<TagInfo>> {
         let mut stream = self.list_with_opts(ListTags::single(name.as_ref())).await?;
         Ok(stream.next().await.transpose()?)
     }
 
-    pub async fn set_with_opts(&self, options: SetTag) -> super::RequestResult<()> {
+    pub async fn set_with_opts(&self, options: SetTagRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
@@ -294,7 +291,7 @@ impl Tags {
         name: impl AsRef<[u8]>,
         value: impl Into<HashAndFormat>,
     ) -> super::RequestResult<()> {
-        self.set_with_opts(SetTag {
+        self.set_with_opts(SetTagRequest {
             name: Tag::from(name.as_ref()),
             value: value.into(),
         })
@@ -334,7 +331,7 @@ impl Tags {
     }
 
     /// Deletes a tag.
-    pub async fn delete_with_opts(&self, options: Delete) -> super::RequestResult<()> {
+    pub async fn delete_with_opts(&self, options: DeleteRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
@@ -353,7 +350,8 @@ impl Tags {
 
     /// Deletes a tag.
     pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::RequestResult<()> {
-        self.delete_with_opts(Delete::single(name.as_ref())).await
+        self.delete_with_opts(DeleteRequest::single(name.as_ref()))
+            .await
     }
 
     /// Deletes a range of tags.
@@ -362,20 +360,18 @@ impl Tags {
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
     {
-        self.delete_with_opts(Delete::range(range)).await
+        self.delete_with_opts(DeleteRequest::range(range)).await
     }
 
     /// Delete all tags with the given prefix.
-    pub async fn delete_prefix(
-        &self,
-        prefix: impl AsRef<[u8]>,
-    ) -> super::RequestResult<()> {
-        self.delete_with_opts(Delete::prefix(prefix.as_ref())).await
+    pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> super::RequestResult<()> {
+        self.delete_with_opts(DeleteRequest::prefix(prefix.as_ref()))
+            .await
     }
 
     /// Delete all tags. Use with care. After this, all data will be garbage collected.
     pub async fn delete_all(&self) -> super::RequestResult<()> {
-        self.delete_with_opts(Delete {
+        self.delete_with_opts(DeleteRequest {
             from: None,
             to: None,
         })
@@ -385,7 +381,7 @@ impl Tags {
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename_with_opts(&self, options: Rename) -> super::RequestResult<()> {
+    pub async fn rename_with_opts(&self, options: RenameRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
@@ -410,7 +406,7 @@ impl Tags {
         from: impl AsRef<[u8]>,
         to: impl AsRef<[u8]>,
     ) -> super::RequestResult<()> {
-        self.rename_with_opts(Rename {
+        self.rename_with_opts(RenameRequest {
             from: Tag::from(from.as_ref()),
             to: Tag::from(to.as_ref()),
         })

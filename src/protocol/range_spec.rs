@@ -181,6 +181,11 @@ impl RangeSpecSeq {
         }
     }
 
+    /// Just the first blob.
+    pub fn root() -> Self {
+        Self::from_ranges([ChunkRanges::all()])
+    }
+
     /// A [`RangeSpecSeq`] containing all chunks from all blobs.
     ///
     /// [`RangeSpecSeq::iter`], will return a full range forever.
