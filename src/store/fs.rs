@@ -942,6 +942,12 @@ async fn export_path_impl(
     ctx: HashContext,
 ) -> api::Result<()> {
     let ExportPath { mode, target, .. } = cmd;
+    if !target.is_absolute() {
+        return Err(api::Error::io(io::ErrorKind::InvalidInput, "path is not absolute"));
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let (data, outboard_location) = {
         let guard = handle.storage.read().unwrap();
         let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
@@ -965,6 +971,7 @@ async fn export_path_impl(
         };
         (data, outboard)
     };
+    trace!("exporting {} to {}", cmd.hash.to_hex(), target.display());
     match data {
         MemOrFile::Mem(data) => {
             let mut target = fs::File::create(&target)?;

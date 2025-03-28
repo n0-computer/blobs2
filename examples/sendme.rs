@@ -1,10 +1,7 @@
-use bao_tree::{ChunkNum, ChunkRanges};
+use std::path::{Path, PathBuf};
+
 use blobs2::{
-    get::db::{execute_request, Dialer, GetConnection},
-    protocol::{GetRequest, RangeSpecSeq},
-    store::fs::FsStore,
-    ticket::BlobTicket,
-    HashAndFormat,
+    api::{blobs::{ExportMode, ExportPath}, Store}, format::collection::Collection, get::db::{Dialer, GetConnection}, store::fs::FsStore, ticket::BlobTicket, HashAndFormat
 };
 use clap::Parser;
 use iroh::endpoint::Connection;
@@ -27,6 +24,49 @@ async fn get_one_by_one(connection: Connection, content: HashAndFormat) -> anyho
         let _blob = blobs2::get::request::get_blob(connection.clone(), content.hash)
             .bytes()
             .await?;
+    }
+    Ok(())
+}
+
+fn validate_path_component(component: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !component.contains('/'),
+        "path components must not contain the only correct path separator, /"
+    );
+    Ok(())
+}
+
+fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let parts = name.split('/');
+    let mut path = root.to_path_buf();
+    for part in parts {
+        validate_path_component(part)?;
+        path.push(part);
+    }
+    Ok(path)
+}
+
+async fn export(db: &Store, collection: Collection) -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    for (name, hash) in collection.iter() {
+        let target = get_export_path(&root, name)?;
+        if target.exists() {
+            eprintln!(
+                "target {} already exists. Export stopped.",
+                target.display()
+            );
+            eprintln!("You can remove the file or directory and try again. The download will not be repeated.");
+            anyhow::bail!("target {} already exists", target.display());
+        }
+        db.export_with_opts(
+            ExportPath {
+                hash: *hash,
+                target,
+                mode: ExportMode::TryReference,
+            }
+        )
+        .finish()
+        .await?;
     }
     Ok(())
 }
@@ -67,8 +107,8 @@ async fn main() -> anyhow::Result<()> {
     // execute_request(&store, conn, GetRequest::new(ticket.hash(), ranges)).await?;
     // store.dump().await?;
     // return Ok(());
-    let stats = get_one_by_one(conn, content);
-    // let stats = blobs2::get::db::get_all(dialer, content, &store);
+    // let stats = get_one_by_one(conn, content);
+    let stats = blobs2::get::db::get_all(dialer, content, &store);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = ctrl_c => {
@@ -84,7 +124,8 @@ async fn main() -> anyhow::Result<()> {
     // let ranges = blobs2::get::db::get_missing(content, &store).await?;
     // println!("Missing ranges {:?}", ranges);
     endpoint.close().await;
-    store.dump().await?;
+    let collection = Collection::load(ticket.hash(), store.as_ref()).await?;
+    export(&store, collection).await?;
     store.shutdown().await?;
     Ok(())
 }

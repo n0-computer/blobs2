@@ -11,6 +11,7 @@ pub mod protocol;
 pub mod provider;
 pub mod ticket;
 pub mod util;
+pub mod format;
 
 #[cfg(test)]
 mod tests;
