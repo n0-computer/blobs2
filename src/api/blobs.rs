@@ -21,7 +21,7 @@ use genawaiter::sync::Gen;
 use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use n0_future::{Stream, StreamExt};
-use quic_rpc::{
+use irpc::{
     channel::{oneshot, spsc},
     Request,
 };
@@ -31,7 +31,7 @@ use tracing::trace;
 
 use super::{
     tags::{CreateTempTagRequest, TagInfo},
-    ApiSender, ClearProtected, RequestResult, Scope, ShutdownRequest, Store, SyncDbRequest, Tags,
+    ApiClient, ClearProtected, RequestResult, Scope, ShutdownRequest, Store, SyncDbRequest, Tags,
 };
 use crate::{
     get::db::{HashSeqChunk, LazyHashSeq},
@@ -49,7 +49,7 @@ use ref_cast::RefCast;
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Blobs {
-    sender: ApiSender,
+    client: ApiClient,
 }
 
 pub struct Batch<'a> {
@@ -92,7 +92,7 @@ impl<'a> Batch<'a> {
             scope: self.scope,
             value,
         };
-        let request = self.blobs.sender.request().await?;
+        let request = self.blobs.client.request().await?;
         let rx = match request {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
@@ -109,14 +109,14 @@ impl<'a> Batch<'a> {
 }
 
 impl Blobs {
-    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
+    pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
     }
 
     pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
         let msg = BatchRequest;
         trace!("{msg:?}");
-        let (rx, tx) = match self.sender.request().await? {
+        let (rx, tx) = match self.client.request().await? {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 let (out_tx, out_rx) = spsc::channel(32);
@@ -139,7 +139,7 @@ impl Blobs {
 
     pub async fn delete_with_opts(&self, options: DeleteRequest) -> RequestResult<()> {
         trace!("{options:?}");
-        let request = self.sender.request().await?;
+        let request = self.client.request().await?;
         let rx = match request {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
@@ -186,7 +186,7 @@ impl Blobs {
 
     pub fn add_bytes_with_opts(&self, options: ImportBytesRequest) -> ImportResult {
         trace!("{options:?}");
-        let request = self.sender.request();
+        let request = self.client.request();
         ImportResult::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
@@ -205,7 +205,7 @@ impl Blobs {
 
     pub fn add_path_with_opts(&self, options: ImportPath) -> ImportResult {
         trace!("{:?}", options);
-        let request = self.sender.request();
+        let request = self.client.request();
         ImportResult::new(self, async move {
             Ok(match request.await? {
                 Request::Local(c) => {
@@ -252,7 +252,7 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        let request = self.sender.request();
+        let request = self.client.request();
         ImportResult::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
@@ -271,7 +271,7 @@ impl Blobs {
 
     pub fn export_bao_with_opts(&self, options: ExportBaoRequest) -> ExportBaoResult {
         trace!("{options:?}");
-        let request = self.sender.request();
+        let request = self.client.request();
         ExportBaoResult::new(async move {
             Ok(match request.await? {
                 Request::Local(c) => {
@@ -338,7 +338,7 @@ impl Blobs {
             });
         }
         let (tx, rx) = spsc::channel(32);
-        let request = self.sender.request();
+        let request = self.client.request();
         ObserveResult::new(async move {
             let rx = match request.await? {
                 Request::Local(c) => {
@@ -522,7 +522,7 @@ impl Blobs {
 
     pub fn export_with_opts(&self, options: ExportPath) -> ExportResult {
         trace!("{:?}", options);
-        let request = self.sender.request();
+        let request = self.client.request();
         ExportResult::new(async move {
             Ok(match request.await? {
                 Request::Local(c) => {
@@ -553,7 +553,7 @@ impl Blobs {
         options: ImportBaoRequest,
     ) -> ImportBaoResult {
         trace!("{:?}", options);
-        let request = self.sender.request();
+        let request = self.client.request();
         ImportBaoResult::new(async move {
             let rx = match request.await? {
                 Request::Local(c) => {
@@ -653,7 +653,7 @@ impl Blobs {
 
     pub fn list(&self) -> BlobsListResult {
         let msg = ListRequest;
-        let req = self.sender.request();
+        let req = self.client.request();
         BlobsListResult::new(async move {
             Ok(match req.await? {
                 Request::Local(c) => {
@@ -672,7 +672,7 @@ impl Blobs {
     pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
         let hash = hash.into();
         let msg = BlobStatusRequest { hash };
-        let rx = match self.sender.request().await? {
+        let rx = match self.client.request().await? {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
@@ -695,7 +695,7 @@ impl Blobs {
 
     pub async fn sync_db(&self) -> RequestResult<()> {
         let msg = SyncDbRequest;
-        let rx = match self.sender.request().await? {
+        let rx = match self.client.request().await? {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
@@ -712,9 +712,9 @@ impl Blobs {
 
     pub async fn shutdown(&self) -> super::RpcResult<()> {
         let msg = ShutdownRequest;
-        let rx = match self.sender.request().await? {
+        let rx = match self.client.request().await? {
             Request::Local(c) => {
-                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                let (tx, rx) = irpc::channel::oneshot::channel();
                 c.send((msg, tx)).await?;
                 rx
             }
@@ -729,7 +729,7 @@ impl Blobs {
 
     pub async fn clear_protected(&self) -> RequestResult<()> {
         let msg = ClearProtected;
-        let rx = match self.sender.request().await? {
+        let rx = match self.client.request().await? {
             Request::Local(c) => {
                 let (tx, rx) = oneshot::channel();
                 c.send((msg, tx)).await?;
@@ -926,7 +926,7 @@ impl<'a> ImportResult<'a> {
         let blobs = self.blobs.clone();
         let tt = self.temp_tag().await?;
         let haf = *tt.hash_and_format();
-        let tags = Tags::ref_from_sender(&blobs.sender);
+        let tags = Tags::ref_from_sender(&blobs.client);
         tags.set(name, *tt.hash_and_format()).await?;
         drop(tt);
         Ok(haf)
@@ -937,7 +937,7 @@ impl<'a> ImportResult<'a> {
         let tt = self.temp_tag().await?;
         let hash = *tt.hash();
         let format = tt.format();
-        let tags = Tags::ref_from_sender(&blobs.sender);
+        let tags = Tags::ref_from_sender(&blobs.client);
         let name = tags.create(*tt.hash_and_format()).await?;
         drop(tt);
         Ok(TagInfo { name, hash, format })

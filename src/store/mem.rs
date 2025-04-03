@@ -19,7 +19,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{future::yield_now, StreamExt};
-use quic_rpc::channel::spsc;
+use irpc::channel::spsc;
 use tokio::{
     io::AsyncReadExt,
     sync::mpsc,
@@ -378,7 +378,7 @@ async fn import_bao_task(
     entry: Arc<RwLock<Entry>>,
     size: NonZeroU64,
     mut stream: spsc::Receiver<BaoContentItem>,
-    tx: quic_rpc::channel::oneshot::Sender<api::Result<()>>,
+    tx: irpc::channel::oneshot::Sender<api::Result<()>>,
 ) {
     let size = size.get();
     if let Some(entry) = entry.write().unwrap().incomplete_mut() {

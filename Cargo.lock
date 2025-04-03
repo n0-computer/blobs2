@@ -337,12 +337,12 @@ dependencies = [
  "iroh-io",
  "iroh-quinn",
  "iroh-test",
+ "irpc",
+ "irpc-derive",
  "n0-future",
  "nested_enum_utils",
  "postcard",
  "proptest",
- "quic-rpc",
- "quic-rpc-derive",
  "rand 0.8.5",
  "range-collections",
  "redb",
@@ -2006,6 +2006,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "irpc"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd778af83fc5a391ac0ad09dc62ee9fc40db4d91c7283bc268db035fe62c672"
+dependencies = [
+ "anyhow",
+ "futures-buffered",
+ "iroh-quinn",
+ "postcard",
+ "rcgen",
+ "rustls",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "irpc-derive"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "980eb39f78fdad4f17c35a903c6b67033650b7002409e9ed741c3c974e5a1739"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2948,33 +2979,6 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
-]
-
-[[package]]
-name = "quic-rpc"
-version = "0.50.0"
-dependencies = [
- "anyhow",
- "futures-buffered",
- "iroh-quinn",
- "postcard",
- "rcgen",
- "rustls",
- "serde",
- "smallvec",
- "thiserror 2.0.12",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "quic-rpc-derive"
-version = "0.50.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]

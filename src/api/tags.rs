@@ -4,12 +4,12 @@ use std::{
 };
 
 use n0_future::{Stream, StreamExt};
-use quic_rpc::{channel::oneshot, Request};
+use irpc::{channel::oneshot, Request};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{ApiSender, Scope, Tags};
+use super::{ApiClient, Scope, Tags};
 use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
 
 /// Information about a tag.
@@ -217,7 +217,7 @@ pub struct CreateTagRequest {
 }
 
 impl Tags {
-    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
+    pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
     }
 
@@ -335,7 +335,7 @@ impl Tags {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
-                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                let (tx, rx) = irpc::channel::oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
@@ -385,7 +385,7 @@ impl Tags {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
-                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                let (tx, rx) = irpc::channel::oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }
@@ -417,7 +417,7 @@ impl Tags {
         trace!("{:?}", options);
         let rx = match self.sender.request().await? {
             Request::Local(c) => {
-                let (tx, rx) = quic_rpc::channel::oneshot::channel();
+                let (tx, rx) = irpc::channel::oneshot::channel();
                 c.send((options, tx)).await?;
                 rx
             }

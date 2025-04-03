@@ -1,8 +1,8 @@
 //! The user facing API of the store.
-use std::{io, marker::PhantomData, net::SocketAddr, ops::Deref, sync::Arc};
+use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use proto::Request;
-use quic_rpc::rpc::{listen, Handler};
+use irpc::rpc::{listen, Handler};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 
@@ -10,18 +10,18 @@ pub mod blobs;
 pub mod proto;
 pub mod tags;
 
-pub(crate) type ApiSender =
-    quic_rpc::ServiceSender<proto::Command, proto::Request, proto::StoreService>;
+pub(crate) type ApiClient =
+    irpc::Client<proto::Command, proto::Request, proto::StoreService>;
 
 /// Error for all rpc interactions.
-pub type RpcError = quic_rpc::Error;
+pub type RpcError = irpc::Error;
 pub type RpcResult<T> = std::result::Result<T, RpcError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     /// Request failed due to rpc error.
     #[error("rpc error: {0}")]
-    Rpc(#[from] quic_rpc::Error),
+    Rpc(#[from] irpc::Error),
     /// Request failed due an actual error.
     #[error("inner error: {0}")]
     Inner(#[from] Error),
@@ -29,26 +29,26 @@ pub enum RequestError {
 
 pub type RequestResult<T> = std::result::Result<T, RequestError>;
 
-impl From<quic_rpc::channel::SendError> for RequestError {
-    fn from(e: quic_rpc::channel::SendError) -> Self {
+impl From<irpc::channel::SendError> for RequestError {
+    fn from(e: irpc::channel::SendError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::channel::RecvError> for RequestError {
-    fn from(e: quic_rpc::channel::RecvError) -> Self {
+impl From<irpc::channel::RecvError> for RequestError {
+    fn from(e: irpc::channel::RecvError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::RequestError> for RequestError {
-    fn from(e: quic_rpc::RequestError) -> Self {
+impl From<irpc::RequestError> for RequestError {
+    fn from(e: irpc::RequestError) -> Self {
         Self::Rpc(e.into())
     }
 }
 
-impl From<quic_rpc::rpc::WriteError> for RequestError {
-    fn from(e: quic_rpc::rpc::WriteError) -> Self {
+impl From<irpc::rpc::WriteError> for RequestError {
+    fn from(e: irpc::rpc::WriteError) -> Self {
         Self::Rpc(e.into())
     }
 }
@@ -62,11 +62,11 @@ impl From<io::Error> for RequestError {
 #[derive(Debug, thiserror::Error)]
 pub enum ExportBaoError {
     #[error("send error: {0}")]
-    Send(#[from] quic_rpc::channel::SendError),
+    Send(#[from] irpc::channel::SendError),
     #[error("recv error: {0}")]
-    Recv(#[from] quic_rpc::channel::RecvError),
+    Recv(#[from] irpc::channel::RecvError),
     #[error("request error: {0}")]
-    Request(#[from] quic_rpc::RequestError),
+    Request(#[from] irpc::RequestError),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("encode error: {0}")]
@@ -135,26 +135,26 @@ impl From<RequestError> for Error {
     }
 }
 
-impl From<quic_rpc::channel::RecvError> for Error {
-    fn from(e: quic_rpc::channel::RecvError) -> Self {
+impl From<irpc::channel::RecvError> for Error {
+    fn from(e: irpc::channel::RecvError) -> Self {
         Self::Io(e.into())
     }
 }
 
-impl From<quic_rpc::rpc::WriteError> for Error {
-    fn from(e: quic_rpc::rpc::WriteError) -> Self {
+impl From<irpc::rpc::WriteError> for Error {
+    fn from(e: irpc::rpc::WriteError) -> Self {
         Self::Io(e.into())
     }
 }
 
-impl From<quic_rpc::RequestError> for Error {
-    fn from(e: quic_rpc::RequestError) -> Self {
+impl From<irpc::RequestError> for Error {
+    fn from(e: irpc::RequestError) -> Self {
         Self::Io(e.into())
     }
 }
 
-impl From<quic_rpc::channel::SendError> for Error {
-    fn from(e: quic_rpc::channel::SendError) -> Self {
+impl From<irpc::channel::SendError> for Error {
+    fn from(e: irpc::channel::SendError) -> Self {
         Self::Io(e.into())
     }
 }
@@ -172,7 +172,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
-    sender: ApiSender,
+    sender: ApiClient,
 }
 
 impl Deref for Store {
@@ -186,7 +186,7 @@ impl Deref for Store {
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
-    sender: ApiSender,
+    sender: ApiClient,
 }
 
 impl Store {
@@ -199,7 +199,7 @@ impl Store {
     }
 
     pub fn connect(endpoint: quinn::Endpoint, addr: SocketAddr) -> Self {
-        let sender = quic_rpc::ServiceSender::Remote(endpoint, addr, PhantomData);
+        let sender = irpc::Client::quinn(endpoint, addr);
         Store::from_sender(sender)
     }
 
@@ -242,11 +242,11 @@ impl Store {
         listen::<Request>(endpoint, handler).await
     }
 
-    pub(crate) fn from_sender(sender: ApiSender) -> Self {
+    pub(crate) fn from_sender(sender: ApiClient) -> Self {
         Self { sender }
     }
 
-    pub(crate) fn ref_from_sender(sender: &ApiSender) -> &Self {
+    pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
     }
 }

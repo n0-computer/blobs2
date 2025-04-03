@@ -29,7 +29,7 @@ pub struct Get {
 impl fmt::Debug for Get {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Get")
-            .field("hash", &DD(self.hash))
+            .field("hash", &DD(self.hash.to_hex()))
             .finish_non_exhaustive()
     }
 }

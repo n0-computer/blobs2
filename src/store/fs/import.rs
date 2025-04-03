@@ -24,7 +24,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::{stream, Stream, StreamExt};
-use quic_rpc::{
+use irpc::{
     channel::{none::NoReceiver, spsc},
     Channels, WithChannels,
 };
@@ -343,7 +343,7 @@ async fn get_import_source(
 struct OutboardProgress(spsc::Sender<ImportProgress>);
 
 impl Progress for OutboardProgress {
-    type Error = quic_rpc::channel::SendError;
+    type Error = irpc::channel::SendError;
 
     async fn progress(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {
         // if offset.0 % 1024 != 0 {
@@ -488,7 +488,7 @@ mod tests {
 
     use bao_tree::io::outboard::PreOrderMemOutboard;
     use n0_future::stream;
-    use quic_rpc::RpcMessage;
+    use irpc::RpcMessage;
     use testresult::TestResult;
 
     use super::*;

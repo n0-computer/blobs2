@@ -9,11 +9,11 @@ pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::io::BaoContentItem;
 use bytes::Bytes;
 use n0_future::Stream;
-use quic_rpc::{
+use irpc::{
     channel::{oneshot, spsc},
     WithChannels,
 };
-use quic_rpc_derive::rpc_requests;
+use irpc_derive::rpc_requests;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -91,7 +91,7 @@ impl HashSpecific for CreateTagMsg {
 
 #[derive(Debug, Clone)]
 pub struct StoreService;
-impl quic_rpc::Service for StoreService {}
+impl irpc::Service for StoreService {}
 
 #[rpc_requests(StoreService, Command)]
 #[derive(Debug, Serialize, Deserialize)]

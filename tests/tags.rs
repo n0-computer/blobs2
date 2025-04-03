@@ -144,8 +144,8 @@ async fn tags_smoke_fs() -> TestResult<()> {
 async fn tags_smoke_rpc() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let unspecified = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
-    let (server, cert) = quic_rpc::util::make_server_endpoint(unspecified)?;
-    let client = quic_rpc::util::make_client_endpoint(unspecified, &[cert.as_ref()])?;
+    let (server, cert) = irpc::util::make_server_endpoint(unspecified)?;
+    let client = irpc::util::make_client_endpoint(unspecified, &[cert.as_ref()])?;
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
     tokio::spawn(store.clone().listen(server.clone()));

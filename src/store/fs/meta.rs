@@ -10,7 +10,7 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
-use quic_rpc::channel::spsc;
+use irpc::channel::spsc;
 use redb::{Database, DatabaseError, ReadableTable};
 
 use crate::{

@@ -14,7 +14,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use n0_future::future::yield_now;
-use quic_rpc::channel::spsc;
+use irpc::channel::spsc;
 use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
@@ -186,7 +186,7 @@ impl Store {
         let (sender, receiver) = mpsc::channel(1);
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
-        let local = quic_rpc::LocalMpscChannel::from(sender);
+        let local = irpc::LocalSender::from(sender);
         Store::from_sender(local.into())
     }
 }

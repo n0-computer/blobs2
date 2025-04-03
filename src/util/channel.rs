@@ -17,7 +17,7 @@ pub mod oneshot {
         Tokio(tokio::sync::oneshot::Sender<T>),
     }
 
-    impl<T> From<Sender<T>> for quic_rpc::channel::oneshot::Sender<T> {
+    impl<T> From<Sender<T>> for irpc::channel::oneshot::Sender<T> {
         fn from(sender: Sender<T>) -> Self {
             match sender {
                 Sender::Tokio(tx) => tx.into(),

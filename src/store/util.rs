@@ -15,7 +15,7 @@ use derive_more::{From, Into};
 mod mem_or_file;
 mod sparse_mem_file;
 pub use mem_or_file::{FixedSize, MemOrFile};
-use quic_rpc::channel::spsc;
+use irpc::channel::spsc;
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;
@@ -204,7 +204,7 @@ pub trait QuicRpcSenderProgressExt<T> {
     async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()>;
 }
 
-impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for quic_rpc::channel::spsc::Sender<T> {
+impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for irpc::channel::spsc::Sender<T> {
     async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()> {
         match self {
             spsc::Sender::Tokio(tx) => tx.send_progress(value).map_err(io::Error::other),
@@ -417,7 +417,7 @@ impl BaoTreeSender {
 }
 
 impl bao_tree::io::mixed::Sender for BaoTreeSender {
-    type Error = quic_rpc::channel::SendError;
+    type Error = irpc::channel::SendError;
     async fn send(&mut self, item: EncodedItem) -> std::result::Result<(), Self::Error> {
         self.0.send(item).await
     }

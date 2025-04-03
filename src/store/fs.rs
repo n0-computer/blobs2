@@ -69,7 +69,7 @@ use import::{ImportEntry, ImportSource};
 use meta::{list_blobs, Snapshot};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
-use quic_rpc::channel::spsc;
+use irpc::channel::spsc;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
@@ -81,7 +81,7 @@ use crate::{
             ImportBaoMsg, ObserveMsg,
         },
         tags::CreateTempTagRequest,
-        ApiSender, Scope,
+        ApiClient, Scope,
     },
     store::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
@@ -1079,7 +1079,7 @@ impl FsStore {
 }
 
 pub struct FsStore {
-    sender: ApiSender,
+    sender: ApiClient,
     db: mpsc::Sender<InternalCommand>,
 }
 
@@ -1099,7 +1099,7 @@ impl AsRef<Store> for FsStore {
 
 impl FsStore {
     fn new(
-        sender: quic_rpc::LocalMpscChannel<proto::Command, proto::StoreService>,
+        sender: irpc::LocalSender<proto::Command, proto::StoreService>,
         db: mpsc::Sender<InternalCommand>,
     ) -> Self {
         Self {
