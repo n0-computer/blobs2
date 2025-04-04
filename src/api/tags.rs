@@ -3,8 +3,8 @@ use std::{
     ops::{Bound, RangeBounds},
 };
 
-use n0_future::{Stream, StreamExt};
 use irpc::{channel::oneshot, Request};
+use n0_future::{Stream, StreamExt};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;

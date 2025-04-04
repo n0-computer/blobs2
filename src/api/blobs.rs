@@ -20,11 +20,11 @@ use bytes::Bytes;
 use genawaiter::sync::Gen;
 use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
-use n0_future::{Stream, StreamExt};
 use irpc::{
     channel::{oneshot, spsc},
     Request,
 };
+use n0_future::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;

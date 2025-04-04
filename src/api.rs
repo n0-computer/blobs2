@@ -1,8 +1,8 @@
 //! The user facing API of the store.
 use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
-use proto::Request;
 use irpc::rpc::{listen, Handler};
+use proto::Request;
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 
@@ -10,8 +10,7 @@ pub mod blobs;
 pub mod proto;
 pub mod tags;
 
-pub(crate) type ApiClient =
-    irpc::Client<proto::Command, proto::Request, proto::StoreService>;
+pub(crate) type ApiClient = irpc::Client<proto::Command, proto::Request, proto::StoreService>;
 
 /// Error for all rpc interactions.
 pub type RpcError = irpc::Error;

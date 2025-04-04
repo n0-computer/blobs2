@@ -14,8 +14,8 @@ use derive_more::{From, Into};
 
 mod mem_or_file;
 mod sparse_mem_file;
-pub use mem_or_file::{FixedSize, MemOrFile};
 use irpc::channel::spsc;
+pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;

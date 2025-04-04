@@ -23,11 +23,11 @@ use bao_tree::{
     BaoTree, ChunkNum,
 };
 use bytes::Bytes;
-use n0_future::{stream, Stream, StreamExt};
 use irpc::{
     channel::{none::NoReceiver, spsc},
     Channels, WithChannels,
 };
+use n0_future::{stream, Stream, StreamExt};
 use ref_cast::RefCast;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
@@ -487,8 +487,8 @@ async fn import_path_impl(
 mod tests {
 
     use bao_tree::io::outboard::PreOrderMemOutboard;
-    use n0_future::stream;
     use irpc::RpcMessage;
+    use n0_future::stream;
     use testresult::TestResult;
 
     use super::*;

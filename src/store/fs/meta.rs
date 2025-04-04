@@ -18,7 +18,8 @@ use crate::{
         self,
         blobs::{BlobStatus, BlobStatusRequest, DeleteRequest, ListRequest},
         proto::{
-            BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ListBlobsMsg, ShutdownMsg, SyncDbMsg,
+            ClearProtectedMsg, DeleteBlobsMsg, GetBlobStatusMsg, ListBlobsMsg, ShutdownMsg,
+            SyncDbMsg,
         },
         tags::{
             self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTags, SetTagRequest,
@@ -183,11 +184,11 @@ async fn handle_clear_protected(
 }
 
 async fn handle_get_blob_status(
-    msg: BlobStatusMsg,
+    msg: GetBlobStatusMsg,
     tables: &impl ReadableTables,
 ) -> ActorResult<()> {
     trace!("{msg:?}");
-    let BlobStatusMsg {
+    let GetBlobStatusMsg {
         inner: BlobStatusRequest { hash },
         tx,
         ..

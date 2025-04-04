@@ -8,20 +8,13 @@ use arrayvec::ArrayString;
 pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::io::BaoContentItem;
 use bytes::Bytes;
-use n0_future::Stream;
-use irpc::{
-    channel::{oneshot, spsc},
-    WithChannels,
-};
+use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
+use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    blobs::{
-        self, BatchResponse, Bitfield, BlobStatus, ExportBaoRequest, ExportPath, ExportProgress,
-        ImportBaoRequest, ImportByteStream, ImportBytesRequest, ImportPath, ImportProgress,
-        ObserveRequest,
-    },
+    blobs::{self, BatchResponse, Bitfield, BlobStatus, ExportProgress, ImportProgress},
     tags::{self, TagInfo},
     ClearProtected, Scope, ShutdownRequest, SyncDbRequest,
 };
@@ -53,8 +46,6 @@ impl HashSpecific for ExportBaoMsg {
     }
 }
 
-pub type ExportPathMsg = WithChannels<ExportPath, StoreService>;
-
 impl HashSpecific for ExportPathMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.hash
@@ -62,26 +53,6 @@ impl HashSpecific for ExportPathMsg {
 }
 
 pub type BoxedByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>;
-
-pub type ImportBaoMsg = WithChannels<ImportBaoRequest, StoreService>;
-pub type ShutdownMsg = WithChannels<ShutdownRequest, StoreService>;
-pub type ObserveMsg = WithChannels<ObserveRequest, StoreService>;
-pub type ImportBytesMsg = WithChannels<ImportBytesRequest, StoreService>;
-pub type ExportBaoMsg = WithChannels<ExportBaoRequest, StoreService>;
-pub type ImportByteStreamMsg = WithChannels<ImportByteStream, StoreService>;
-pub type ImportPathMsg = WithChannels<ImportPath, StoreService>;
-pub type ListTagsMsg = WithChannels<tags::ListTags, StoreService>;
-pub type RenameTagMsg = WithChannels<tags::RenameRequest, StoreService>;
-pub type DeleteTagsMsg = WithChannels<tags::DeleteRequest, StoreService>;
-pub type DeleteBlobsMsg = WithChannels<blobs::DeleteRequest, StoreService>;
-pub type SetTagMsg = WithChannels<tags::SetTagRequest, StoreService>;
-pub type ClearProtectedMsg = WithChannels<ClearProtected, StoreService>;
-pub type BlobStatusMsg = WithChannels<blobs::BlobStatusRequest, StoreService>;
-pub type BatchMsg = WithChannels<blobs::BatchRequest, StoreService>;
-pub type CreateTagMsg = WithChannels<tags::CreateTagRequest, StoreService>;
-pub type ListBlobsMsg = WithChannels<blobs::ListRequest, StoreService>;
-pub type SyncDbMsg = WithChannels<SyncDbRequest, StoreService>;
-pub type CreateTempTagMsg = WithChannels<tags::CreateTempTagRequest, StoreService>;
 
 impl HashSpecific for CreateTagMsg {
     fn hash(&self) -> crate::Hash {
@@ -93,7 +64,7 @@ impl HashSpecific for CreateTagMsg {
 pub struct StoreService;
 impl irpc::Service for StoreService {}
 
-#[rpc_requests(StoreService, Command)]
+#[rpc_requests(StoreService, message = Command, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     #[rpc(tx = spsc::Sender<super::Result<Hash>>)]

@@ -2007,9 +2007,9 @@ dependencies = [
 
 [[package]]
 name = "irpc"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd778af83fc5a391ac0ad09dc62ee9fc40db4d91c7283bc268db035fe62c672"
+checksum = "d858536bbc79df36e5f73620241cd560ba176bed614b1ad8a9aa8dadb4e84e81"
 dependencies = [
  "anyhow",
  "futures-buffered",
@@ -2027,9 +2027,9 @@ dependencies = [
 
 [[package]]
 name = "irpc-derive"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "980eb39f78fdad4f17c35a903c6b67033650b7002409e9ed741c3c974e5a1739"
+checksum = "6e2f589bf643e4432246e30484b5aa8ac13a33d776aa6e5239cd0cea08b4715c"
 dependencies = [
  "proc-macro2",
  "quote",

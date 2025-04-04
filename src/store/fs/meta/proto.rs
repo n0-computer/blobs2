@@ -9,7 +9,7 @@ use super::{ActorResult, ReadOnlyTables};
 use crate::{
     api::{
         blobs::ProcessExit,
-        proto::{BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ShutdownMsg, SyncDbMsg},
+        proto::{ClearProtectedMsg, DeleteBlobsMsg, GetBlobStatusMsg, ShutdownMsg, SyncDbMsg},
     },
     store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
@@ -107,7 +107,7 @@ pub enum ReadOnlyCommand {
     Dump(Dump),
     ListTags(ListTagsMsg),
     ClearProtected(ClearProtectedMsg),
-    GetBlobStatus(BlobStatusMsg),
+    GetBlobStatus(GetBlobStatusMsg),
 }
 
 impl ReadOnlyCommand {
