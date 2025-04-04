@@ -7,7 +7,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
-use iroh::{endpoint::Connecting, protocol::ProtocolHandler, Endpoint};
+use iroh::{endpoint::{Connecting, Connection}, protocol::ProtocolHandler, Endpoint};
 use tracing::error;
 
 use crate::api::Store;
@@ -43,11 +43,11 @@ impl Blobs {
 }
 
 impl ProtocolHandler for Blobs {
-    fn accept(&self, conn: Connecting) -> BoxedFuture<Result<()>> {
+    fn accept(&self, conn: Connection) -> BoxedFuture<Result<()>> {
         let store = self.store().clone();
 
         Box::pin(async move {
-            crate::provider::handle_connection(conn.await?, store).await;
+            crate::provider::handle_connection(conn, store).await;
             Ok(())
         })
     }
