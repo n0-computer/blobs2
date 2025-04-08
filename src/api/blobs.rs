@@ -92,19 +92,7 @@ impl<'a> Batch<'a> {
             scope: self.scope,
             value,
         };
-        let request = self.blobs.client.request().await?;
-        let rx = match request {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((msg, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        Ok(rx.await?)
+        self.blobs.client.rpc(msg).await
     }
 }
 
@@ -139,19 +127,7 @@ impl Blobs {
 
     pub async fn delete_with_opts(&self, options: DeleteRequest) -> RequestResult<()> {
         trace!("{options:?}");
-        let request = self.client.request().await?;
-        let rx = match request {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((options, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(options).await??;
         Ok(())
     }
 
@@ -672,18 +648,7 @@ impl Blobs {
     pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
         let hash = hash.into();
         let msg = BlobStatusRequest { hash };
-        let rx = match self.client.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((msg, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        Ok(rx.await?)
+        self.client.rpc(msg).await
     }
 
     pub async fn has(&self, hash: impl Into<Hash>) -> super::RpcResult<bool> {
@@ -695,52 +660,19 @@ impl Blobs {
 
     pub async fn sync_db(&self) -> RequestResult<()> {
         let msg = SyncDbRequest;
-        let rx = match self.client.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((msg, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(msg).await??;
         Ok(())
     }
 
     pub async fn shutdown(&self) -> super::RpcResult<()> {
         let msg = ShutdownRequest;
-        let rx = match self.client.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = irpc::channel::oneshot::channel();
-                c.send((msg, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        rx.await?;
+        self.client.rpc(msg).await?;
         Ok(())
     }
 
     pub async fn clear_protected(&self) -> RequestResult<()> {
         let msg = ClearProtected;
-        let rx = match self.client.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((msg, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(msg).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(msg).await??;
         Ok(())
     }
 }

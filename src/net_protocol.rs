@@ -7,7 +7,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
-use iroh::{endpoint::{Connecting, Connection}, protocol::ProtocolHandler, Endpoint};
+use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint};
 use tracing::error;
 
 use crate::api::Store;

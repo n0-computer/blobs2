@@ -171,30 +171,30 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
-    sender: ApiClient,
+    client: ApiClient,
 }
 
 impl Deref for Store {
     type Target = blobs::Blobs;
 
     fn deref(&self) -> &Self::Target {
-        blobs::Blobs::ref_from_sender(&self.sender)
+        blobs::Blobs::ref_from_sender(&self.client)
     }
 }
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
-    sender: ApiClient,
+    client: ApiClient,
 }
 
 impl Store {
     pub fn tags(&self) -> &Tags {
-        Tags::ref_from_sender(&self.sender)
+        Tags::ref_from_sender(&self.client)
     }
 
     pub fn blobs(&self) -> &blobs::Blobs {
-        blobs::Blobs::ref_from_sender(&self.sender)
+        blobs::Blobs::ref_from_sender(&self.client)
     }
 
     pub fn connect(endpoint: quinn::Endpoint, addr: SocketAddr) -> Self {
@@ -203,7 +203,7 @@ impl Store {
     }
 
     pub async fn listen(self, endpoint: quinn::Endpoint) {
-        let local = self.sender.local().unwrap().clone();
+        let local = self.client.local().unwrap().clone();
         let handler: Handler<Request> = Arc::new(move |req, rx, tx| {
             let local = local.clone();
             Box::pin({
@@ -241,12 +241,12 @@ impl Store {
         listen::<Request>(endpoint, handler).await
     }
 
-    pub(crate) fn from_sender(sender: ApiClient) -> Self {
-        Self { sender }
+    pub(crate) fn from_sender(client: ApiClient) -> Self {
+        Self { client }
     }
 
-    pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
-        Self::ref_cast(sender)
+    pub(crate) fn ref_from_sender(client: &ApiClient) -> &Self {
+        Self::ref_cast(client)
     }
 }
 

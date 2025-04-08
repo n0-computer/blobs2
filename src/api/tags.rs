@@ -224,18 +224,7 @@ impl Tags {
     pub async fn list_temp_tags(&self) -> super::RpcResult<impl Stream<Item = HashAndFormat>> {
         let options = ListTempTagsRequest;
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-            Request::Local(l) => {
-                let (tx, rx) = oneshot::channel();
-                l.send((options, tx)).await?;
-                rx
-            }
-        };
-        let res = rx.await?;
+        let res = self.client.rpc(options).await?;
         Ok(futures_lite::stream::iter(res))
     }
 
@@ -248,18 +237,7 @@ impl Tags {
         options: ListTags,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-            Request::Local(l) => {
-                let (tx, rx) = oneshot::channel();
-                l.send((options, tx)).await?;
-                rx
-            }
-        };
-        let res = rx.await?;
+        let res = self.client.rpc(options).await?;
         Ok(futures_lite::stream::iter(res))
     }
 
@@ -271,18 +249,7 @@ impl Tags {
 
     pub async fn set_with_opts(&self, options: SetTagRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                c.send((options, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(options).await??;
         Ok(())
     }
 
@@ -333,18 +300,7 @@ impl Tags {
     /// Deletes a tag.
     pub async fn delete_with_opts(&self, options: DeleteRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = irpc::channel::oneshot::channel();
-                c.send((options, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(options).await??;
         Ok(())
     }
 
@@ -383,18 +339,7 @@ impl Tags {
     /// If the tag does not exist, this will return an error.
     pub async fn rename_with_opts(&self, options: RenameRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = irpc::channel::oneshot::channel();
-                c.send((options, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-        };
-        rx.await??;
+        self.client.rpc(options).await??;
         Ok(())
     }
 
@@ -415,17 +360,7 @@ impl Tags {
 
     pub async fn create_with_opts(&self, options: CreateTagRequest) -> super::RequestResult<Tag> {
         trace!("{:?}", options);
-        let rx = match self.sender.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = irpc::channel::oneshot::channel();
-                c.send((options, tx)).await?;
-                rx
-            }
-            Request::Remote(r) => {
-                let (_, rx) = r.write(options).await?;
-                rx.into()
-            }
-        };
+        let rx = self.client.rpc(options);
         Ok(rx.await??)
     }
 
