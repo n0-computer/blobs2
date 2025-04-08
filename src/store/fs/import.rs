@@ -40,7 +40,7 @@ use crate::{
         Scope,
     },
     store::{
-        util::{MemOrFile, QuicRpcSenderProgressExt, DD},
+        util::{MemOrFile, DD},
         IROH_BLOCK_SIZE,
     },
     util::outboard_with_progress::{init_outboard, Progress},
@@ -319,7 +319,7 @@ async fn get_import_source(
             data.extend_from_slice(&chunk);
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        tx.send_progress(ImportProgress::CopyProgress { offset: size })
+        tx.try_send(ImportProgress::CopyProgress { offset: size })
             .await
             .map_err(|_e| io::Error::other("error"))?;
     }
@@ -449,12 +449,12 @@ async fn import_path_impl(
     }
 
     let size = path.metadata()?.len();
-    tx.send_progress(ImportProgress::Size { size })
+    tx.send(ImportProgress::Size { size })
         .await
         .map_err(|_e| io::Error::other("error"))?;
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
-        tx.send_progress(ImportProgress::CopyDone)
+        tx.send(ImportProgress::CopyDone)
             .await
             .map_err(|_e| io::Error::other("error"))?;
         ImportSource::Memory(data.into())
@@ -475,7 +475,7 @@ async fn import_path_impl(
         }
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
-        tx.send_progress(ImportProgress::CopyDone)
+        tx.send(ImportProgress::CopyDone)
             .await
             .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)

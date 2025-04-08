@@ -55,7 +55,7 @@ pub struct Blobs {
 pub struct Batch<'a> {
     scope: Scope,
     blobs: &'a Blobs,
-    tx: spsc::Sender<BatchResponse>,
+    _tx: spsc::Sender<BatchResponse>,
 }
 
 impl<'a> Batch<'a> {
@@ -84,6 +84,15 @@ impl<'a> Batch<'a> {
             scope: self.scope,
         };
         self.blobs.add_bytes_with_opts(options)
+    }
+
+    pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
+        self.blobs.add_path_with_opts_impl(ImportPath {
+            path: options.path,
+            mode: options.mode,
+            format: options.format,
+            scope: self.scope,
+        })
     }
 
     pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
@@ -121,7 +130,7 @@ impl Blobs {
         Ok(Batch {
             scope,
             blobs: self,
-            tx,
+            _tx: tx,
         })
     }
 
@@ -179,7 +188,16 @@ impl Blobs {
         })
     }
 
-    pub fn add_path_with_opts(&self, options: ImportPath) -> ImportResult {
+    pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
+        self.add_path_with_opts_impl(ImportPath {
+            path: options.path,
+            mode: options.mode,
+            format: options.format,
+            scope: Scope::GLOBAL,
+        })
+    }
+
+    pub fn add_path_with_opts_impl(&self, options: ImportPath) -> ImportResult {
         trace!("{:?}", options);
         let request = self.client.request();
         ImportResult::new(self, async move {
@@ -198,11 +216,10 @@ impl Blobs {
     }
 
     pub fn add_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        self.add_path_with_opts(ImportPath {
+        self.add_path_with_opts(ImportPathOptions {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
-            scope: Scope::default(),
         })
     }
 
@@ -685,6 +702,13 @@ pub struct ImportPath {
     pub scope: Scope,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportPathOptions {
+    pub path: PathBuf,
+    pub mode: ImportMode,
+    pub format: BlobFormat,
+}
+
 /// Import bao encoded data for the given hash with the iroh block size.
 ///
 /// The result is just a single item, indicating if a write error occurred.
@@ -953,16 +977,36 @@ impl ExportResult {
         }
     }
 
-    pub async fn finish(self) -> RequestResult<()> {
+    pub async fn stream(self) -> impl Stream<Item = ExportProgress> {
+        Gen::new(|co| async move {
+            let mut rx = match self.inner.await {
+                Ok(rx) => rx,
+                Err(e) => {
+                    co.yield_(ExportProgress::Error { cause: e.into() }).await;
+                    return;
+                }
+            };
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        })
+    }
+
+    pub async fn finish(self) -> RequestResult<u64> {
         let mut rx = self.inner.await?;
         let mut size = None;
         loop {
             match rx.recv().await? {
-                Some(ExportProgress::Done) => break Ok(()),
+                Some(ExportProgress::Done) => break,
                 Some(ExportProgress::Size { size: s }) => size = Some(s),
-                Some(ExportProgress::Error { cause }) => break Err(cause.into()),
+                Some(ExportProgress::Error { cause }) => return Err(cause.into()),
                 _ => {}
             }
+        }
+        if let Some(size) = size {
+            Ok(size)
+        } else {
+            Err(super::Error::other("unexpected end of stream").into())
         }
     }
 }

@@ -28,7 +28,7 @@ use tokio::{
 use tracing::{error, info, instrument};
 
 use super::{
-    util::{BaoTreeSender, QuicRpcSenderProgressExt},
+    util::{BaoTreeSender},
     BlobFormat,
 };
 use crate::{
@@ -473,7 +473,7 @@ async fn import_byte_stream(
     while let Some(item) = data.next().await {
         let item = item?;
         res.extend_from_slice(&item);
-        tx.send_progress(ImportProgress::CopyProgress {
+        tx.try_send(ImportProgress::CopyProgress {
             offset: res.len() as u64,
         })
         .await?;
@@ -540,7 +540,7 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.send_progress(ExportProgress::CopyProgress { offset })
+        tx.try_send(ExportProgress::CopyProgress { offset })
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;

@@ -43,7 +43,7 @@
 //! context with a slot from the table of the main actor that can be used
 //! to obtain an unqiue handle for the hash.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt, fs,
     future::Future,
     io::Write,
@@ -70,7 +70,7 @@ use irpc::channel::spsc;
 use meta::{list_blobs, Snapshot};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
 use crate::{
@@ -107,7 +107,7 @@ use tracing::Instrument;
 mod gc;
 
 use super::{
-    util::{observer::Observer, QuicRpcSenderProgressExt},
+    util::{observer::Observer},
     HashAndFormat,
 };
 use crate::api::{
@@ -190,6 +190,8 @@ struct Actor {
     fs_cmd_rx: mpsc::Receiver<InternalCommand>,
     // Tasks for import and export operations.
     tasks: JoinSet<()>,
+    // Running tasks
+    running: HashSet<Id>,
     // handles
     handles: HashMap<Hash, Slot>,
     // temp tags
@@ -391,7 +393,22 @@ impl Actor {
 
     fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
         let span = tracing::Span::current();
-        self.tasks.spawn(fut.instrument(span));
+        let id = self.tasks.spawn(fut.instrument(span)).id();
+        // println!("spawned task {id} {}", self.tasks.len());
+        self.running.insert(id);
+    }
+
+    fn log_task_result(&mut self, res: Result<(Id, ()), JoinError>) {
+        match res {
+            Ok((id, _)) => {
+                // println!("task {id} finished");
+                self.running.remove(&id);
+                // println!("{:?}", self.running);
+            }
+            Err(e) => {
+                error!("task failed: {e}");
+            }
+        }
     }
 
     async fn create_temp_tag(&mut self, cmd: CreateTempTagMsg) {
@@ -578,12 +595,6 @@ impl Actor {
         }
     }
 
-    fn log_task_result(&self, res: Result<(), JoinError>) {
-        if let Err(e) = res {
-            error!("task failed: {e}");
-        }
-    }
-
     async fn run(mut self) {
         loop {
             tokio::select! {
@@ -596,7 +607,7 @@ impl Actor {
                 Some(cmd) = self.fs_cmd_rx.recv() => {
                     self.handle_fs_command(cmd).await;
                 }
-                Some(res) = self.tasks.join_next(), if !self.tasks.is_empty() => {
+                Some(res) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
                     self.log_task_result(res);
                 }
             }
@@ -642,6 +653,7 @@ impl Actor {
             cmd_rx,
             fs_cmd_rx: fs_commands_rx,
             tasks: JoinSet::new(),
+            running: HashSet::new(),
             handles: Default::default(),
             temp_tags: Default::default(),
             _rt: rt,
@@ -1046,7 +1058,7 @@ async fn copy_with_progress(
         let buf: &mut [u8] = &mut buf[..remaining];
         file.read_exact_at(offset, buf)?;
         target.write_all(buf)?;
-        tx.send_progress(ExportProgress::CopyProgress { offset })
+        tx.try_send(ExportProgress::CopyProgress { offset })
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;

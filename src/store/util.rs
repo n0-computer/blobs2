@@ -200,22 +200,6 @@ impl<T> SenderProgressExt<T> for mpsc::Sender<T> {
     }
 }
 
-pub trait QuicRpcSenderProgressExt<T> {
-    async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()>;
-}
-
-impl<T: Send + Sync + 'static> QuicRpcSenderProgressExt<T> for irpc::channel::spsc::Sender<T> {
-    async fn send_progress<V: Into<T>>(&mut self, value: V) -> io::Result<()> {
-        match self {
-            spsc::Sender::Tokio(tx) => tx.send_progress(value).map_err(io::Error::other),
-            spsc::Sender::Boxed(tx) => {
-                tx.try_send(value.into()).await?;
-                Ok(())
-            }
-        }
-    }
-}
-
 pub trait RangeSetExt<T> {
     fn upper_bound(&self) -> Option<T>;
 }
