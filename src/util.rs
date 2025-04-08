@@ -1,5 +1,4 @@
 pub mod channel;
-pub mod io;
 pub mod temp_tag;
 pub mod serde {
     // Module that handles io::Error serialization/deserialization

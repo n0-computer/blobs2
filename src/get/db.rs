@@ -2,6 +2,7 @@ use std::{future::Future, num::NonZeroU64};
 
 use bao_tree::{io::Leaf, ChunkRanges};
 use iroh::{endpoint::Connection, Endpoint, NodeAddr};
+use irpc::channel::{spsc, SendError};
 use tracing::{info, trace};
 
 use super::{
@@ -76,12 +77,14 @@ pub async fn get_all(
     conn: impl GetConnection,
     data: impl Into<HashAndFormat>,
     store: impl AsRef<Store>,
+    progress: Option<spsc::Sender<u64>>,
 ) -> anyhow::Result<Stats> {
+    let mut progress = DownloadProgress::new(progress);
     let data = data.into();
     let store = store.as_ref();
     let stats = match data.format {
-        BlobFormat::Raw => get_blob_impl(conn, data.hash, store).await?,
-        BlobFormat::HashSeq => get_hash_seq_impl(conn, data.hash, store).await?,
+        BlobFormat::Raw => get_blob_impl(conn, data.hash, store, &mut progress).await?,
+        BlobFormat::HashSeq => get_hash_seq_impl(conn, data.hash, store, &mut progress).await?,
     };
     Ok(stats)
 }
@@ -90,18 +93,36 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
     (size.get() / (IROH_BLOCK_SIZE.bytes() as u64) + 2).min(64) as usize
 }
 
+pub struct DownloadProgress {
+    sender: Option<spsc::Sender<u64>>,
+}
+
+impl DownloadProgress {
+    pub fn new(sender: Option<spsc::Sender<u64>>) -> Self {
+        Self { sender }
+    }
+
+    pub async fn send(&mut self, total: u64) -> std::result::Result<(), SendError> {
+        if let Some(sender) = self.sender.as_mut() {
+            sender.try_send(total).await?;
+        }
+        Ok(())
+    }
+}
+
 // get a single blob, taking the locally available ranges into account
 async fn get_blob_impl(
     mut conn: impl GetConnection,
     hash: Hash,
     store: &Store,
+    progress: &mut DownloadProgress,
 ) -> anyhow::Result<Stats> {
     trace!("get blob: {}", hash);
     let local_ranges = store.observe(hash).await?.ranges;
     let required_ranges = ChunkRanges::all() - local_ranges;
     if required_ranges.is_empty() {
         // we don't count the time for looking up the bitfield locally
-        return Ok(Stats::default());
+        return Ok(Default::default());
     }
     let request = GetRequest::new(hash, RangeSpecSeq::from_ranges([required_ranges]));
     let conn = conn.connection().await?;
@@ -111,7 +132,7 @@ async fn get_blob_impl(
         unreachable!()
     };
     let header = root.next();
-    let end = get_blob_ranges_impl(header, hash, store).await?;
+    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
     // we need to drop the sender so the other side can finish
     let EndBlobNext::Closing(closing) = end.next() else {
         unreachable!()
@@ -125,6 +146,7 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
+    progress: &mut DownloadProgress,
 ) -> api::RequestResult<AtEndBlob> {
     let (mut content, size) = header.next().await.map_err(api::Error::other)?;
     let Some(size) = NonZeroU64::new(size) else {
@@ -144,6 +166,10 @@ async fn get_blob_ranges_impl(
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res.map_err(api::Error::other)?;
+                    progress
+                        .send(next.stats().payload_bytes_read)
+                        .await
+                        .map_err(api::Error::other)?;
                     tx.send(item).await.map_err(api::Error::other)?;
                     content = next;
                 }
@@ -247,16 +273,18 @@ pub async fn execute_request(
     store: &Store,
     conn: Connection,
     request: GetRequest,
+    progress: Option<spsc::Sender<u64>>,
 ) -> anyhow::Result<Stats> {
     let root = request.hash;
     let start = crate::get::fsm::start(conn, request);
     let connected = start.next().await?;
+    let mut progress = DownloadProgress::new(progress);
     trace!("Getting header");
     // read the header
     let next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
             let header = at_start_root.next();
-            let end = get_blob_ranges_impl(header, root, store).await?;
+            let end = get_blob_ranges_impl(header, root, store, &mut progress).await?;
             match end.next() {
                 EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                 EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -282,7 +310,7 @@ pub async fn execute_request(
                 };
                 info!("getting child {offset} {}", hash.fmt_short());
                 let header = at_start_child.next(hash);
-                let end = get_blob_ranges_impl(header, hash, store).await?;
+                let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
                 next_child = match end.next() {
                     EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                     EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -302,6 +330,7 @@ async fn get_hash_seq_impl(
     mut conn: impl GetConnection,
     root: Hash,
     store: &Store,
+    progress: &mut DownloadProgress,
 ) -> anyhow::Result<Stats> {
     trace!("get hash seq: {}", root);
     let local_ranges = store.observe(root).await?.ranges;
@@ -318,7 +347,7 @@ async fn get_hash_seq_impl(
     let mut next_child = match connected.next().await? {
         ConnectedNext::StartRoot(at_start_root) => {
             let header = at_start_root.next();
-            let end = get_blob_ranges_impl(header, root, store).await?;
+            let end = get_blob_ranges_impl(header, root, store, progress).await?;
             match end.next() {
                 EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                 EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -345,7 +374,7 @@ async fn get_hash_seq_impl(
         };
         info!("getting child {offset} {}", hash.fmt_short());
         let header = at_start_child.next(hash);
-        let end = get_blob_ranges_impl(header, hash, store).await?;
+        let end = get_blob_ranges_impl(header, hash, store, progress).await?;
         next_child = match end.next() {
             EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
             EndBlobNext::Closing(at_closing) => Err(at_closing),

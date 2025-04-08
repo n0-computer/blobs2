@@ -2,9 +2,11 @@ use std::path::PathBuf;
 
 use bao_tree::ChunkRanges;
 use iroh::{protocol::Router, Endpoint};
-use n0_future::StreamExt;
+use irpc::channel::spsc;
+use n0_future::{pin, StreamExt};
 use tempfile::TempDir;
 use testresult::TestResult;
+use tokio::select;
 use tracing::info;
 
 use crate::{
@@ -49,7 +51,7 @@ async fn two_nodes_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        get::db::get_all(conn.clone(), hash, &store2).await?;
+        get::db::get_all(conn.clone(), hash, &store2, None).await?;
     }
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
@@ -115,7 +117,34 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, &sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    get::db::get_all(conn, root, &store2).await?;
+    get::db::get_all(conn, root, &store2, None).await?;
+    check_presence(&store2, &sizes).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_nodes_hash_seq_progress() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let sizes = INTERESTING_SIZES;
+    let root = add_test_hash_seq(&store1, &sizes).await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    let (tx, rx) = spsc::channel::<u64>(16);
+    let res = get::db::get_all(conn, root, &store2, Some(tx));
+    pin!(rx);
+    pin!(res);
+    loop {
+        select! {
+            total = rx.recv() => {
+                println!("progress: {:?}", total);
+            }
+            res = &mut res => {
+                res?;
+                break;
+            }
+        }
+    }
     check_presence(&store2, &sizes).await?;
     Ok(())
 }
@@ -143,6 +172,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
                 RangeSpec::EMPTY,
             ]),
         ),
+        None,
     )
     .await?;
     // check that sizes for the data we have already are omitted
@@ -162,12 +192,18 @@ async fn two_nodes_size_request() -> TestResult<()> {
             RangeSpec::EMPTY
         ])
     );
-    get::db::execute_request(&store2, conn.clone(), GetRequest::new(root.hash, sizes)).await?;
+    get::db::execute_request(
+        &store2,
+        conn.clone(),
+        GetRequest::new(root.hash, sizes),
+        None,
+    )
+    .await?;
 
     let missing = store2.missing(root).await?;
     // let missing_chunks = missing.chunks();
     // println!("{:?} {:?}", missing, missing_chunks);
-    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, missing)).await?;
+    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, missing), None).await?;
     check_presence(&store2, &INTERESTING_SIZES).await?;
     // for size in INTERESTING_SIZES {
     //     let hash = Hash::new(test_data(size));

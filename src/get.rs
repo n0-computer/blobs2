@@ -25,21 +25,23 @@ use iroh_io::TokioStreamReader;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use crate::{protocol::RangeSpecSeq, util::io::TrackingReader, Hash, IROH_BLOCK_SIZE};
+use crate::{protocol::RangeSpecSeq, Hash, IROH_BLOCK_SIZE};
 
 pub mod db;
 pub mod error;
 pub mod request;
 
-type WrappedRecvStream = TrackingReader<TokioStreamReader<RecvStream>>;
+type WrappedRecvStream = TokioStreamReader<RecvStream>;
 
 /// Stats about the transfer.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stats {
     /// The number of bytes written
     pub bytes_written: u64,
-    /// The number of bytes read
-    pub bytes_read: u64,
+    /// The number of useful bytes read
+    pub payload_bytes_read: u64,
+    /// The number of other bytes read (size and hash pairs)
+    pub other_bytes_read: u64,
     /// The time it took to transfer the data
     pub elapsed: Duration,
 }
@@ -47,7 +49,7 @@ pub struct Stats {
 impl Stats {
     /// Transfer rate in megabits per second
     pub fn mbits(&self) -> f64 {
-        let data_len_bit = self.bytes_read * 8;
+        let data_len_bit = (self.payload_bytes_read + self.other_bytes_read) * 8;
         data_len_bit as f64 / (1000. * 1000.) / self.elapsed.as_secs_f64()
     }
 }
@@ -66,13 +68,9 @@ pub mod fsm {
     use derive_more::From;
     use iroh::endpoint::Connection;
     use iroh_io::{AsyncSliceWriter, AsyncStreamReader, TokioStreamReader};
-    use tokio::io::AsyncWriteExt;
 
     use super::*;
-    use crate::{
-        protocol::{GetRequest, NonEmptyRequestRangeSpecIter, Request, MAX_MESSAGE_SIZE},
-        util::io::{TrackingReader, TrackingWriter},
-    };
+    use crate::protocol::{GetRequest, NonEmptyRequestRangeSpecIter, Request, MAX_MESSAGE_SIZE};
 
     self_cell::self_cell! {
         struct RangesIterInner {
@@ -143,8 +141,7 @@ pub mod fsm {
         pub async fn next(self) -> Result<AtConnected, endpoint::ConnectionError> {
             let start = Instant::now();
             let (writer, reader) = self.connection.open_bi().await?;
-            let reader = TrackingReader::new(TokioStreamReader::new(reader));
-            let writer = TrackingWriter::new(writer);
+            let reader = TokioStreamReader::new(reader);
             Ok(AtConnected {
                 start,
                 reader,
@@ -159,7 +156,7 @@ pub mod fsm {
     pub struct AtConnected {
         start: Instant,
         reader: WrappedRecvStream,
-        writer: TrackingWriter<SendStream>,
+        writer: SendStream,
         request: GetRequest,
     }
 
@@ -234,7 +231,7 @@ pub mod fsm {
                 mut request,
             } = self;
             // 1. Send Request
-            {
+            let bytes_written = {
                 debug!("sending request");
                 let wrapped = Request::Get(request);
                 let request_bytes =
@@ -250,11 +247,11 @@ pub mod fsm {
                 writer
                     .write_all(&request_bytes)
                     .await
-                    .map_err(ConnectedNextError::from_io)?;
-            }
+                    .map_err(|x| ConnectedNextError::from_io(x.into()))?;
+                request_bytes.len() as u64
+            };
 
             // 2. Finish writing before expecting a response
-            let (mut writer, bytes_written) = writer.into_parts();
             writer.finish()?;
 
             let hash = request.hash;
@@ -263,6 +260,8 @@ pub mod fsm {
             let mut misc = Box::new(Misc {
                 start,
                 bytes_written,
+                payload_bytes_read: 0,
+                other_bytes_read: 0,
                 ranges_iter,
             });
             Ok(match misc.ranges_iter.next() {
@@ -294,7 +293,7 @@ pub mod fsm {
     #[derive(Debug)]
     pub struct AtStartRoot {
         ranges: ChunkRanges,
-        reader: TrackingReader<TokioStreamReader<RecvStream>>,
+        reader: TokioStreamReader<RecvStream>,
         misc: Box<Misc>,
         hash: Hash,
     }
@@ -303,7 +302,7 @@ pub mod fsm {
     #[derive(Debug)]
     pub struct AtStartChild {
         ranges: ChunkRanges,
-        reader: TrackingReader<TokioStreamReader<RecvStream>>,
+        reader: TokioStreamReader<RecvStream>,
         misc: Box<Misc>,
         child_offset: u64,
     }
@@ -378,7 +377,7 @@ pub mod fsm {
     #[derive(Debug)]
     pub struct AtBlobHeader {
         ranges: ChunkRanges,
-        reader: TrackingReader<TokioStreamReader<RecvStream>>,
+        reader: TokioStreamReader<RecvStream>,
         misc: Box<Misc>,
         hash: Hash,
     }
@@ -426,6 +425,7 @@ pub mod fsm {
                     AtBlobHeaderNextError::Io(cause)
                 }
             })?;
+            self.misc.other_bytes_read += 8;
             let size = u64::from_le_bytes(size);
             let stream = ResponseDecoder::new(
                 self.hash.into(),
@@ -620,8 +620,17 @@ pub mod fsm {
         pub async fn next(self) -> BlobContentNext {
             match self.stream.next().await {
                 ResponseDecoderNext::More((stream, res)) => {
-                    let next = Self { stream, ..self };
+                    let mut next = Self { stream, ..self };
                     let res = res.map_err(DecodeError::from);
+                    match &res {
+                        Ok(BaoContentItem::Parent(_)) => {
+                            next.misc.other_bytes_read += 64;
+                        }
+                        Ok(BaoContentItem::Leaf(leaf)) => {
+                            next.misc.payload_bytes_read += leaf.data.len() as u64;
+                        }
+                        _ => {}
+                    }
                     BlobContentNext::More((next, res))
                 }
                 ResponseDecoderNext::Done(stream) => BlobContentNext::Done(AtEndBlob {
@@ -644,6 +653,16 @@ pub mod fsm {
         /// The current offset of the blob we are reading.
         pub fn offset(&self) -> u64 {
             self.misc.ranges_iter.offset()
+        }
+
+        /// Current stats
+        pub fn stats(&self) -> Stats {
+            Stats {
+                bytes_written: self.misc.bytes_written,
+                payload_bytes_read: self.misc.payload_bytes_read,
+                other_bytes_read: self.misc.other_bytes_read,
+                elapsed: self.misc.start.elapsed(),
+            }
         }
 
         /// Drain the response and throw away the result
@@ -804,7 +823,7 @@ pub mod fsm {
         /// Finish the get response, returning statistics
         pub async fn next(self) -> result::Result<Stats, endpoint::ReadError> {
             // Shut down the stream
-            let (reader, bytes_read) = self.reader.into_parts();
+            let reader = self.reader;
             let mut reader = reader.into_inner();
             if self.check_extra_data {
                 if let Some(chunk) = reader.read_chunk(8, false).await? {
@@ -817,7 +836,8 @@ pub mod fsm {
             Ok(Stats {
                 elapsed: self.misc.start.elapsed(),
                 bytes_written: self.misc.bytes_written,
-                bytes_read,
+                payload_bytes_read: self.misc.payload_bytes_read,
+                other_bytes_read: self.misc.other_bytes_read,
             })
         }
     }
@@ -829,6 +849,10 @@ pub mod fsm {
         start: Instant,
         /// bytes written for statistics
         bytes_written: u64,
+        /// payload bytes read for statistics
+        payload_bytes_read: u64,
+        /// hash pair and size bytes read
+        other_bytes_read: u64,
         /// iterator over the ranges of the collection and the children
         ranges_iter: RangesIter,
     }

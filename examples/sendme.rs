@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     // store.dump().await?;
     // return Ok(());
     // let stats = get_one_by_one(conn, content);
-    let stats = blobs2::get::db::get_all(dialer, content, &store);
+    let stats = blobs2::get::db::get_all(dialer, content, &store, None);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = ctrl_c => {
