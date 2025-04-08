@@ -241,6 +241,23 @@ impl HashContext {
         Ok(())
     }
 
+    pub async fn get_entry_state(&self, hash: Hash) -> io::Result<Option<EntryState<Bytes>>> {
+        let (tx, rx) = oneshot::channel();
+        self.db()
+            .send(
+                meta::Get {
+                    hash,
+                    tx,
+                    span: tracing::Span::current(),
+                }
+                .into(),
+            )
+            .await
+            .ok();
+        let res = rx.await.map_err(io::Error::other)?;
+        Ok(res.state?)
+    }
+
     /// Update the entry state in the database, and wait for completion.
     pub async fn set(&self, hash: Hash, state: EntryState<Bytes>) -> io::Result<()> {
         let (tx, rx) = oneshot::channel();
@@ -923,22 +940,14 @@ async fn export_bao_impl(
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
     let ExportPathMsg { inner, mut tx, .. } = cmd;
-    match ctx.get_or_create(inner.hash).await {
-        Ok(handle) => {
-            if let Err(cause) = export_path_impl(inner, &mut tx, handle, ctx).await {
-                tx.send(cause.into()).await.ok();
-            }
-        }
-        Err(cause) => {
-            tx.send(cause.into()).await.ok();
-        }
+    if let Err(cause) = export_path_impl(inner, &mut tx, ctx).await {
+        tx.send(cause.into()).await.ok();
     }
 }
 
 async fn export_path_impl(
     cmd: ExportPath,
     tx: &mut spsc::Sender<ExportProgress>,
-    handle: BaoFileHandle,
     ctx: HashContext,
 ) -> api::Result<()> {
     let ExportPath { mode, target, .. } = cmd;
@@ -951,60 +960,66 @@ async fn export_path_impl(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    let (data, outboard_location) = {
-        let guard = handle.storage.read().unwrap();
-        let Some(BaoFileStorage::Complete(complete)) = guard.deref() else {
+    let _guard = ctx.lock().await;
+    let state = ctx.get_entry_state(cmd.hash).await?;
+    let (data_location, outboard_location) = match state {
+        Some(EntryState::Complete {
+            data_location,
+            outboard_location,
+        }) => (data_location, outboard_location),
+        Some(EntryState::Partial { .. }) => {
             return Err(api::Error::io(
-                io::ErrorKind::NotFound,
-                "no complete entry found",
+                io::ErrorKind::InvalidInput,
+                "cannot export partial entry",
             ));
-        };
-        let data = {
-            match &complete.data {
-                MemOrFile::Mem(data) => MemOrFile::Mem(data.clone()),
-                MemOrFile::File(file) => {
-                    let file = file.try_clone()?;
-                    MemOrFile::File(file)
-                }
-            }
-        };
-        let outboard = match &complete.outboard {
-            MemOrFile::Mem(data) => OutboardLocation::inline(data.clone()),
-            MemOrFile::File(_) => OutboardLocation::Owned,
-        };
-        (data, outboard)
+        }
+        None => {
+            return Err(api::Error::io(io::ErrorKind::NotFound, "no entry found"));
+        }
     };
     trace!("exporting {} to {}", cmd.hash.to_hex(), target.display());
+    let data = match data_location {
+        DataLocation::Inline(data) => MemOrFile::Mem(data),
+        DataLocation::Owned(size) => {
+            MemOrFile::File((ctx.options().path.data_path(&cmd.hash), size))
+        }
+        DataLocation::External(paths, size) => MemOrFile::File((
+            paths
+                .into_iter()
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no external data path"))?,
+            size,
+        )),
+    };
     match data {
         MemOrFile::Mem(data) => {
             let mut target = fs::File::create(&target)?;
             target.write_all(&data)?;
         }
-        MemOrFile::File(file) => match mode {
+        MemOrFile::File((source_path, size)) => match mode {
             ExportMode::Copy => {
+                let source = fs::File::open(&source_path)?;
                 let mut target = fs::File::create(&target)?;
-                copy_with_progress(&file, file.size, &mut target, tx).await?;
+                copy_with_progress(&source, size, &mut target, tx).await?;
             }
             ExportMode::TryReference => {
-                let hash = handle.hash();
-                let owned_path = ctx.options().path.data_path(&hash);
-                match std::fs::rename(&owned_path, &target) {
+                match std::fs::rename(&source_path, &target) {
                     Ok(()) => {}
                     Err(cause) => {
                         const ERR_CROSS: i32 = 18;
                         if cause.raw_os_error() == Some(ERR_CROSS) {
+                            let source = fs::File::open(&source_path)?;
                             let mut target = fs::File::create(&target)?;
-                            let size = file.size;
-                            copy_with_progress(&file, size, &mut target, tx).await?;
+                            copy_with_progress(&source, size, &mut target, tx).await?;
                         } else {
                             return Err(cause.into());
                         }
                     }
                 }
                 ctx.set(
-                    hash,
+                    cmd.hash,
                     EntryState::Complete {
-                        data_location: DataLocation::External(vec![target], file.size),
+                        data_location: DataLocation::External(vec![target], size),
                         outboard_location,
                     },
                 )
