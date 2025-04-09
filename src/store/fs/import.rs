@@ -197,7 +197,7 @@ async fn import_bytes_tiny_impl(
     let size = cmd.data.len() as u64;
     // send the required progress events
     // ImportProgress::Done will be sent when finishing the import!
-    tx.send(ImportProgress::Size { size })
+    tx.send(ImportProgress::Size(size))
         .await
         .map_err(|_e| io::Error::other("error"))?;
     tx.send(ImportProgress::CopyDone)
@@ -259,11 +259,9 @@ async fn import_byte_stream_impl(
     } = cmd;
     let data = n0_future::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
-    tx.send(ImportProgress::Size {
-        size: import_source.size(),
-    })
-    .await
-    .map_err(|_e| io::Error::other("error"))?;
+    tx.send(ImportProgress::Size(import_source.size()))
+        .await
+        .map_err(|_e| io::Error::other("error"))?;
     tx.send(ImportProgress::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
@@ -319,7 +317,7 @@ async fn get_import_source(
             data.extend_from_slice(&chunk);
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        tx.try_send(ImportProgress::CopyProgress { offset: size })
+        tx.try_send(ImportProgress::CopyProgress(size))
             .await
             .map_err(|_e| io::Error::other("error"))?;
     }
@@ -328,7 +326,7 @@ async fn get_import_source(
             let chunk = chunk?;
             file.write_all(&chunk)?;
             size += chunk.len() as u64;
-            tx.send(ImportProgress::CopyProgress { offset: size })
+            tx.send(ImportProgress::CopyProgress(size))
                 .await
                 .map_err(|_e| io::Error::other("error"))?;
         }
@@ -350,9 +348,7 @@ impl Progress for OutboardProgress {
         //     return Ok(());
         // }
         self.0
-            .try_send(ImportProgress::OutboardProgress {
-                offset: offset.to_bytes(),
-            })
+            .try_send(ImportProgress::OutboardProgress(offset.to_bytes()))
             .await
     }
 }
@@ -449,7 +445,7 @@ async fn import_path_impl(
     }
 
     let size = path.metadata()?.len();
-    tx.send(ImportProgress::Size { size })
+    tx.send(ImportProgress::Size(size))
         .await
         .map_err(|_e| io::Error::other("error"))?;
     let import_source = if size <= options.inline.max_data_inlined {

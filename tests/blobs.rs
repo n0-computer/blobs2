@@ -62,7 +62,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let mut stream = blobs.add_path(temp1).stream().await?;
         let mut res = None;
         while let Some(item) = stream.next().await {
-            if let ImportProgress::Done { tt } = item {
+            if let ImportProgress::Done(tt) = item {
                 res = Some(tt);
                 break;
             }

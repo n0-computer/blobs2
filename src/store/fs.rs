@@ -106,10 +106,7 @@ use options::Options;
 use tracing::Instrument;
 mod gc;
 
-use super::{
-    util::{observer::Observer},
-    HashAndFormat,
-};
+use super::{util::observer::Observer, HashAndFormat};
 use crate::api::{
     self,
     blobs::{ExportMode, ExportProgress, ImportProgress},
@@ -244,6 +241,9 @@ impl HashContext {
     }
 
     pub async fn get_entry_state(&self, hash: Hash) -> io::Result<Option<EntryState<Bytes>>> {
+        if hash == Hash::EMPTY {
+            return Ok(Some(EntryState::Complete { data_location: DataLocation::Inline(Bytes::new()), outboard_location: OutboardLocation::NotNeeded }));
+        }
         let (tx, rx) = oneshot::channel();
         self.db()
             .send(
@@ -575,9 +575,7 @@ impl Actor {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
-                        .send(ImportProgress::Done {
-                            tt: TempTag::leaking_empty(cmd.format),
-                        })
+                        .send(ImportProgress::Done(TempTag::leaking_empty(cmd.format)))
                         .await
                         .ok();
                 } else {
@@ -725,9 +723,9 @@ async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContex
                 trace!("leaking temp tag {}", tt.hash_and_format());
                 tt.leak();
             }
-            ImportProgress::Done { tt }
+            ImportProgress::Done(tt)
         }
-        Err(cause) => ImportProgress::Error { cause },
+        Err(cause) => ImportProgress::Error(cause),
     };
     cmd.tx.send(res).await.ok();
 }
@@ -1003,6 +1001,13 @@ async fn export_path_impl(
             size,
         )),
     };
+    let size = match &data {
+        MemOrFile::Mem(data) => data.len() as u64,
+        MemOrFile::File((_, size)) => *size,
+    };
+    tx.send(ExportProgress::Size(size))
+        .await
+        .map_err(api::Error::other)?;
     match data {
         MemOrFile::Mem(data) => {
             let mut target = fs::File::create(&target)?;
@@ -1012,7 +1017,7 @@ async fn export_path_impl(
             ExportMode::Copy => {
                 let source = fs::File::open(&source_path)?;
                 let mut target = fs::File::create(&target)?;
-                copy_with_progress(&source, size, &mut target, tx).await?;
+                copy_with_progress(&source, size, &mut target, tx).await?
             }
             ExportMode::TryReference => {
                 match std::fs::rename(&source_path, &target) {

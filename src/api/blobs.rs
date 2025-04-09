@@ -754,44 +754,119 @@ pub struct ImportByteStream {
     pub scope: Scope,
 }
 
+/// Progress events for importing from any local source.
+///
+/// For sources with known size such as blobs or files, you will get the events
+/// in the following order:
+///
+/// Size -> CopyProgress(*n) -> CopyDone -> OutboardProgress(*n) -> Done
+///
+/// For sources with unknown size such as streams, you will get the events
+/// in the following order:
+///
+/// CopyProgress(*n) -> Size -> CopyDone -> OutboardProgress(*n) -> Done
+///
+/// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ImportProgress {
-    CopyProgress {
-        offset: u64,
-    },
-    Size {
-        size: u64,
-    },
+    /// Progress copying the file into the data directory.
+    ///
+    /// On most modern systems, copying will be done with copy on write,
+    /// so copying will be instantaneous and you won't get any of these.
+    ///
+    /// The number is the *byte offset* of the copy process.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
+    CopyProgress(u64),
+    /// Size of the file or stream has been determined.
+    ///
+    /// For some input such as blobs or files, the size is immediately known.
+    /// For other inputs such as streams, the size is determined by reading
+    /// the stream to the end.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    Size(u64),
+    /// The copy part of the import operation is done.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
     CopyDone,
-    OutboardProgress {
-        offset: u64,
-    },
-    Done {
-        tt: TempTag,
-    },
-    Error {
-        #[serde(with = "crate::util::serde::io_error_serde")]
-        cause: io::Error,
-    },
+    /// Progress computing the outboard and root hash of the imported data.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
+    OutboardProgress(u64),
+    /// The import is done. Once you get this event the data is available
+    /// and protected in the store via the temp tag.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was successful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Done(TempTag),
+    /// The import failed with an error. Partial data will be deleted.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was unsuccessful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Error(#[serde(with = "crate::util::serde::io_error_serde")] io::Error),
 }
 
 impl From<io::Error> for ImportProgress {
     fn from(e: io::Error) -> Self {
-        Self::Error { cause: e }
+        Self::Error(e)
     }
 }
 
+/// Progress events for exporting to a local file.
+/// 
+/// Exporting does not involve outboard computation, so the events are simpler
+/// than [`ImportProgress`].
+/// 
+/// Size -> CopyProgress(*n) -> Done
+///
+/// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ExportProgress {
-    Size { size: u64 },
+    /// The size of the file being exported.
+    /// 
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    Size(u64),
+    /// Progress copying the file to the target directory.
+    /// 
+    /// On many modern systems, copying will be done with copy on write,
+    /// so copying will be instantaneous and you won't get any of these.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
     CopyProgress { offset: u64 },
+    /// The export is done. Once you get this event the data is available.
+    /// 
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was successful.
+    /// 
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
     Done,
-    Error { cause: super::Error },
+    /// The export failed with an error.
+    /// 
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was unsuccessful.
+    /// 
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Error(super::Error),
 }
 
 impl From<super::Error> for ExportProgress {
     fn from(e: super::Error) -> Self {
-        Self::Error { cause: e }
+        Self::Error(e)
     }
 }
 
@@ -864,8 +939,8 @@ impl<'a> ImportResult<'a> {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await {
-                Ok(Some(ImportProgress::Done { tt })) => break Ok(tt),
-                Ok(Some(ImportProgress::Error { cause })) => {
+                Ok(Some(ImportProgress::Done(tt))) => break Ok(tt),
+                Ok(Some(ImportProgress::Error(cause))) => {
                     trace!("got explicit error: {:?}", cause);
                     break Err(super::Error::other(cause).into());
                 }
@@ -982,7 +1057,7 @@ impl ExportResult {
             let mut rx = match self.inner.await {
                 Ok(rx) => rx,
                 Err(e) => {
-                    co.yield_(ExportProgress::Error { cause: e.into() }).await;
+                    co.yield_(ExportProgress::Error(e.into())).await;
                     return;
                 }
             };
@@ -998,8 +1073,8 @@ impl ExportResult {
         loop {
             match rx.recv().await? {
                 Some(ExportProgress::Done) => break,
-                Some(ExportProgress::Size { size: s }) => size = Some(s),
-                Some(ExportProgress::Error { cause }) => return Err(cause.into()),
+                Some(ExportProgress::Size(s)) => size = Some(s),
+                Some(ExportProgress::Error(cause)) => return Err(cause.into()),
                 _ => {}
             }
         }

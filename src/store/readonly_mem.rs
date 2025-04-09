@@ -59,23 +59,23 @@ impl Actor {
                     .ok();
             }
             Command::ImportBytes(ImportBytesMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error {
-                    cause: io::Error::other("import not supported"),
-                })
+                tx.send(ImportProgress::Error(io::Error::other(
+                    "import not supported",
+                )))
                 .await
                 .ok();
             }
             Command::ImportByteStream(ImportByteStreamMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error {
-                    cause: io::Error::other("import not supported"),
-                })
+                tx.send(ImportProgress::Error(io::Error::other(
+                    "import not supported",
+                )))
                 .await
                 .ok();
             }
             Command::ImportPath(ImportPathMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error {
-                    cause: io::Error::other("import not supported"),
-                })
+                tx.send(ImportProgress::Error(io::Error::other(
+                    "import not supported",
+                )))
                 .await
                 .ok();
             }
@@ -216,7 +216,7 @@ async fn export_path_impl(
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
     let size = data.len() as u64;
-    tx.send(ExportProgress::Size { size }).await?;
+    tx.send(ExportProgress::Size(size)).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;

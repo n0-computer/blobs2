@@ -27,10 +27,7 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use super::{
-    util::{BaoTreeSender},
-    BlobFormat,
-};
+use super::{util::BaoTreeSender, BlobFormat};
 use crate::{
     api::{
         self,
@@ -338,7 +335,7 @@ impl Actor {
             },
             None,
         );
-        import_data.tx.send(ImportProgress::Done { tt }).await.ok();
+        import_data.tx.send(ImportProgress::Done(tt)).await.ok();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -456,10 +453,7 @@ async fn import_bytes(
     data: Bytes,
     mut tx: spsc::Sender<ImportProgress>,
 ) -> anyhow::Result<ImportEntry> {
-    tx.send(ImportProgress::Size {
-        size: data.len() as u64,
-    })
-    .await?;
+    tx.send(ImportProgress::Size(data.len() as u64)).await?;
     tx.send(ImportProgress::CopyDone).await?;
     let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
     Ok(ImportEntry { data, outboard, tx })
@@ -473,10 +467,8 @@ async fn import_byte_stream(
     while let Some(item) = data.next().await {
         let item = item?;
         res.extend_from_slice(&item);
-        tx.try_send(ImportProgress::CopyProgress {
-            offset: res.len() as u64,
-        })
-        .await?;
+        tx.try_send(ImportProgress::CopyProgress(res.len() as u64))
+            .await?;
     }
     import_bytes(res.into(), tx).await
 }
@@ -497,10 +489,8 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
             break;
         }
         res.extend_from_slice(&buf[..size]);
-        tx.send(ImportProgress::CopyProgress {
-            offset: res.len() as u64,
-        })
-        .await?;
+        tx.send(ImportProgress::CopyProgress(res.len() as u64))
+            .await?;
     }
     import_bytes(res.into(), tx).await
 }
@@ -508,9 +498,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
 async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg) {
     let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
-        tx.send(ExportProgress::Error {
-            cause: api::Error::io(io::ErrorKind::NotFound, "hash not found"),
-        })
+        tx.send(ExportProgress::Error(api::Error::io(io::ErrorKind::NotFound, "hash not found")))
         .await
         .ok();
         return;
@@ -518,7 +506,7 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg)
     match export_path_impl(entry, inner, &mut tx).await {
         Ok(()) => tx.send(ExportProgress::Done).await.ok(),
         Err(e) => tx
-            .send(ExportProgress::Error { cause: e.into() })
+            .send(ExportProgress::Error(e.into()))
             .await
             .ok(),
     };
@@ -533,7 +521,7 @@ async fn export_path_impl(
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
-    tx.send(ExportProgress::Size { size }).await?;
+    tx.send(ExportProgress::Size(size)).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
