@@ -36,7 +36,9 @@ use super::{
 use crate::{
     get::db::{HashSeqChunk, LazyHashSeq},
     hashseq::HashSeq,
+    net_protocol::ProgressSender,
     protocol::{RangeSpec, RangeSpecSeq},
+    provider::WrappedWriter,
     store::util::{observer::Aggregator, Tag},
     util::temp_tag::TempTag,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
@@ -824,41 +826,41 @@ impl From<io::Error> for ImportProgress {
 }
 
 /// Progress events for exporting to a local file.
-/// 
+///
 /// Exporting does not involve outboard computation, so the events are simpler
 /// than [`ImportProgress`].
-/// 
+///
 /// Size -> CopyProgress(*n) -> Done
 ///
 /// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ExportProgress {
     /// The size of the file being exported.
-    /// 
+    ///
     /// This is a guaranteed progress event, so you can rely on getting exactly
     /// one of these.
     Size(u64),
     /// Progress copying the file to the target directory.
-    /// 
+    ///
     /// On many modern systems, copying will be done with copy on write,
     /// so copying will be instantaneous and you won't get any of these.
     ///
     /// This is an ephemeral progress event, so you can't rely on getting
     /// regular updates.
-    CopyProgress { offset: u64 },
+    CopyProgress(u64),
     /// The export is done. Once you get this event the data is available.
-    /// 
+    ///
     /// This is a guaranteed progress event, so you can rely on getting exactly
     /// one of these if the operation was successful.
-    /// 
+    ///
     /// This is one of the two possible final events. After this event, there
     /// won't be any more progress events.
     Done,
     /// The export failed with an error.
-    /// 
+    ///
     /// This is a guaranteed progress event, so you can rely on getting exactly
     /// one of these if the operation was unsuccessful.
-    /// 
+    ///
     /// This is one of the two possible final events. After this event, there
     /// won't be any more progress events.
     Error(super::Error),
@@ -1256,6 +1258,45 @@ impl ExportBaoResult {
                         .write_chunk(leaf.data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                }
+                EncodedItem::Done => break,
+                EncodedItem::Error(cause) => return Err(cause.into()),
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn write_quinn_with_progress(
+        self,
+        target: &mut WrappedWriter,
+        index: u64,
+    ) -> super::ExportBaoResult<()> {
+        let mut rx = self.inner.await?;
+        while let Some(item) = rx.recv().await? {
+            match item {
+                EncodedItem::Size(size) => {
+                    target.writer.write_u64_le(size).await?;
+                    target.log_other_write(8);
+                }
+                EncodedItem::Parent(parent) => {
+                    let mut data = vec![0u8; 64];
+                    data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                    data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                    target
+                        .writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                    target.log_other_write(64);
+                }
+                EncodedItem::Leaf(leaf) => {
+                    let len = leaf.data.len();
+                    target
+                        .writer
+                        .write_chunk(leaf.data)
+                        .await
+                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                    target.notify_payload_write(index, leaf.offset, len);
                 }
                 EncodedItem::Done => break,
                 EncodedItem::Error(cause) => return Err(cause.into()),

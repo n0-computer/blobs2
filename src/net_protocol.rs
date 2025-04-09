@@ -8,14 +8,74 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
 use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint};
+use irpc::channel::spsc;
+use n0_future::task::AbortOnDropHandle;
+use tokio::sync::mpsc;
 use tracing::error;
 
-use crate::api::Store;
+use crate::{api::Store, provider::Event};
 
 #[derive(Debug)]
 pub(crate) struct BlobsInner {
     pub(crate) store: Store,
     pub(crate) endpoint: Endpoint,
+    pub(crate) progress: ProgressSender,
+}
+
+pub trait LazyEvent {
+    fn call(self) -> Event;
+}
+
+impl<T> LazyEvent for T
+where
+    T: FnOnce() -> Event,
+{
+    fn call(self) -> Event {
+        self()
+    }
+}
+
+impl LazyEvent for Event {
+    fn call(self) -> Event {
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ProgressSender {
+    Disabled,
+    Enabled(mpsc::Sender<Event>),
+}
+
+impl ProgressSender {
+    pub fn new(sender: Option<mpsc::Sender<Event>>) -> Self {
+        match sender {
+            Some(sender) => Self::Enabled(sender),
+            None => Self::Disabled,
+        }
+    }
+
+    pub fn try_send(&self, event: impl LazyEvent) {
+        match self {
+            Self::Enabled(sender) => {
+                let value = event.call();
+                sender.try_send(value).ok();
+            }
+            Self::Disabled => {}
+        }
+    }
+
+    pub async fn send(&self, event: impl LazyEvent) {
+        match self {
+            Self::Enabled(sender) => {
+                let value = event.call();
+                if let Err(err) = sender.send(value).await {
+                    error!("failed to send progress event: {:?}", err);
+                }
+            }
+            Self::Disabled => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -24,11 +84,16 @@ pub struct Blobs {
 }
 
 impl Blobs {
-    pub fn new(store: impl AsRef<Store>, endpoint: Endpoint) -> Self {
+    pub fn new(
+        store: impl AsRef<Store>,
+        endpoint: Endpoint,
+        progress: Option<mpsc::Sender<Event>>,
+    ) -> Self {
         Self {
             inner: Arc::new(BlobsInner {
                 store: store.as_ref().clone(),
                 endpoint,
+                progress: ProgressSender::new(progress),
             }),
         }
     }
@@ -45,9 +110,10 @@ impl Blobs {
 impl ProtocolHandler for Blobs {
     fn accept(&self, conn: Connection) -> BoxedFuture<Result<()>> {
         let store = self.store().clone();
+        let progress = self.inner.progress.clone();
 
         Box::pin(async move {
-            crate::provider::handle_connection(conn, store).await;
+            crate::provider::handle_connection(conn, store, progress).await;
             Ok(())
         })
     }

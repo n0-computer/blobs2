@@ -498,17 +498,17 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
 async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg) {
     let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
-        tx.send(ExportProgress::Error(api::Error::io(io::ErrorKind::NotFound, "hash not found")))
+        tx.send(ExportProgress::Error(api::Error::io(
+            io::ErrorKind::NotFound,
+            "hash not found",
+        )))
         .await
         .ok();
         return;
     };
     match export_path_impl(entry, inner, &mut tx).await {
         Ok(()) => tx.send(ExportProgress::Done).await.ok(),
-        Err(e) => tx
-            .send(ExportProgress::Error(e.into()))
-            .await
-            .ok(),
+        Err(e) => tx.send(ExportProgress::Error(e.into())).await.ok(),
     };
 }
 
@@ -528,7 +528,7 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress { offset })
+        tx.try_send(ExportProgress::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;

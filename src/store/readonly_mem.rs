@@ -223,7 +223,7 @@ async fn export_path_impl(
         let buf = &mut buf[..len];
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress { offset })
+        tx.try_send(ExportProgress::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other("error"))?;
         yield_now().await;

@@ -242,7 +242,10 @@ impl HashContext {
 
     pub async fn get_entry_state(&self, hash: Hash) -> io::Result<Option<EntryState<Bytes>>> {
         if hash == Hash::EMPTY {
-            return Ok(Some(EntryState::Complete { data_location: DataLocation::Inline(Bytes::new()), outboard_location: OutboardLocation::NotNeeded }));
+            return Ok(Some(EntryState::Complete {
+                data_location: DataLocation::Inline(Bytes::new()),
+                outboard_location: OutboardLocation::NotNeeded,
+            }));
         }
         let (tx, rx) = oneshot::channel();
         self.db()
@@ -1063,7 +1066,7 @@ async fn copy_with_progress(
         let buf: &mut [u8] = &mut buf[..remaining];
         file.read_exact_at(offset, buf)?;
         target.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress { offset })
+        tx.try_send(ExportProgress::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;

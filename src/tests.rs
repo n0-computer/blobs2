@@ -36,8 +36,8 @@ async fn two_nodes_blobs() -> TestResult<()> {
     }
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
-    let blobs1 = Blobs::new(&store1, ep1.clone());
-    let blobs2 = Blobs::new(&store2, ep2.clone());
+    let blobs1 = Blobs::new(&store1, ep1.clone(), None);
+    let blobs2 = Blobs::new(&store2, ep2.clone(), None);
     let r1 = Router::builder(ep1)
         .accept(crate::ALPN, blobs1)
         .spawn()
@@ -96,8 +96,8 @@ async fn two_node_test_setup() -> TestResult<(
     let store2 = FsStore::load(&db2_path).await.unwrap();
     let ep1 = Endpoint::builder().discovery_n0().bind().await.unwrap();
     let ep2 = Endpoint::builder().bind().await.unwrap();
-    let blobs1 = Blobs::new(&store1, ep1.clone());
-    let blobs2 = Blobs::new(&store2, ep2.clone());
+    let blobs1 = Blobs::new(&store1, ep1.clone(), None);
+    let blobs2 = Blobs::new(&store2, ep2.clone(), None);
     let r1 = Router::builder(ep1)
         .accept(crate::ALPN, blobs1)
         .spawn()
@@ -233,7 +233,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let root_tt = store.add_bytes(hash_seq).temp_tag().await?;
     let root = *root_tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
+    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
         .spawn()
@@ -264,7 +264,7 @@ async fn node_serve_blobs() -> TestResult<()> {
         store.add_bytes(test_data(size)).temp_tag().await?;
     }
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
+    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
         .spawn()
@@ -296,7 +296,7 @@ async fn node_smoke() -> TestResult<()> {
     let tt = store.add_bytes(b"hello world".to_vec()).temp_tag().await?;
     let hash = *tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone());
+    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
         .spawn()
