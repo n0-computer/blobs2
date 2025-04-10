@@ -49,8 +49,12 @@ pub struct Stats {
 impl Stats {
     /// Transfer rate in megabits per second
     pub fn mbits(&self) -> f64 {
-        let data_len_bit = (self.payload_bytes_read + self.other_bytes_read) * 8;
+        let data_len_bit = self.total_bytes_read() * 8;
         data_len_bit as f64 / (1000. * 1000.) / self.elapsed.as_secs_f64()
+    }
+
+    pub fn total_bytes_read(&self) -> u64 {
+        self.payload_bytes_read + self.other_bytes_read
     }
 }
 

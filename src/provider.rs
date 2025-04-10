@@ -3,7 +3,11 @@ use std::{fmt::Debug, time::Duration};
 
 use anyhow::{Context, Result};
 use bao_tree::ChunkRanges;
-use iroh::endpoint::{self, RecvStream, SendStream};
+use iroh::{
+    endpoint::{self, RecvStream, SendStream},
+    node_info::NodeInfo,
+    NodeId,
+};
 use tracing::{debug, debug_span, warn, Instrument};
 
 use crate::{
@@ -11,52 +15,76 @@ use crate::{
     hashseq::HashSeq,
     net_protocol::ProgressSender,
     protocol::{GetRequest, RangeSpecSeq, Request},
-    store::util::Tag,
-    BlobFormat, Hash,
+    Hash,
 };
 
 /// Provider progress events, to keep track of what the provider is doing.
 ///
 /// ClientConnected ->
-///    (GetRequestReceived -> (TransferStarted -> TransferProgress*n)*n -> (TransferCompleted | TransferAborted))*n
+///    (GetRequestReceived -> (TransferStarted -> TransferProgress*n)*n -> (TransferCompleted | TransferAborted))*n ->
+/// ConnectionClosed
+#[derive(Debug)]
 pub enum Event {
     /// A new client connected to the provider.
-    ClientConnected { connection_id: u64 },
+    ClientConnected { connection_id: u64, node_id: NodeId },
+    /// Connection closed.
+    ConnectionClosed { connection_id: u64 },
     /// A new get request was received from the provider.
     GetRequestReceived {
+        /// The connection id. Multiple requests can be sent over the same connection.
         connection_id: u64,
+        /// The request id. There is a new id for each request.
         request_id: u64,
+        /// The root hash of the request.
         hash: Hash,
+        /// The exact query ranges of the request.
         ranges: RangeSpecSeq,
     },
     /// Transfer for the nth blob started.
     TransferStarted {
+        /// The connection id. Multiple requests can be sent over the same connection.
         connection_id: u64,
+        /// The request id. There is a new id for each request.
         request_id: u64,
+        /// The index of the blob in the request. 0 for the first blob or for raw blob requests.
         index: u64,
+        /// The hash of the blob. This is the hash of the request for the first blob, the child hash (index-1) for subsequent blobs.
         hash: Hash,
+        /// The size of the blob. This is the full size of the blob, not the size we are sending.
+        size: u64,
     },
     /// Progress of the transfer.
     TransferProgress {
+        /// The connection id. Multiple requests can be sent over the same connection.
         connection_id: u64,
+        /// The request id. There is a new id for each request.
         request_id: u64,
+        /// The index of the blob in the request. 0 for the first blob or for raw blob requests.
         index: u64,
+        /// The end offset of the chunk that was sent.
         end_offset: u64,
     },
     /// Entire transfer completed.
     TransferCompleted {
+        /// The connection id. Multiple requests can be sent over the same connection.
         connection_id: u64,
+        /// The request id. There is a new id for each request.
         request_id: u64,
+        /// Statistics about the transfer.
         stats: Box<TransferStats>,
     },
     /// Entire transfer aborted
     TransferAborted {
+        /// The connection id. Multiple requests can be sent over the same connection.
         connection_id: u64,
+        /// The request id. There is a new id for each request.
         request_id: u64,
+        /// Statistics about the part of the transfer that was aborted.
         stats: Option<Box<TransferStats>>,
     },
 }
 
+#[derive(Debug)]
 pub struct TransferStats {
     pub payload_bytes_sent: u64,
     pub other_bytes_sent: u64,
@@ -82,7 +110,7 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
 #[derive(Debug)]
 pub struct WrappedWriter {
     /// The quinn::SendStream to write to
-    pub writer: SendStream,
+    pub inner: SendStream,
     /// The connection ID from the connection
     pub connection_id: u64,
     /// The request ID from the recv stream
@@ -148,7 +176,7 @@ impl WrappedWriter {
         });
     }
 
-    pub async fn send_ret_request_received(&self, hash: &Hash, ranges: &RangeSpecSeq) {
+    pub async fn send_request_received(&self, hash: &Hash, ranges: &RangeSpecSeq) {
         self.progress
             .send(|| Event::GetRequestReceived {
                 connection_id: self.connection_id,
@@ -159,13 +187,14 @@ impl WrappedWriter {
             .await;
     }
 
-    pub async fn send_transfer_started(&self, index: u64, hash: &Hash) {
+    pub async fn send_transfer_started(&self, index: u64, hash: &Hash, size: u64) {
         self.progress
             .send(|| Event::TransferStarted {
                 connection_id: self.connection_id,
                 request_id: self.request_id,
                 index,
                 hash: *hash,
+                size,
             })
             .await;
     }
@@ -178,11 +207,18 @@ pub async fn handle_connection(
     progress: ProgressSender,
 ) {
     let connection_id = connection.stable_id() as u64;
-    progress
-        .send(Event::ClientConnected { connection_id })
-        .await;
     let span = debug_span!("connection", connection_id);
     async move {
+        let Ok(node_id) = connection.remote_node_id() else {
+            warn!("failed to get node id");
+            return;
+        };
+        progress
+            .send(Event::ClientConnected {
+                connection_id,
+                node_id,
+            })
+            .await;
         while let Ok((writer, reader)) = connection.accept_bi().await {
             // The stream ID index is used to identify this request.  Requests only arrive in
             // bi-directional RecvStreams initiated by the client, so this uniquely identifies them.
@@ -190,7 +226,7 @@ pub async fn handle_connection(
             let span = debug_span!("stream", stream_id = %request_id);
             let store = store.clone();
             let mut writer = WrappedWriter {
-                writer,
+                inner: writer,
                 connection_id,
                 request_id,
                 progress: progress.clone(),
@@ -213,6 +249,9 @@ pub async fn handle_connection(
                 .instrument(span),
             );
         }
+        progress
+            .send(Event::ConnectionClosed { connection_id })
+            .await;
     }
     .instrument(span)
     .await
@@ -247,13 +286,10 @@ pub async fn handle_get(
     let hash = request.hash;
     debug!(%hash, "received request");
 
-    writer
-        .send_ret_request_received(&hash, &request.ranges)
-        .await;
+    writer.send_request_received(&hash, &request.ranges).await;
     let mut hash_seq = None;
     for (offset, ranges) in request.ranges.iter_non_empty() {
         if offset == 0 {
-            writer.send_transfer_started(offset, &hash).await;
             send_blob(&store, offset, hash, ranges.to_chunk_ranges(), writer).await?;
         } else {
             // todo: this assumes that 1. the hashseq is complete and 2. it is
@@ -274,7 +310,6 @@ pub async fn handle_get(
             let Some(hash) = hash_seq.get(o) else {
                 break;
             };
-            writer.send_transfer_started(offset, &hash).await;
             send_blob(&store, offset, hash, ranges.to_chunk_ranges(), writer).await?;
         }
     }
@@ -318,6 +353,6 @@ pub async fn send_blob(
 ) -> api::Result<()> {
     Ok(store
         .export_bao(hash, ranges)
-        .write_quinn_with_progress(writer, index)
+        .write_quinn_with_progress(writer, &hash, index)
         .await?)
 }

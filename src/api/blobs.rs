@@ -35,6 +35,7 @@ use super::{
 };
 use crate::{
     get::db::{HashSeqChunk, LazyHashSeq},
+    hash,
     hashseq::HashSeq,
     net_protocol::ProgressSender,
     protocol::{RangeSpec, RangeSpecSeq},
@@ -1268,35 +1269,37 @@ impl ExportBaoResult {
 
     pub async fn write_quinn_with_progress(
         self,
-        target: &mut WrappedWriter,
+        writer: &mut WrappedWriter,
+        hash: &Hash,
         index: u64,
     ) -> super::ExportBaoResult<()> {
         let mut rx = self.inner.await?;
         while let Some(item) = rx.recv().await? {
             match item {
                 EncodedItem::Size(size) => {
-                    target.writer.write_u64_le(size).await?;
-                    target.log_other_write(8);
+                    writer.send_transfer_started(index, hash, size).await;
+                    writer.inner.write_u64_le(size).await?;
+                    writer.log_other_write(8);
                 }
                 EncodedItem::Parent(parent) => {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                    target
-                        .writer
+                    writer
+                        .inner
                         .write_all(&data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
-                    target.log_other_write(64);
+                    writer.log_other_write(64);
                 }
                 EncodedItem::Leaf(leaf) => {
                     let len = leaf.data.len();
-                    target
-                        .writer
+                    writer
+                        .inner
                         .write_chunk(leaf.data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
-                    target.notify_payload_write(index, leaf.offset, len);
+                    writer.notify_payload_write(index, leaf.offset, len);
                 }
                 EncodedItem::Done => break,
                 EncodedItem::Error(cause) => return Err(cause.into()),
