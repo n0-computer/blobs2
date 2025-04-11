@@ -687,9 +687,9 @@ impl Blobs {
         &self,
         hash: Hash,
         ranges: ChunkRanges,
-        data: Bytes,
+        data: impl Into<Bytes>,
     ) -> RequestResult<()> {
-        self.import_bao_reader(hash, ranges, data).await?;
+        self.import_bao_reader(hash, ranges, data.into()).await?;
         Ok(())
     }
 
@@ -1251,6 +1251,7 @@ impl ExportBaoResult {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {
+            println!("item: {:?}", item);
             data.extend_from_slice(&item?);
         }
         Ok(data)

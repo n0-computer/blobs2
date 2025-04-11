@@ -26,6 +26,29 @@ pub struct LocalInfo {
     children: Option<HashSeqLocalInfo>,
 }
 
+impl fmt::Display for LocalInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} {:?}", self.root, self.bitfield)?;
+        if let Some(children) = &self.children {
+            for (_, hash) in iter_without_gaps(children.hash_seq.iter()) {
+                if let Some(hash) = hash {
+                    let bitfield = children
+                        .bitfields
+                        .get(&hash)
+                        .expect("missing bitfield for child");
+                    writeln!(f, "  {} {:?}", hash, bitfield)?;
+                } else {
+                    writeln!(f, "  -")?;
+                }
+            }
+            if !self.bitfield.is_validated() {
+                writeln!(f, "  ...")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl LocalInfo {
     /// Content (hash and format) of this local info
     pub fn content(&self) -> HashAndFormat {
@@ -72,7 +95,7 @@ impl LocalInfo {
             if children.hash_seq.last().is_some() {
                 let start = root_missing;
                 let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-                    if let Some(hash) = hash {
+                    if let Some(hash) = hash {   
                         ChunkRanges::all() - &children.bitfields.get(&hash).unwrap().ranges
                     } else {
                         ChunkRanges::all()
@@ -246,7 +269,8 @@ impl Download {
     }
 }
 
-use std::{collections::BTreeMap, future::Future, iter, num::NonZeroU64};
+use core::hash;
+use std::{collections::BTreeMap, fmt::{self, Display}, future::Future, iter, num::NonZeroU64};
 
 use bao_tree::{io::Leaf, ChunkRanges};
 use iroh::{endpoint::Connection, Endpoint, NodeAddr};
@@ -565,7 +589,7 @@ async fn fetch_hash_seq_impl(
 
 #[cfg(test)]
 mod tests {
-    use bao_tree::ChunkRanges;
+    use bao_tree::{ChunkNum, ChunkRanges};
     use testresult::TestResult;
 
     use crate::{
@@ -591,6 +615,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_local_info_hash_seq_large() -> TestResult<()> {
+        let sizes = (0..1024 + 5).map(|x| x).collect::<Vec<_>>();
+        let relevant_sizes = sizes[32 * 16..32 * 32].iter().map(|x| *x as u64).sum::<u64>();
+        let td = tempfile::tempdir()?;
+        let hash_seq_ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
+        let store = FsStore::load(td.path().join("blobs.db")).await?;
+        {
+            // only add the hash seq itself, and only the first chunk of the children
+            let present = |i| if i == 0 {
+                hash_seq_ranges.clone()
+            } else {
+                ChunkRanges::from(..ChunkNum(1))
+            };
+            let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
+            let info = store.download().local(content).await?;
+            assert_eq!(info.content(), content);
+            assert_eq!(info.bitfield.ranges, hash_seq_ranges);
+            assert_eq!(info.is_complete(), false);
+            assert_eq!(info.local_bytes(), relevant_sizes + 16 * 1024);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_local_info_hash_seq() -> TestResult<()> {
         let sizes = INTERESTING_SIZES;
         let total_size = sizes.iter().map(|x| *x as u64).sum::<u64>();
@@ -598,7 +647,13 @@ mod tests {
         let td = tempfile::tempdir()?;
         let store = FsStore::load(td.path().join("blobs.db")).await?;
         {
-            let content = add_test_hash_seq_incomplete(&store, &sizes).await?;
+            // only add the hash seq itself, none of the children
+            let present = |i| if i == 0 {
+                ChunkRanges::all()
+            } else {
+                ChunkRanges::empty()
+            };
+            let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
             let info = store.download().local(content).await?;
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
@@ -621,9 +676,42 @@ mod tests {
                     ])
                 )
             );
+            store.tags().delete_all().await?;
         }
         {
-            let content = add_test_hash_seq(&store, &sizes).await?;
+            // only add the hash seq itself, and only the first chunk of the children
+            let present = |i| if i == 0 {
+                ChunkRanges::all()
+            } else {
+                ChunkRanges::from(..ChunkNum(1))
+            };
+            let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
+            let info = store.download().local(content).await?;
+            let first_chunk_size = sizes.into_iter().map(|x| x.min(1024) as u64).sum::<u64>();
+            assert_eq!(info.content(), content);
+            assert_eq!(info.bitfield.ranges, ChunkRanges::all());
+            assert_eq!(info.local_bytes(), hash_seq_size + first_chunk_size);
+            assert_eq!(info.is_complete(), false);
+            assert_eq!(
+                info.missing(),
+                GetRequest::new(
+                    content.hash,
+                    RangeSpecSeq::from_ranges([
+                        ChunkRanges::empty(), // we have the hash seq itself
+                        ChunkRanges::empty(), // we always have the empty blob
+                        ChunkRanges::empty(), // size=1
+                        ChunkRanges::empty(), // size=1024
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                    ])
+                )
+            );
+        }
+        {
+            let content = add_test_hash_seq(&store, sizes).await?;
             let info = store.download().local(content).await?;
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());

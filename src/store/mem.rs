@@ -17,7 +17,7 @@ use bao_tree::{
     },
     BaoTree, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode,
 };
-use bytes::Bytes;
+use bytes::{buf, Bytes};
 use irpc::channel::spsc;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{
@@ -692,10 +692,11 @@ impl PartialMemStorage {
                         let o0 = offset
                             .checked_mul(64)
                             .expect("u64 overflow multiplying to hash pair offset");
-                        let o1 = o0.checked_add(32).expect("u64 overflow");
                         let outboard = &mut self.outboard;
-                        outboard.write_all_at(o0, parent.pair.0.as_bytes().as_slice())?;
-                        outboard.write_all_at(o1, parent.pair.1.as_bytes().as_slice())?;
+                        let mut buf = [0u8; 64];
+                        buf[..32].copy_from_slice(parent.pair.0.as_bytes());
+                        buf[32..].copy_from_slice(parent.pair.1.as_bytes());
+                        outboard.write_all_at(o0, &buf)?;
                     }
                 }
                 BaoContentItem::Leaf(leaf) => {
@@ -779,7 +780,7 @@ mod tests {
             }
         });
         store2
-            .import_bao_bytes(hash, ChunkRanges::all(), exported.clone().into())
+            .import_bao_bytes(hash, ChunkRanges::all(), exported.clone())
             .await?;
 
         let exported2 = store2

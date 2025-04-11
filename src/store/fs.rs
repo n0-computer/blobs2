@@ -1204,7 +1204,7 @@ pub mod tests {
         Ok((outboard.root.into(), encoded))
     }
 
-    fn round_up_request(size: u64, ranges: &ChunkRanges) -> ChunkRanges {
+    pub fn round_up_request(size: u64, ranges: &ChunkRanges) -> ChunkRanges {
         let last_chunk = ChunkNum::chunks(size);
         let data_range = ChunkRanges::from(..last_chunk);
         let ranges = if !data_range.intersects(ranges) && !ranges.is_empty() {
@@ -1252,7 +1252,7 @@ pub mod tests {
                 }
                 api::Result::Ok(())
             });
-            store.import_bao_bytes(hash, ranges, bao.into()).await?;
+            store.import_bao_bytes(hash, ranges, bao).await?;
             task.await??;
         }
         Ok(())
@@ -1409,6 +1409,26 @@ pub mod tests {
             store.export(expected_hash, &out_path).finish().await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_import_bao_ranges() -> TestResult<()> {
+        tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let db_dir = testdir.path().join("db");
+        {
+            let store = FsStore::load(&db_dir).await?;
+            let data = test_data(100000);
+            let ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
+            let (hash, bao) = create_n0_bao(&data, &ranges)?;
+            store.import_bao_bytes(hash, ranges.clone(), bao.clone()).await?;
+            let bitfield = store.observe(hash).await?;
+            assert_eq!(bitfield.ranges, ranges);
+            assert_eq!(bitfield.size(), data.len() as u64);
+            let export = store.export_bao(hash, ranges).bao_to_vec().await?;
+            assert_eq!(export, bao);
         }
         Ok(())
     }
@@ -1838,7 +1858,7 @@ pub mod tests {
             let data = test_data(size);
             let ranges = ChunkRanges::all();
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
-            store.import_bao_bytes(hash, ranges, bao.into()).await?;
+            store.import_bao_bytes(hash, ranges, bao).await?;
         }
 
         for (_hash, _bao_tree) in bao_by_hash {

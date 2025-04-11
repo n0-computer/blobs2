@@ -294,7 +294,7 @@ mod tests {
             let data = vec![1u8; 8000000];
             let ranges = ChunkRanges::from(..ChunkNum(19));
             let (bh, b_bao) = create_n0_bao(&data, &ranges)?;
-            store.import_bao_bytes(bh, ranges, b_bao.into()).await?;
+            store.import_bao_bytes(bh, ranges, b_bao).await?;
             let data_path = options.data_path(&bh);
             let outboard_path = options.outboard_path(&bh);
             let sizes_path = options.sizes_path(&bh);

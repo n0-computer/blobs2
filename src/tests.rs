@@ -1,6 +1,8 @@
+use core::hash;
 use std::path::PathBuf;
 
 use bao_tree::ChunkRanges;
+use bytes::Bytes;
 use iroh::{protocol::Router, Endpoint};
 use irpc::channel::spsc;
 use n0_future::{pin, StreamExt};
@@ -16,7 +18,7 @@ use crate::{
     net_protocol::Blobs,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::fs::{
-        tests::{test_data, INTERESTING_SIZES},
+        tests::{create_n0_bao, round_up_request, test_data, INTERESTING_SIZES},
         FsStore,
     },
     BlobFormat, Hash, HashAndFormat,
@@ -57,11 +59,11 @@ async fn two_nodes_blobs() -> TestResult<()> {
     Ok(())
 }
 
-pub async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<HashAndFormat> {
+pub async fn add_test_hash_seq(blobs: &Store, sizes: impl IntoIterator<Item = usize>) -> TestResult<HashAndFormat> {
     let batch = blobs.batch().await?;
     let mut tts = Vec::new();
     for size in sizes {
-        tts.push(batch.add_bytes(test_data(*size)).temp_tag().await?);
+        tts.push(batch.add_bytes(test_data(size)).temp_tag().await?);
     }
     let hash_seq = tts.iter().map(|tt| *tt.hash()).collect::<HashSeq>();
     let root = batch
@@ -73,19 +75,30 @@ pub async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<Has
 
 pub async fn add_test_hash_seq_incomplete(
     blobs: &Store,
-    sizes: &[usize],
+    sizes: impl IntoIterator<Item = usize>,
+    present: impl Fn(usize) -> ChunkRanges,
 ) -> TestResult<HashAndFormat> {
     let batch = blobs.batch().await?;
     let mut tts = Vec::new();
-    for size in sizes {
-        tts.push(batch.temp_tag(Hash::new(test_data(*size))).await?);
+    for (i, size) in sizes.into_iter().enumerate() {
+        let data = test_data(size);
+        // figure out the ranges to import, and manually create a temp tag.
+        let ranges = present(i + 1);
+        let (hash, bao) = create_n0_bao(&data, &ranges)?;
+        // why isn't import_bao_bytes returning a temp tag anyway?
+        tts.push(batch.temp_tag(hash).await?);
+        if !ranges.is_empty() {
+            blobs.import_bao_bytes(hash, ranges, bao).await?;
+        }
     }
     let hash_seq = tts.iter().map(|tt| *tt.hash()).collect::<HashSeq>();
-    let root = batch
-        .add_bytes_with_opts((hash_seq, BlobFormat::HashSeq))
-        .with_named_tag("hs_incomplete")
-        .await?;
-    Ok(root)
+    let hash_seq_bytes = Bytes::from(hash_seq);
+    let ranges = present(0);
+    let (root, bao) = create_n0_bao(&hash_seq_bytes, &ranges)?;
+    let content = HashAndFormat::hash_seq(root);
+    blobs.tags().create(content).await?;
+    blobs.import_bao_bytes(root, ranges, bao).await?;
+    Ok(content)
 }
 
 async fn check_presence(store: &Store, sizes: &[usize]) -> TestResult<()> {
@@ -132,7 +145,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
-    let root = add_test_hash_seq(&store1, &sizes).await?;
+    let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2.download().fetch(conn, root, None).await?;
     check_presence(&store2, &sizes).await?;
@@ -145,7 +158,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
-    let root = add_test_hash_seq(&store1, &sizes).await?;
+    let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let (tx, rx) = spsc::channel::<u64>(16);
     let res = store2.download().fetch(conn, root, Some(tx));
@@ -172,7 +185,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     let (testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
-    let root = add_test_hash_seq(&store1, &sizes).await?;
+    let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let sizes = store2.verified_size(root).await?;
     assert_eq!(sizes, RangeSpecSeq::verified_child_sizes());
