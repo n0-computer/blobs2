@@ -27,7 +27,6 @@ use tracing::{debug, error};
 
 use crate::{protocol::RangeSpecSeq, Hash, IROH_BLOCK_SIZE};
 
-pub mod db;
 pub mod error;
 pub mod request;
 

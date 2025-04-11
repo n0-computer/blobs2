@@ -5,9 +5,10 @@
 //!
 //! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
-use std::fmt;
+use std::fmt::{self, Debug, Display};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
+use chrono::offset;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
 
@@ -170,6 +171,20 @@ impl fmt::Debug for RangeSpec {
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
 #[repr(transparent)]
 pub struct RangeSpecSeq(SmallVec<[(u64, RangeSpec); 2]>);
+
+impl Display for RangeSpecSeq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = f.debug_list();
+        let mut iter = self.iter_non_empty();
+        while let Some((offset, ranges)) = iter.next() {
+            list.entry(&(offset, ranges.to_chunk_ranges()));
+            if iter.is_at_end() {
+                return list.finish_non_exhaustive();
+            }
+        }
+        list.finish()
+    }
+}
 
 impl RangeSpecSeq {
     /// A [`RangeSpecSeq`] containing no chunks from any blobs in the sequence.
@@ -394,6 +409,10 @@ impl<'a> NonEmptyRequestRangeSpecIter<'a> {
 
     pub(crate) fn offset(&self) -> u64 {
         self.count
+    }
+
+    pub fn is_at_end(&self) -> bool {
+        self.inner.is_at_end()
     }
 }
 

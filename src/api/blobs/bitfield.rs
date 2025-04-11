@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, num::NonZeroU64};
 
 use bao_tree::{ChunkNum, ChunkRanges};
+use range_collections::range_set::RangeSetRange;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 
@@ -28,7 +29,7 @@ pub struct Bitfield {
     /// The ranges that were added
     pub ranges: ChunkRanges,
     /// Possible update to the size information. can this be just a u64?
-    pub size: u64,
+    size: u64,
 }
 
 impl Default for Bitfield {
@@ -64,7 +65,7 @@ impl<'de> Deserialize<'de> for Bitfield {
         let Some(ranges) = ChunkRanges::new(ranges) else {
             return Err(serde::de::Error::custom("Boundaries are not sorted"));
         };
-        Ok(Bitfield { ranges, size })
+        Ok(Bitfield::new(ranges, size))
     }
 }
 
@@ -82,6 +83,10 @@ impl Bitfield {
             }
         }
         Self { ranges, size }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     /// An empty bitfield. This is the neutral element for the combine operation.
@@ -125,6 +130,21 @@ impl Bitfield {
         } else {
             None
         }
+    }
+
+    /// Total valid bytes in this bitfield.
+    pub fn total_bytes(&self) -> u64 {
+        let mut total = 0;
+        for range in self.ranges.iter() {
+            let (start, end) = match range {
+                RangeSetRange::Range(range) => {
+                    (range.start.to_bytes(), range.end.to_bytes().min(self.size))
+                }
+                RangeSetRange::RangeFrom(range) => (range.start.to_bytes(), self.size),
+            };
+            total += end - start;
+        }
+        total
     }
 }
 

@@ -63,9 +63,14 @@ pub(super) async fn gc_mark_task<'a>(
         // we need to do this for all formats except raw
         if live.insert(hash) && !format.is_raw() {
             let mut stream = store.export_bao(hash, ChunkRanges::all()).hashes();
-            while let Some(res) = stream.next().await {
-                if let Ok(hash) = res {
-                    live.insert(hash);
+            while let Some(hash) = stream.next().await {
+                match hash {
+                    Ok(hash) => {
+                        live.insert(hash);
+                    }
+                    Err(e) => {
+                        warn!("error while traversing hashseq: {e:?}");
+                    }
                 }
             }
         }

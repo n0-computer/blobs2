@@ -172,7 +172,7 @@ impl PartialFileStorage {
                     tree: BaoTree::new(size, IROH_BLOCK_SIZE),
                     root: blake3::Hash::from(*hash),
                 };
-                let mut ranges = ChunkRanges::all();
+                let mut ranges = ChunkRanges::empty();
                 for range in bao_tree::io::sync::valid_ranges(outboard, &data, &ChunkRanges::all())
                     .into_iter()
                     .flatten()
@@ -197,7 +197,7 @@ impl PartialFileStorage {
         _hash: &crate::Hash,
         ctx: &TaskContext,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
-        let size = self.bitfield.state().size;
+        let size = self.bitfield.state().size();
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
             let data = read_to_end(&self.data, 0, size as usize)?;
@@ -458,7 +458,7 @@ impl BaoFileStorage {
                             permit,
                             hash,
                             EntryState::Partial {
-                                size: Some(fs.bitfield.state().size),
+                                size: Some(fs.bitfield.state().size()),
                             },
                         );
                     }
@@ -660,10 +660,7 @@ impl BaoFileHandle {
             None => None,
         };
         if let Some(bitfield) = res {
-            bitfield.update(Bitfield {
-                ranges: ChunkRanges::all(),
-                size: data.size(),
-            });
+            bitfield.update(Bitfield::complete(data.size()));
             *guard.deref_mut() = Some(BaoFileStorage::Complete(CompleteStorage { data, outboard }));
         }
     }

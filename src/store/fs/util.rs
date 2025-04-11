@@ -1,7 +1,8 @@
-use std::{pin::Pin, task::Poll};
+use std::{future::Future, pin::Pin, task::Poll};
 
 use chrono::Duration;
 use n0_future::{FutureExt, Stream};
+use tokio::select;
 
 use crate::util::channel::mpsc;
 
@@ -10,33 +11,6 @@ use crate::util::channel::mpsc;
 pub struct PeekableReceiver<T> {
     msg: Option<T>,
     recv: mpsc::Receiver<T>,
-}
-
-pub struct PeekableReceiverStream<'a, T> {
-    inner: &'a mut PeekableReceiver<T>,
-    timeout: Pin<Box<n0_future::time::Sleep>>,
-}
-
-impl<'a, T> Stream for PeekableReceiverStream<'a, T> {
-    type Item = T;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        loop {
-            if let Poll::Ready(()) = this.timeout.poll(cx) {
-                return Poll::Ready(None);
-            }
-            if let Some(msg) = this.inner.msg.take() {
-                return Poll::Ready(Some(msg));
-            }
-            if let Poll::Ready(msg) = this.inner.recv.poll_recv(cx) {
-                return Poll::Ready(msg);
-            }
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -49,6 +23,8 @@ impl<T> PeekableReceiver<T> {
     ///
     /// Will block if there are no messages.
     /// Returns None only if there are no more messages (sender is dropped).
+    ///
+    /// Cancel safe because the only async operation is the recv() call, which is cancel safe.
     pub async fn recv(&mut self) -> Option<T> {
         if let Some(msg) = self.msg.take() {
             return Some(msg);
@@ -56,15 +32,18 @@ impl<T> PeekableReceiver<T> {
         self.recv.recv().await
     }
 
-    pub fn stream(&mut self, duration: std::time::Duration) -> PeekableReceiverStream<'_, T> {
-        PeekableReceiverStream {
-            inner: self,
-            timeout: Box::pin(n0_future::time::sleep(duration)),
-        }
-    }
-
-    pub async fn extract<U>(&mut self, f: impl Fn(T) -> std::result::Result<U, T>) -> Option<U> {
-        let msg = self.recv().await?;
+    /// Receive the next message, but only if it passes the filter.
+    ///
+    /// Cancel safe because the only async operation is the [Self::recv] call, which is cancel safe.
+    pub async fn extract<U>(
+        &mut self,
+        f: impl Fn(T) -> std::result::Result<U, T>,
+        timeout: impl Future + Unpin,
+    ) -> Option<U> {
+        let msg = select! {
+            x = self.recv() => x?,
+            _ = timeout => return None,
+        };
         match f(msg) {
             Ok(u) => Some(u),
             Err(msg) => {

@@ -2,11 +2,13 @@ use std::path::{Path, PathBuf};
 
 use blobs2::{
     api::{
-        blobs::{ExportMode, ExportPath},
+        blobs::{
+            download::{Dialer, GetConnection},
+            ExportMode, ExportPath,
+        },
         Store,
     },
     format::collection::Collection,
-    get::db::{Dialer, GetConnection},
     store::fs::FsStore,
     ticket::BlobTicket,
     HashAndFormat,
@@ -85,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
     let ticket: BlobTicket = "blobadp7jtzebap5f7qkyqs3bqolu2jidzquqsbjnyzvwm2psfn5rztbaajdnb2hi4dthixs6zlvo4ys2mjoojswyylzfzuxe33ifzxgk5dxn5zgwlrpaqaauaqaakm3sayaj57y2b62muae674na6m3sayaycuab4uzxebqc6bra2oajzeub2khp26aibktirqlu44ejzmf2a4lww7kdyffrfrj".parse().unwrap();
     let dirname = format!(".sendme2-recv-{}", ticket.hash().to_hex());
     let store = FsStore::load(dirname).await?;
-    let blobs = store.blobs();
     // let blobs = Blobs::new(store.clone());
     let endpoint = iroh::Endpoint::builder().bind().await?;
     // let router = Router::builder(endpoint).accept(blobs2::ALPN, blobs.clone()).build();
@@ -114,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     // store.dump().await?;
     // return Ok(());
     // let stats = get_one_by_one(conn, content);
-    let stats = blobs2::get::db::get_all(dialer, content, &store, None);
+    let stats = store.download().fetch(dialer, content, None);
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = ctrl_c => {

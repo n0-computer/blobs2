@@ -120,16 +120,17 @@ impl Ord for Hash {
 
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // result will be 52 bytes
-        let mut res = [b'b'; 52];
-        // write the encoded bytes
-        data_encoding::BASE32_NOPAD.encode_mut(self.as_bytes(), &mut res);
-        // convert to string, this is guaranteed to succeed
-        let t = std::str::from_utf8_mut(res.as_mut()).unwrap();
-        // hack since data_encoding doesn't have BASE32LOWER_NOPAD as a const
-        t.make_ascii_lowercase();
-        // write the str, no allocations
-        f.write_str(t)
+        f.write_str(&self.to_hex())
+        // // result will be 52 bytes
+        // let mut res = [b'b'; 52];
+        // // write the encoded bytes
+        // data_encoding::BASE32_NOPAD.encode_mut(self.as_bytes(), &mut res);
+        // // convert to string, this is guaranteed to succeed
+        // let t = std::str::from_utf8_mut(res.as_mut()).unwrap();
+        // // hack since data_encoding doesn't have BASE32LOWER_NOPAD as a const
+        // t.make_ascii_lowercase();
+        // // write the str, no allocations
+        // f.write_str(t)
     }
 }
 
@@ -552,7 +553,7 @@ mod tests {
         assert_tokens(&hash.compact(), &tokens);
 
         let tokens = vec![Token::String(
-            "5khrmpntq2bjexseshc6ldklwnig56gbj23yvbxjbdcwestheahq",
+            "ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f",
         )];
         assert_tokens(&hash.readable(), &tokens);
     }
@@ -574,7 +575,7 @@ mod tests {
         let de = serde_json::from_str(&ser).unwrap();
         assert_eq!(hash, de);
         // 52 bytes of base32 + 2 quotes
-        assert_eq!(ser.len(), 54);
+        assert_eq!(ser.len(), 66);
     }
 
     #[test]

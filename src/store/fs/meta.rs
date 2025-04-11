@@ -1,5 +1,6 @@
 //! The metadata database
 #![allow(clippy::result_large_err)]
+use core::time;
 use std::{
     collections::HashSet,
     io,
@@ -12,6 +13,7 @@ use bao_tree::BaoTree;
 use bytes::Bytes;
 use irpc::channel::spsc;
 use redb::{Database, DatabaseError, ReadableTable};
+use tokio::pin;
 
 use crate::{
     api::{
@@ -656,14 +658,13 @@ impl Actor {
                     self.cmds.push_back(cmd.into()).ok();
                     let tx = db.begin_read()?;
                     let tables = ReadOnlyTables::new(&tx)?;
-                    let t0 = Instant::now();
+                    let timeout = tokio::time::sleep(self.options.max_read_duration);
+                    pin!(timeout);
                     let mut n = 0;
-                    while let Some(cmd) = self.cmds.extract(Command::read_only).await {
+                    while let Some(cmd) = self.cmds.extract(Command::read_only, &mut timeout).await
+                    {
                         Self::handle_readonly(&mut self.protected, &tables, cmd, op).await?;
                         n += 1;
-                        if t0.elapsed() > options.max_read_duration {
-                            break;
-                        }
                         if n >= options.max_read_batch {
                             break;
                         }
@@ -675,15 +676,17 @@ impl Actor {
                     let ftx = self.ds.begin_write();
                     let tx = db.begin_write()?;
                     let mut tables = Tables::new(&tx, &ftx)?;
-                    let t0 = Instant::now();
+                    let timeout = tokio::time::sleep(self.options.max_read_duration);
+                    pin!(timeout);
                     let mut n = 0;
-                    while let Some(cmd) = self.cmds.extract(Command::non_top_level).await {
+                    while let Some(cmd) = self
+                        .cmds
+                        .extract(Command::non_top_level, &mut timeout)
+                        .await
+                    {
                         Self::handle_non_toplevel(&mut self.protected, &mut tables, cmd, op)
                             .await?;
                         n += 1;
-                        if t0.elapsed() > options.max_write_duration {
-                            break;
-                        }
                         if n >= options.max_write_batch {
                             break;
                         }

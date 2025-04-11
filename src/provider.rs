@@ -108,7 +108,7 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
 
 /// Wrapper for a quinn::SendStream with additional per request information.
 #[derive(Debug)]
-pub struct WrappedWriter {
+pub struct ProgressWriter {
     /// The quinn::SendStream to write to
     pub inner: SendStream,
     /// The connection ID from the connection
@@ -125,7 +125,7 @@ pub struct WrappedWriter {
     pub progress: ProgressSender,
 }
 
-impl WrappedWriter {
+impl ProgressWriter {
     /// Increase the write count due to a non-payload write.
     pub fn log_other_write(&mut self, len: usize) {
         self.other_bytes_sent += len as u64;
@@ -225,7 +225,7 @@ pub async fn handle_connection(
             let request_id = reader.id().index();
             let span = debug_span!("stream", stream_id = %request_id);
             let store = store.clone();
-            let mut writer = WrappedWriter {
+            let mut writer = ProgressWriter {
                 inner: writer,
                 connection_id,
                 request_id,
@@ -257,7 +257,11 @@ pub async fn handle_connection(
     .await
 }
 
-async fn handle_stream(store: Store, reader: RecvStream, writer: &mut WrappedWriter) -> Result<()> {
+async fn handle_stream(
+    store: Store,
+    reader: RecvStream,
+    writer: &mut ProgressWriter,
+) -> Result<()> {
     // 1. Decode the request.
     debug!("reading request");
     let request = match read_request(reader).await {
@@ -281,7 +285,7 @@ async fn handle_stream(store: Store, reader: RecvStream, writer: &mut WrappedWri
 pub async fn handle_get(
     store: Store,
     request: GetRequest,
-    writer: &mut WrappedWriter,
+    writer: &mut ProgressWriter,
 ) -> Result<()> {
     let hash = request.hash;
     debug!(%hash, "received request");
@@ -349,7 +353,7 @@ pub async fn send_blob(
     index: u64,
     hash: Hash,
     ranges: ChunkRanges,
-    writer: &mut WrappedWriter,
+    writer: &mut ProgressWriter,
 ) -> api::Result<()> {
     Ok(store
         .export_bao(hash, ranges)

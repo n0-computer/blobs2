@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     future::{Future, IntoFuture},
     io,
@@ -12,11 +12,12 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        BaoContentItem, Leaf,
+        BaoContentItem, EncodeError, Leaf,
     },
     BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
+use download::{Download, HashSeqChunk, LazyHashSeq};
 use genawaiter::sync::Gen;
 use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
@@ -31,22 +32,19 @@ use tracing::trace;
 
 use super::{
     tags::{CreateTempTagRequest, TagInfo},
-    ApiClient, ClearProtected, RequestResult, Scope, ShutdownRequest, Store, SyncDbRequest, Tags,
+    ApiClient, ClearProtected, RequestResult, Scope, ShutdownRequest, SyncDbRequest, Tags,
 };
 use crate::{
-    get::db::{HashSeqChunk, LazyHashSeq},
-    hash,
     hashseq::HashSeq,
-    net_protocol::ProgressSender,
     protocol::{RangeSpec, RangeSpecSeq},
-    provider::WrappedWriter,
-    store::util::{observer::Aggregator, Tag},
+    provider::ProgressWriter,
+    store::util::observer::Aggregator,
     util::temp_tag::TempTag,
     BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 mod bitfield;
 pub use bitfield::{is_validated, Bitfield};
-pub mod request;
+pub mod download;
 use ref_cast::RefCast;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
@@ -111,6 +109,10 @@ impl<'a> Batch<'a> {
 impl Blobs {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
+    }
+
+    pub fn download(&self) -> &Download {
+        Download::ref_from_sender(&self.client)
     }
 
     pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
@@ -369,9 +371,53 @@ impl Blobs {
     pub async fn missing(&self, data: impl Into<HashAndFormat>) -> RequestResult<RangeSpecSeq> {
         let data = data.into();
         Ok(match data.format {
-            BlobFormat::Raw => self.get_missing_blob(data.hash).await?,
-            BlobFormat::HashSeq => self.get_missing_hash_seq(data.hash).await?,
+            BlobFormat::Raw => self.missing_blob(data.hash).await?,
+            BlobFormat::HashSeq => self.missing_hash_seq(data.hash).await?,
         })
+    }
+
+    pub async fn local_bitfields(
+        &self,
+        data: impl Into<HashAndFormat>,
+    ) -> RequestResult<HashMap<Hash, Bitfield>> {
+        let data = data.into();
+        let mut res = HashMap::new();
+        let bitfield = self.observe(data.hash).await?;
+        res.insert(data.hash, bitfield.clone());
+        if data.format == BlobFormat::HashSeq {
+            let mut stream = self.export_bao(data.hash, bitfield.ranges).hashes();
+            while let Some(hash) = stream.next().await {
+                let Ok(hash) = hash else {
+                    continue;
+                };
+                if !res.contains_key(&hash) {
+                    let bitfield = self.observe(hash).await?;
+                    res.insert(hash, bitfield);
+                }
+            }
+        }
+        Ok(res)
+    }
+
+    /// Number of local bytes in for a blob or hash sequence.
+    pub async fn local_bytes(&self, data: impl Into<HashAndFormat>) -> RequestResult<u64> {
+        let data = data.into();
+        let bitfield = self.observe(data.hash).await?;
+        let mut total = bitfield.total_bytes();
+        if data.format == BlobFormat::HashSeq {
+            let mut stream = self.export_bao(data.hash, bitfield.ranges).hashes();
+            let mut hashes = HashSet::new();
+            while let Some(hash) = stream.next().await {
+                let Ok(hash) = hash else {
+                    continue;
+                };
+                if hashes.insert(hash) {
+                    let bitfield = self.observe(hash).await?;
+                    total += bitfield.total_bytes();
+                }
+            }
+        }
+        Ok(total)
     }
 
     /// Construct a request to get the verified size of a hash or hashseq.
@@ -470,13 +516,13 @@ impl Blobs {
         Ok(RangeSpecSeq::from_ranges_infinite(ranges))
     }
 
-    async fn get_missing_blob(&self, hash: Hash) -> RequestResult<RangeSpecSeq> {
-        let local_ranges = self.observe(hash).await?.ranges;
-        let required_ranges = ChunkRanges::all() - local_ranges;
+    async fn missing_blob(&self, hash: Hash) -> RequestResult<RangeSpecSeq> {
+        let local = self.observe(hash).await?;
+        let required_ranges = ChunkRanges::all() - local.ranges;
         Ok(RangeSpecSeq::from_ranges([required_ranges]))
     }
 
-    async fn get_missing_hash_seq(&self, root: Hash) -> RequestResult<RangeSpecSeq> {
+    async fn missing_hash_seq(&self, root: Hash) -> RequestResult<RangeSpecSeq> {
         let local_bitfield = self.observe(root).await?;
         let root_ranges = ChunkRanges::all() - local_bitfield.ranges.clone();
         let mut stream = self
@@ -492,8 +538,8 @@ impl Blobs {
                 let hs = HashSeq::try_from(data.data).map_err(super::Error::other)?;
                 for (i, hash) in hs.into_iter().enumerate() {
                     let missing = if hashes.insert(hash) {
-                        let local_bitmap = self.observe(hash).await?;
-                        let missing = ChunkRanges::all() - local_bitmap.ranges;
+                        let local_bitfield = self.observe(hash).await?;
+                        let missing = ChunkRanges::all() - local_bitfield.ranges;
                         RangeSpec::new(missing)
                     } else {
                         // duplicate, we are already requesting missing data for this hash
@@ -504,7 +550,7 @@ impl Blobs {
             }
         }
         let n = if local_bitfield.is_validated() {
-            local_bitfield.size / 32
+            local_bitfield.size() / 32
         } else {
             ranges.keys().last().copied().unwrap_or_default()
         };
@@ -1130,7 +1176,7 @@ impl BlobsListResult {
     }
 
     pub async fn hashes(self) -> RequestResult<Vec<Hash>> {
-        let mut rx = self.inner.await?;
+        let mut rx: spsc::Receiver<Result<Hash, super::Error>> = self.inner.await?;
         let mut hashes = Vec::new();
         while let Some(item) = rx.recv().await? {
             hashes.push(item?);
@@ -1163,28 +1209,42 @@ impl ExportBaoResult {
 
     /// Interprets this blob as a hash sequence and returns a stream of hashes.
     ///
-    /// This will just ignore any errors and just return the hashes that it can read,
-    /// even for an incomplete blob.
-    pub fn hashes(self) -> impl Stream<Item = super::Result<Hash>> {
+    /// Errors will be reported, but the iterator will nevertheless continue.
+    /// If you get an error despite having asked for ranges that should be present,
+    /// this means that the data is corrupted. It can still make sense to continue
+    /// to get all non-corrupted sections.
+    pub fn hashes_with_index(
+        self,
+    ) -> impl Stream<Item = std::result::Result<(u64, Hash), anyhow::Error>> {
         let mut stream = self.stream();
         Gen::new(|co| async move {
             while let Some(item) = stream.next().await {
-                match item {
+                let leaf = match item {
+                    EncodedItem::Leaf(leaf) => leaf,
                     EncodedItem::Error(e) => {
-                        co.yield_(Err(super::Error::other(e))).await;
+                        co.yield_(Err(e.into())).await;
+                        continue;
                     }
-                    EncodedItem::Leaf(leaf) => {
-                        let Ok(slice) = HashSeqChunk::try_from(leaf) else {
-                            continue;
-                        };
-                        for hash in slice {
-                            co.yield_(Ok(hash)).await;
-                        }
+                    _ => continue,
+                };
+                let slice = match HashSeqChunk::try_from(leaf) {
+                    Ok(slice) => slice,
+                    Err(e) => {
+                        co.yield_(Err(e)).await;
+                        continue;
                     }
-                    _ => {}
+                };
+                let offset = slice.base();
+                for (o, hash) in slice.into_iter().enumerate() {
+                    co.yield_(Ok((offset + o as u64, hash))).await;
                 }
             }
         })
+    }
+
+    /// Same as [`Self::hashes_with_index`], but without the indexes.
+    pub fn hashes(self) -> impl Stream<Item = std::result::Result<Hash, anyhow::Error>> {
+        self.hashes_with_index().map(|x| x.map(|(_, hash)| hash))
     }
 
     pub async fn bao_to_vec(self) -> RequestResult<Vec<u8>> {
@@ -1267,9 +1327,10 @@ impl ExportBaoResult {
         Ok(())
     }
 
+    /// Write quinn variant that also feeds a
     pub async fn write_quinn_with_progress(
         self,
-        writer: &mut WrappedWriter,
+        writer: &mut ProgressWriter,
         hash: &Hash,
         index: u64,
     ) -> super::ExportBaoResult<()> {
@@ -1341,6 +1402,12 @@ impl ExportBaoResult {
             }
         })
     }
+}
+
+pub struct HashSeqStream {
+    /// number of hashes in the hash sequence, if known
+    count: Option<u64>,
+    stream: Box<dyn Stream<Item = (u64, Hash)>>,
 }
 
 pub struct DownloadRequest {

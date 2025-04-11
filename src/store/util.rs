@@ -19,7 +19,7 @@ pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;
-use tracing::info;
+use tracing::{info, trace};
 pub mod observer;
 use ref_cast::RefCast;
 
@@ -179,27 +179,6 @@ mod redb_support {
     }
 }
 
-pub trait SenderProgressExt<T> {
-    fn send_progress<V: Into<T>>(
-        &self,
-        value: V,
-    ) -> std::result::Result<(), mpsc::error::TrySendError<T>>;
-}
-
-impl<T> SenderProgressExt<T> for mpsc::Sender<T> {
-    fn send_progress<V: Into<T>>(
-        &self,
-        value: V,
-    ) -> std::result::Result<(), mpsc::error::TrySendError<T>> {
-        let value = value.into();
-        match self.try_send(value) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
-            Err(e @ mpsc::error::TrySendError::Closed(_)) => Err(e),
-        }
-    }
-}
-
 pub trait RangeSetExt<T> {
     fn upper_bound(&self) -> Option<T>;
 }
@@ -238,9 +217,7 @@ pub fn write_checksummed<P: AsRef<Path>, T: Serialize>(path: P, data: &T) -> io:
     Ok(())
 }
 
-pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
-    path: P,
-) -> io::Result<T> {
+pub fn read_checksummed_and_truncate<T: DeserializeOwned>(path: impl AsRef<Path>) -> io::Result<T> {
     let path = path.as_ref();
     let mut file = OpenOptions::new()
         .read(true)
@@ -251,7 +228,7 @@ pub fn read_checksummed_and_truncate<P: AsRef<Path>, T: DeserializeOwned>(
     file.read_to_end(&mut buffer)?;
     file.set_len(0)?;
     file.sync_all()?;
-    info!("{} {}", path.display(), hex::encode(&buffer));
+    trace!("{} {}", path.display(), hex::encode(&buffer));
 
     if buffer.is_empty() {
         return Err(io::Error::new(

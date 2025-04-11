@@ -675,7 +675,7 @@ impl PartialMemStorage {
     }
 
     pub fn current_size(&self) -> u64 {
-        self.bitfield.state().size
+        self.bitfield.state().size()
     }
 
     pub(super) fn write_batch(

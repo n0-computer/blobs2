@@ -51,13 +51,13 @@ async fn two_nodes_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        get::db::get_all(conn.clone(), hash, &store2, None).await?;
+        store2.download().fetch(conn.clone(), hash, None).await?;
     }
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
 }
 
-async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<HashAndFormat> {
+pub async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<HashAndFormat> {
     let batch = blobs.batch().await?;
     let mut tts = Vec::new();
     for size in sizes {
@@ -67,6 +67,23 @@ async fn add_test_hash_seq(blobs: &Store, sizes: &[usize]) -> TestResult<HashAnd
     let root = batch
         .add_bytes_with_opts((hash_seq, BlobFormat::HashSeq))
         .with_named_tag("hs")
+        .await?;
+    Ok(root)
+}
+
+pub async fn add_test_hash_seq_incomplete(
+    blobs: &Store,
+    sizes: &[usize],
+) -> TestResult<HashAndFormat> {
+    let batch = blobs.batch().await?;
+    let mut tts = Vec::new();
+    for size in sizes {
+        tts.push(batch.temp_tag(Hash::new(test_data(*size))).await?);
+    }
+    let hash_seq = tts.iter().map(|tt| *tt.hash()).collect::<HashSeq>();
+    let root = batch
+        .add_bytes_with_opts((hash_seq, BlobFormat::HashSeq))
+        .with_named_tag("hs_incomplete")
         .await?;
     Ok(root)
 }
@@ -117,7 +134,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, &sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    get::db::get_all(conn, root, &store2, None).await?;
+    store2.download().fetch(conn, root, None).await?;
     check_presence(&store2, &sizes).await?;
     Ok(())
 }
@@ -131,7 +148,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let root = add_test_hash_seq(&store1, &sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let (tx, rx) = spsc::channel::<u64>(16);
-    let res = get::db::get_all(conn, root, &store2, Some(tx));
+    let res = store2.download().fetch(conn, root, Some(tx));
     pin!(rx);
     pin!(res);
     loop {
@@ -160,21 +177,22 @@ async fn two_nodes_size_request() -> TestResult<()> {
     let sizes = store2.verified_size(root).await?;
     assert_eq!(sizes, RangeSpecSeq::verified_child_sizes());
     // get the first 3 items (hash_seq, and 2 children)
-    get::db::execute_request(
-        &store2,
-        conn.clone(),
-        GetRequest::new(
-            root.hash,
-            RangeSpecSeq::new([
-                RangeSpec::all(),
-                RangeSpec::all(),
-                RangeSpec::all(),
-                RangeSpec::EMPTY,
-            ]),
-        ),
-        None,
-    )
-    .await?;
+    store2
+        .download()
+        .execute_request(
+            conn.clone(),
+            GetRequest::new(
+                root.hash,
+                RangeSpecSeq::new([
+                    RangeSpec::all(),
+                    RangeSpec::all(),
+                    RangeSpec::all(),
+                    RangeSpec::EMPTY,
+                ]),
+            ),
+            None,
+        )
+        .await?;
     // check that sizes for the data we have already are omitted
     let sizes = store2.verified_size(root).await?;
     assert_eq!(
@@ -192,18 +210,18 @@ async fn two_nodes_size_request() -> TestResult<()> {
             RangeSpec::EMPTY
         ])
     );
-    get::db::execute_request(
-        &store2,
-        conn.clone(),
-        GetRequest::new(root.hash, sizes),
-        None,
-    )
-    .await?;
+    store2
+        .download()
+        .execute_request(conn.clone(), GetRequest::new(root.hash, sizes), None)
+        .await?;
 
     let missing = store2.missing(root).await?;
     // let missing_chunks = missing.chunks();
     // println!("{:?} {:?}", missing, missing_chunks);
-    get::db::execute_request(&store2, conn, GetRequest::new(root.hash, missing), None).await?;
+    store2
+        .download()
+        .execute_request(conn, GetRequest::new(root.hash, missing), None)
+        .await?;
     check_presence(&store2, &INTERESTING_SIZES).await?;
     // for size in INTERESTING_SIZES {
     //     let hash = Hash::new(test_data(size));
