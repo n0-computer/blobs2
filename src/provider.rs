@@ -116,7 +116,7 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
 
 /// Wrapper for a quinn::SendStream with additional per request information.
 #[derive(Debug)]
-pub(crate) struct ProgressWriter {
+pub struct ProgressWriter {
     /// The quinn::SendStream to write to
     pub inner: SendStream,
     /// The connection ID from the connection

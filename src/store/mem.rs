@@ -75,6 +75,12 @@ impl Deref for MemStore {
     }
 }
 
+impl Default for MemStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemStore {
     pub fn from_sender(client: ApiClient) -> Self {
         Self { client }

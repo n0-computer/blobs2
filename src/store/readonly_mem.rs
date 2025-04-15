@@ -197,7 +197,7 @@ async fn export_bao_task(
 }
 
 impl ReadonlyMemStore {
-    pub fn new(items: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Store {
+    pub fn new(items: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Self {
         let mut entries = HashMap::new();
         for item in items {
             let data = Bytes::copy_from_slice(item.as_ref());
@@ -208,7 +208,7 @@ impl ReadonlyMemStore {
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
         let local = irpc::LocalSender::from(sender);
-        Store::from_sender(local.into())
+        Self { client: local.into() }
     }
 }
 
