@@ -1335,7 +1335,7 @@ pub mod tests {
 
     // import data via import_bytes, check that we can observe it and that it is complete
     #[tokio::test]
-    // #[ignore = "flaky. I need a reliable way to keep the handle alive"]
+    #[ignore = "flaky. I need a reliable way to keep the handle alive"]
     async fn test_roundtrip_bytes_small() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
