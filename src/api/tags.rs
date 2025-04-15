@@ -1,3 +1,6 @@
+//! Tags API
+//! 
+//! The main entry point is the [`Tags`] struct.
 use std::ops::{Bound, RangeBounds};
 
 use n0_future::{Stream, StreamExt};
@@ -5,8 +8,14 @@ use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{ApiClient, Scope, Tags};
+use super::{blobs::Scope, ApiClient};
 use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
+
+#[derive(Debug, Clone, ref_cast::RefCast)]
+#[repr(transparent)]
+pub struct Tags {
+    client: ApiClient,
+}
 
 /// Information about a tag.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +51,7 @@ impl TagInfo {
 
 /// Options for a list operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListTags {
+pub struct ListTagsRequest {
     /// List tags to hash seqs
     pub hash_seq: bool,
     /// List tags to raw blobs
@@ -53,7 +62,7 @@ pub struct ListTags {
     pub to: Option<Tag>,
 }
 
-impl ListTags {
+impl ListTagsRequest {
     /// List a range of tags
     pub fn range<R, E>(range: R) -> Self
     where
@@ -230,7 +239,7 @@ impl Tags {
     /// methods that call this one with the appropriate options.
     pub async fn list_with_opts(
         &self,
-        options: ListTags,
+        options: ListTagsRequest,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
@@ -239,7 +248,7 @@ impl Tags {
 
     /// Get the value of a single tag
     pub async fn get(&self, name: impl AsRef<[u8]>) -> super::RequestResult<Option<TagInfo>> {
-        let mut stream = self.list_with_opts(ListTags::single(name.as_ref())).await?;
+        let mut stream = self.list_with_opts(ListTagsRequest::single(name.as_ref())).await?;
         Ok(stream.next().await.transpose()?)
     }
 
@@ -270,7 +279,7 @@ impl Tags {
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
     {
-        self.list_with_opts(ListTags::range(range)).await
+        self.list_with_opts(ListTagsRequest::range(range)).await
     }
 
     /// Lists all tags with the given prefix.
@@ -278,19 +287,19 @@ impl Tags {
         &self,
         prefix: impl AsRef<[u8]>,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTags::prefix(prefix.as_ref())).await
+        self.list_with_opts(ListTagsRequest::prefix(prefix.as_ref())).await
     }
 
     /// Lists all tags.
     pub async fn list(&self) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTags::all()).await
+        self.list_with_opts(ListTagsRequest::all()).await
     }
 
     /// Lists all tags with a hash_seq format.
     pub async fn list_hash_seq(
         &self,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTags::hash_seq()).await
+        self.list_with_opts(ListTagsRequest::hash_seq()).await
     }
 
     /// Deletes a tag.

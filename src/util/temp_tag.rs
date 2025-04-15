@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::{api::Scope, BlobFormat, Hash, HashAndFormat};
+use crate::{api::blobs::Scope, BlobFormat, Hash, HashAndFormat};
 
 /// A hash and format pair that is protected from garbage collection.
 ///
@@ -214,8 +214,11 @@ impl TempTags {
 pub(crate) struct TempTagScope(Mutex<TempCounterMap>);
 
 impl TempTagScope {
-    pub fn list(&self) -> impl Iterator<Item = HashAndFormat> {
-        self.0.lock().unwrap().keys()
+    pub fn list(&self) -> impl Iterator<Item = HashAndFormat> + '_ {
+        let guard = self.0.lock().unwrap();
+        let res = guard.keys();
+        drop(guard);
+        res
     }
 }
 
@@ -260,7 +263,7 @@ impl TempCounterMap {
         entry.counter(haf.format) > 0
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = HashAndFormat> {
+    pub fn keys(&self) -> impl Iterator<Item = HashAndFormat> + 'static {
         let mut res = Vec::new();
         for (k, v) in self.0.iter() {
             if v.raw > 0 {

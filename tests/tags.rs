@@ -1,7 +1,7 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::Deref};
 
 use blobs2::{
-    api::{self, tags::TagInfo, Store, Tags},
+    api::{self, tags::{Tags, TagInfo}, Store},
     store::fs::FsStore,
     BlobFormat, Hash, HashAndFormat,
 };
@@ -128,7 +128,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
 #[ignore = "fixme"]
 async fn tags_smoke_mem() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let store = Store::memory();
+    let store = blobs2::store::mem::MemStore::new();
     tags_smoke(store.tags()).await
 }
 
@@ -148,7 +148,7 @@ async fn tags_smoke_rpc() -> TestResult<()> {
     let client = irpc::util::make_client_endpoint(unspecified, &[cert.as_ref()])?;
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
-    tokio::spawn(store.clone().listen(server.clone()));
+    tokio::spawn(store.deref().clone().listen(server.clone()));
     let api = Store::connect(client, server.local_addr()?);
     tags_smoke(api.tags()).await?;
     api.shutdown().await?;

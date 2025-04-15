@@ -199,7 +199,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::{blobs::ImportBytesRequest, Scope, Store},
+        api::{blobs::ImportBytesRequest, blobs::Scope, Store},
         hashseq::HashSeq,
         store::fs::{options::PathOptions, tests::create_n0_bao},
         BlobFormat,

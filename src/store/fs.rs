@@ -1,4 +1,6 @@
 //! # File based blob store.
+//! 
+//! A file based blob store needs a writeable directory to work with.
 //!
 //! General design:
 //!
@@ -36,12 +38,31 @@
 //!
 //! # Context
 //!
-//! The main actor holds a [`TaskContext`] that is needed for almost all tasks,
+//! The main actor holds a TaskContext that is needed for almost all tasks,
 //! such as the config and a way to interact with the database.
 //!
-//! For tasks that are specific to a hash, a [`HashContext`] combines the task
+//! For tasks that are specific to a hash, a HashContext combines the task
 //! context with a slot from the table of the main actor that can be used
 //! to obtain an unqiue handle for the hash.
+//! 
+//! # Runtime
+//! 
+//! The fs store owns and manages its own tokio runtime. Dropping the store
+//! will clean up the database and shut down the runtime. However, some parts
+//! of the persistent state won't make it to disk, so operations involving large
+//! partial blobs will have a large initial delay on the next startup.
+//! 
+//! It is also not guaranteed that all write operations will make it to disk.
+//! The on-disk store will be in a consistent state, but might miss some writes
+//! in the last seconds before shutdown.
+//! 
+//! To avoid this, you can use the [`crate::api::Store::shutdown`] method to
+//! cleanly shut down the store and save ephemeral state to disk.
+//! 
+//! Note that if you use the store inside a [`iroh::protocol::Router`] and shut
+//! down the router using [`iroh::protocol::Router::shutdown`], the store will be
+//! safely shut down as well. Any store refs you are holding will be inoperable
+//! after this.
 use std::{
     collections::{HashMap, HashSet},
     fmt, fs,
@@ -75,12 +96,12 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        blobs::{is_validated, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
+        blobs::{is_validated, Scope, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
         proto::{
             self, BatchMsg, Command, CreateTempTagMsg, ExportBaoMsg, ExportPathMsg, HashSpecific,
             ImportBaoMsg, ObserveMsg,
         },
-        ApiClient, Scope,
+        ApiClient,
     },
     store::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
@@ -97,7 +118,7 @@ mod delete_set;
 mod entry_state;
 mod import;
 mod meta;
-mod options;
+pub mod options;
 pub(crate) mod util;
 use entry_state::EntryState;
 use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
@@ -128,14 +149,14 @@ fn temp_name() -> String {
 
 #[derive(Debug)]
 #[enum_conversions()]
-pub enum InternalCommand {
+pub(crate) enum InternalCommand {
     Dump(meta::Dump),
     FinishImport(ImportEntryMsg),
     ClearScope(ClearScope),
 }
 
 #[derive(Debug)]
-pub struct ClearScope {
+pub(crate) struct ClearScope {
     pub scope: Scope,
 }
 
@@ -347,7 +368,7 @@ fn open_bao_file(
 /// An entry for each hash, containing a weak reference to a BaoFileHandle
 /// wrapped in a tokio mutex so handle creation is sequential.
 #[derive(Debug, Clone, Default)]
-pub struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
+pub(crate) struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
 
 impl Slot {
     /// Get the handle if it exists and is still alive.
@@ -1106,12 +1127,22 @@ impl FsStore {
         handle.spawn(actor.run());
         let store = FsStore::new(commands_tx.into(), fs_commands_tx);
         if let Some(config) = gc_config {
-            handle.spawn(run_gc(store.clone(), config));
+            handle.spawn(run_gc(store.deref().clone(), config));
         }
         Ok(store)
     }
 }
 
+/// A file based store.
+///
+/// A store can be created using [`load`](FsStore::load) or [`load_with_opts`](FsStore::load_with_opts).
+/// Load will use the default options and create the required directories, while load_with_opts allows
+/// you to customize the options and the location of the database. Both variants will create the database
+/// if it does not exist, and load an existing database if one is found at the configured location.
+///
+/// In addition to implementing the [`Store`](`crate::api::Store`) API via [`Deref`](`std::ops::Deref`),
+/// there are a few additional methods that are specific to file based stores, such as [`dump`](FsStore::dump).
+#[derive(Debug, Clone)]
 pub struct FsStore {
     sender: ApiClient,
     db: mpsc::Sender<InternalCommand>,

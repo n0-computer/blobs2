@@ -1,7 +1,12 @@
+//! A readonly in-memory store implementation.
+//!
+//! This can only serve data that is provided at creation time. It is much simpler
+//! than the mutable in-memory store and the file system store, and can serve as a
+//! good starting point for custom implementations.
+//!
+//! It can also be useful as a lightweight store for tests.
 use std::{
-    collections::HashMap,
-    io::{self, Write},
-    path::PathBuf,
+    collections::HashMap, io::{self, Write}, ops::Deref, path::PathBuf
 };
 
 use bao_tree::{
@@ -21,18 +26,28 @@ use tokio::task::{JoinError, JoinSet};
 use super::util::{observer::Observer, BaoTreeSender};
 use crate::{
     api::{
-        self,
-        blobs::{self, Bitfield, ExportProgress, ImportProgress},
-        proto::{
+        self, blobs::{self, Bitfield, ExportProgress, ImportProgress}, proto::{
             self, Command, ExportBaoMsg, ExportPathMsg, ImportBaoMsg, ImportByteStreamMsg,
             ImportBytesMsg, ImportPathMsg, ObserveMsg,
-        },
-        Store,
+        }, ApiClient, Store
     },
     store::{mem::CompleteStorage, util::observer::Observable, IROH_BLOCK_SIZE},
     util::channel::mpsc,
     Hash,
 };
+
+#[derive(Debug, Clone)]
+pub struct ReadonlyMemStore {
+    client: ApiClient,
+}
+
+impl Deref for ReadonlyMemStore {
+    type Target = crate::api::Store;
+
+    fn deref(&self) -> &Self::Target {
+        crate::api::Store::ref_from_sender(&self.client)
+    }
+}
 
 struct Actor {
     commands: mpsc::Receiver<proto::Command>,
@@ -175,8 +190,8 @@ async fn export_bao_task(
         .ok();
 }
 
-impl Store {
-    pub fn readonly_mem(items: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Store {
+impl ReadonlyMemStore {
+    pub fn new(items: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Store {
         let mut entries = HashMap::new();
         for item in items {
             let data = Bytes::copy_from_slice(item.as_ref());

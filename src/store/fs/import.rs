@@ -35,9 +35,8 @@ use tracing::{instrument, trace};
 use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
     api::{
-        blobs::{ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress},
+        blobs::{Scope, ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress},
         proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
-        Scope,
     },
     store::{
         util::{MemOrFile, DD},

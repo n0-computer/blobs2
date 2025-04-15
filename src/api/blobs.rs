@@ -1,3 +1,9 @@
+//! Blobs API
+//! 
+//! This API is for local interactions with the blob store, such as importing
+//! and exporting blobs, observing the bitfield of a blob, and deleting blobs.
+//!
+//! The main entry point is the [`Blobs`] struct.
 use std::{
     fmt,
     future::{Future, IntoFuture},
@@ -10,7 +16,6 @@ use std::{
 use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
-        mixed::EncodedItem,
         BaoContentItem, Leaf,
     },
     BaoTree, ChunkNum, ChunkRanges,
@@ -30,8 +35,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
 use super::{
-    tags::{CreateTempTagRequest, TagInfo},
-    ApiClient, ClearProtected, RequestResult, Scope, ShutdownRequest, SyncDbRequest, Tags,
+    tags::{CreateTempTagRequest, TagInfo}, ApiClient, ClearProtected, RequestResult, ShutdownRequest, SyncDbRequest, Tags
 };
 use crate::{
     hashseq::HashSeq,
@@ -43,6 +47,7 @@ use crate::{
 };
 mod bitfield;
 pub use bitfield::{is_validated, Bitfield};
+pub use bao_tree::io::mixed::EncodedItem;
 pub mod download;
 use ref_cast::RefCast;
 
@@ -558,18 +563,6 @@ impl Blobs {
             BlobStatus::Complete { .. } => Ok(true),
             _ => Ok(false),
         }
-    }
-
-    pub async fn sync_db(&self) -> RequestResult<()> {
-        let msg = SyncDbRequest;
-        self.client.rpc(msg).await??;
-        Ok(())
-    }
-
-    pub async fn shutdown(&self) -> super::RpcResult<()> {
-        let msg = ShutdownRequest;
-        self.client.rpc(msg).await?;
-        Ok(())
     }
 
     pub async fn clear_protected(&self) -> RequestResult<()> {
@@ -1330,4 +1323,23 @@ pub enum BlobStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessExit {
     pub code: i32,
+}
+
+#[derive(
+    Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
+)]
+pub struct Scope(pub(crate) u64);
+
+impl Scope {
+    pub const GLOBAL: Self = Self(0);
+}
+
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "Global")
+        } else {
+            f.debug_tuple("Scope").field(&self.0).finish()
+        }
+    }
 }

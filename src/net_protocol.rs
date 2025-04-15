@@ -40,7 +40,7 @@ impl LazyEvent for Event {
 }
 
 #[derive(Debug, Clone)]
-pub enum ProgressSender {
+pub(crate) enum ProgressSender {
     Disabled,
     Enabled(mpsc::Sender<Event>),
 }

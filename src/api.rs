@@ -5,6 +5,7 @@ use irpc::rpc::{listen, Handler};
 use proto::Request;
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
+use tags::Tags;
 
 pub mod blobs;
 pub mod proto;
@@ -182,26 +183,25 @@ impl Deref for Store {
     }
 }
 
-#[derive(Debug, Clone, ref_cast::RefCast)]
-#[repr(transparent)]
-pub struct Tags {
-    client: ApiClient,
-}
-
 impl Store {
+
+    /// The tags API.
     pub fn tags(&self) -> &Tags {
         Tags::ref_from_sender(&self.client)
     }
 
+    /// The blobs API.
     pub fn blobs(&self) -> &blobs::Blobs {
         blobs::Blobs::ref_from_sender(&self.client)
     }
 
+    /// Connect to a remote store as a rpc client.
     pub fn connect(endpoint: quinn::Endpoint, addr: SocketAddr) -> Self {
         let sender = irpc::Client::quinn(endpoint, addr);
         Store::from_sender(sender)
     }
 
+    /// Listen on a quinn endpoint for incoming rpc connections.
     pub async fn listen(self, endpoint: quinn::Endpoint) {
         let local = self.client.local().unwrap().clone();
         let handler: Handler<Request> = Arc::new(move |req, rx, tx| {
@@ -241,31 +241,24 @@ impl Store {
         listen::<Request>(endpoint, handler).await
     }
 
+    pub async fn sync_db(&self) -> RequestResult<()> {
+        let msg = SyncDbRequest;
+        self.client.rpc(msg).await??;
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> RpcResult<()> {
+        let msg = ShutdownRequest;
+        self.client.rpc(msg).await?;
+        Ok(())
+    }
+
     pub(crate) fn from_sender(client: ApiClient) -> Self {
         Self { client }
     }
 
     pub(crate) fn ref_from_sender(client: &ApiClient) -> &Self {
         Self::ref_cast(client)
-    }
-}
-
-#[derive(
-    Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
-)]
-pub struct Scope(pub(crate) u64);
-
-impl Scope {
-    pub const GLOBAL: Self = Self(0);
-}
-
-impl std::fmt::Debug for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "Global")
-        } else {
-            f.debug_tuple("Scope").field(&self.0).finish()
-        }
     }
 }
 

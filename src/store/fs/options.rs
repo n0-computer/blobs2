@@ -1,3 +1,4 @@
+//! Options for configuring the file store.
 use std::{
     path::{Path, PathBuf},
     time::Duration,

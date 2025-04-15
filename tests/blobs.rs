@@ -1,6 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    path::Path,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::Deref, path::Path
 };
 
 use blobs2::{
@@ -97,7 +96,7 @@ async fn blobs_smoke_rpc() -> TestResult {
     let client = irpc::util::make_client_endpoint(unspecified, &[cert.as_ref()])?;
     let td = tempfile::tempdir()?;
     let store = FsStore::load(td.path().join("blobs.db")).await?;
-    tokio::spawn(store.clone().listen(server.clone()));
+    tokio::spawn(store.deref().clone().listen(server.clone()));
     let api = Store::connect(client, server.local_addr()?);
     blobs_smoke(td.path(), api.blobs()).await?;
     api.shutdown().await?;

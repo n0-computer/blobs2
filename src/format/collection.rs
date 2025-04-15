@@ -7,7 +7,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{blobs::ImportBytesRequest, Scope, Store},
+    api::{blobs::ImportBytesRequest, blobs::Scope, Store},
     get::{fsm, Stats},
     hashseq::HashSeq,
     util::temp_tag::TempTag,

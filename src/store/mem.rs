@@ -1,8 +1,17 @@
+//! Mutable in-memory blob store.
+//!
+//! Being a memory store, this store has to import all data into memory before it can
+//! serve it. So the amount of data you can serve is limited by your available memory.
+//! Other than that this is a fully featured store that provides all features such as
+//! tags and garbage collection.
+//!
+//! For many use cases this can be quite useful, since it does not require write access
+//! to the file system.
 use std::{
     collections::{BTreeMap, HashMap},
     io::{self, Write},
     num::NonZeroU64,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, RwLock},
     time::SystemTime,
 };
@@ -30,18 +39,14 @@ use tracing::{error, info, instrument};
 use super::{util::{PartialMemStorage, BaoTreeSender}, BlobFormat};
 use crate::{
     api::{
-        self,
-        blobs::{
+        self, blobs::{
             Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest,
             ImportBytesRequest, ImportPath, ImportProgress, ObserveRequest,
-        },
-        proto::{
+        }, proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ListTagsMsg,
             ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
-        },
-        tags::{self, DeleteRequest, TagInfo},
-        Store,
+        }, tags::{self, DeleteRequest, TagInfo}, ApiClient,
     },
     store::{
         util::{
@@ -54,8 +59,27 @@ use crate::{
     Hash,
 };
 
-impl Store {
-    pub fn memory() -> Self {
+#[derive(Debug, Clone)]
+#[repr(transparent)]
+pub struct MemStore {
+    client: ApiClient,
+}
+
+impl Deref for MemStore {
+    type Target = crate::api::Store;
+
+    fn deref(&self) -> &Self::Target {
+        crate::api::Store::ref_from_sender(&self.client)
+    }
+}
+
+impl MemStore {
+
+    pub fn from_sender(client: ApiClient) -> Self {
+        Self { client }
+    }
+
+    pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel(32);
         tokio::spawn(
             Actor {
@@ -179,7 +203,7 @@ impl Actor {
             Command::ListTags(cmd) => {
                 let ListTagsMsg {
                     inner:
-                        tags::ListTags {
+                        tags::ListTagsRequest {
                             from,
                             to,
                             raw,
@@ -662,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn smoke() -> TestResult<()> {
-        let store = Store::memory();
+        let store = MemStore::new();
         let tt = store.add_bytes(vec![0u8; 1024 * 64]).temp_tag().await?;
         let hash = *tt.hash();
         println!("hash: {:?}", hash);
@@ -673,7 +697,7 @@ mod tests {
         let stream = store.export_bao(hash, ChunkRanges::all());
         let exported = stream.bao_to_vec().await?;
 
-        let store2 = Store::memory();
+        let store2 = MemStore::new();
         let mut or = store2.observe(hash).stream().await?;
         tokio::spawn(async move {
             while let Some(event) = or.next().await {

@@ -23,7 +23,7 @@ use crate::{
             SyncDbMsg,
         },
         tags::{
-            self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTags, SetTagRequest,
+            self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTagsRequest, SetTagRequest,
             TagInfo,
         },
     },
@@ -221,7 +221,7 @@ async fn handle_list_tags(msg: ListTagsMsg, tables: &impl ReadableTables) -> Act
     trace!("{msg:?}");
     let ListTagsMsg {
         inner:
-            ListTags {
+            ListTagsRequest {
                 from,
                 to,
                 raw,
