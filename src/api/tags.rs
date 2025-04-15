@@ -8,12 +8,13 @@ use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{
-    blobs::Scope, proto::{tags_from_range, CreateTagRequest, ListTagsRequest, RenameTagRequest, SetTagRequest}, ApiClient
-};
+use super::ApiClient;
 use crate::{api::proto::ListTempTagsRequest, store::util::Tag, BlobFormat, Hash, HashAndFormat};
-pub use super::proto::ListTagsRequest as ListTagsOptions;
+pub use super::proto::CreateTagRequest as CreateOptions;
+pub use super::proto::ListTagsRequest as ListOptions;
 pub use super::proto::TagsDeleteRequest as DeleteOptions;
+pub use super::proto::SetTagRequest as SetOptions;
+pub use super::proto::RenameTagRequest as RenameOptions;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
@@ -71,7 +72,7 @@ impl Tags {
     /// methods that call this one with the appropriate options.
     pub async fn list_with_opts(
         &self,
-        options: ListTagsOptions,
+        options: ListOptions,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
@@ -81,12 +82,12 @@ impl Tags {
     /// Get the value of a single tag
     pub async fn get(&self, name: impl AsRef<[u8]>) -> super::RequestResult<Option<TagInfo>> {
         let mut stream = self
-            .list_with_opts(ListTagsRequest::single(name.as_ref()))
+            .list_with_opts(ListOptions::single(name.as_ref()))
             .await?;
         Ok(stream.next().await.transpose()?)
     }
 
-    pub async fn set_with_opts(&self, options: SetTagRequest) -> super::RequestResult<()> {
+    pub async fn set_with_opts(&self, options: SetOptions) -> super::RequestResult<()> {
         trace!("{:?}", options);
         self.client.rpc(options).await??;
         Ok(())
@@ -97,7 +98,7 @@ impl Tags {
         name: impl AsRef<[u8]>,
         value: impl Into<HashAndFormat>,
     ) -> super::RequestResult<()> {
-        self.set_with_opts(SetTagRequest {
+        self.set_with_opts(SetOptions {
             name: Tag::from(name.as_ref()),
             value: value.into(),
         })
@@ -113,7 +114,7 @@ impl Tags {
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
     {
-        self.list_with_opts(ListTagsRequest::range(range)).await
+        self.list_with_opts(ListOptions::range(range)).await
     }
 
     /// Lists all tags with the given prefix.
@@ -121,20 +122,20 @@ impl Tags {
         &self,
         prefix: impl AsRef<[u8]>,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTagsRequest::prefix(prefix.as_ref()))
+        self.list_with_opts(ListOptions::prefix(prefix.as_ref()))
             .await
     }
 
     /// Lists all tags.
     pub async fn list(&self) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTagsRequest::all()).await
+        self.list_with_opts(ListOptions::all()).await
     }
 
     /// Lists all tags with a hash_seq format.
     pub async fn list_hash_seq(
         &self,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTagsRequest::hash_seq()).await
+        self.list_with_opts(ListOptions::hash_seq()).await
     }
 
     /// Deletes a tag.
@@ -177,7 +178,7 @@ impl Tags {
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename_with_opts(&self, options: RenameTagRequest) -> super::RequestResult<()> {
+    pub async fn rename_with_opts(&self, options: RenameOptions) -> super::RequestResult<()> {
         trace!("{:?}", options);
         self.client.rpc(options).await??;
         Ok(())
@@ -191,21 +192,21 @@ impl Tags {
         from: impl AsRef<[u8]>,
         to: impl AsRef<[u8]>,
     ) -> super::RequestResult<()> {
-        self.rename_with_opts(RenameTagRequest {
+        self.rename_with_opts(RenameOptions {
             from: Tag::from(from.as_ref()),
             to: Tag::from(to.as_ref()),
         })
         .await
     }
 
-    pub async fn create_with_opts(&self, options: CreateTagRequest) -> super::RequestResult<Tag> {
+    pub async fn create_with_opts(&self, options: CreateOptions) -> super::RequestResult<Tag> {
         trace!("{:?}", options);
         let rx = self.client.rpc(options);
         Ok(rx.await??)
     }
 
     pub async fn create(&self, value: impl Into<HashAndFormat>) -> super::RequestResult<Tag> {
-        self.create_with_opts(CreateTagRequest {
+        self.create_with_opts(CreateOptions {
             value: value.into(),
         })
         .await
