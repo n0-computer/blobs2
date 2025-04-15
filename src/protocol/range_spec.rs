@@ -5,10 +5,9 @@
 //!
 //! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
-use std::fmt::{self, Debug, Display};
+use std::fmt::{self, Debug};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
-use chrono::offset;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
 
@@ -124,16 +123,18 @@ impl RangeSpec {
 
 impl fmt::Debug for RangeSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if f.alternate() {
-            f.debug_list()
-                .entries(self.to_chunk_ranges().iter())
-                .finish()
-        } else if self.is_all() {
+        if self.is_all() {
             write!(f, "all")
         } else if self.is_empty() {
             write!(f, "empty")
         } else {
-            f.debug_list().entries(self.0.iter()).finish()
+            if !f.alternate() {
+                f.debug_list()
+                    .entries(self.to_chunk_ranges().iter())
+                    .finish()
+            } else {
+                f.debug_list().entries(self.0.iter()).finish()
+            }
         }
     }
 }
@@ -168,14 +169,14 @@ impl fmt::Debug for RangeSpec {
 ///
 /// This is a smallvec so that we can avoid allocations in the common case of a single child
 /// range.
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Hash)]
 #[repr(transparent)]
 pub struct RangeSpecSeq(SmallVec<[(u64, RangeSpec); 2]>);
 
-impl Display for RangeSpecSeq {
+impl fmt::Display for RangeSpecSeq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
-        let mut iter = self.iter_non_empty();
+        let mut iter = self.iter_non_empty_infinite();
         while let Some((offset, ranges)) = iter.next() {
             list.entry(&(offset, ranges.to_chunk_ranges()));
             if iter.is_at_end() {
@@ -183,6 +184,18 @@ impl Display for RangeSpecSeq {
             }
         }
         list.finish()
+    }
+}
+
+impl fmt::Debug for RangeSpecSeq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !f.alternate() {
+            f.debug_list()
+                .entries(self.iter())
+                .finish()
+        } else {
+            f.debug_tuple("RangeSpecSeq").field(&self.0).finish()
+        }
     }
 }
 
@@ -283,14 +296,21 @@ impl RangeSpecSeq {
         Self(res)
     }
 
-    /// An infinite iterator of range specs for blobs in the sequence.
+    /// A *finite* iterator of range specs for blobs in the sequence.
+    pub fn iter(&self) -> RequestRangeSpecIter<'_> {
+        RequestRangeSpecIter(self.iter_infinite())
+    }
+
+    /// An *infinite* iterator of range specs for blobs in the sequence.
     ///
     /// Each item yielded by the iterator is the [`RangeSpec`] for a blob in the sequence.
     /// Thus the first call to `.next()` returns the range spec for the first blob, the next
     /// call returns the range spec of the second blob, etc.
-    pub fn iter(&self) -> RequestRangeSpecIter<'_> {
+    ///
+    /// The infinite iterator can be useful, but be careful since you might cause an infinite loop
+    pub fn iter_infinite(&self) -> RequestRangeSpecIterInfinite<'_> {
         let before_first = self.0.first().map(|(c, _)| *c).unwrap_or_default();
-        RequestRangeSpecIter {
+        RequestRangeSpecIterInfinite {
             current: &EMPTY_RANGE_SPEC,
             count: before_first,
             remaining: &self.0,
@@ -304,8 +324,8 @@ impl RangeSpecSeq {
     ///
     /// This iterator is infinite if the [`RangeSpecSeq`] ends on a non-empty [`RangeSpec`],
     /// that is all further blobs have selected chunks spans.
-    pub fn iter_non_empty(&self) -> NonEmptyRequestRangeSpecIter<'_> {
-        NonEmptyRequestRangeSpecIter::new(self.iter())
+    pub fn iter_non_empty_infinite(&self) -> NonEmptyRequestRangeSpecIter<'_> {
+        NonEmptyRequestRangeSpecIter::new(self.iter_infinite())
     }
 
     /// True if this range spec sequence repeats the last range spec forever.
@@ -336,12 +356,26 @@ impl RangeSpecSeq {
 
 static EMPTY_RANGE_SPEC: RangeSpec = RangeSpec::EMPTY;
 
+pub struct RequestRangeSpecIter<'a>(RequestRangeSpecIterInfinite<'a>);
+
+impl<'a> Iterator for RequestRangeSpecIter<'a> {
+    type Item = &'a RangeSpec;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0.is_at_end() {
+            None
+        } else {
+            self.0.next()
+        }
+    }
+}
+
 /// An infinite iterator yielding [`RangeSpec`]s for each blob in a sequence.
 ///
 /// The first item yielded is the [`RangeSpec`] for the first blob in the sequence, the
 /// next item is the [`RangeSpec`] for the next blob, etc.
 #[derive(Debug)]
-pub struct RequestRangeSpecIter<'a> {
+pub struct RequestRangeSpecIterInfinite<'a> {
     /// current value
     current: &'a RangeSpec,
     /// number of times to emit current before grabbing next value
@@ -351,10 +385,10 @@ pub struct RequestRangeSpecIter<'a> {
     remaining: &'a [(u64, RangeSpec)],
 }
 
-impl<'a> RequestRangeSpecIter<'a> {
+impl<'a> RequestRangeSpecIterInfinite<'a> {
     pub fn new(ranges: &'a [(u64, RangeSpec)]) -> Self {
         let before_first = ranges.first().map(|(c, _)| *c).unwrap_or_default();
-        RequestRangeSpecIter {
+        RequestRangeSpecIterInfinite {
             current: &EMPTY_RANGE_SPEC,
             count: before_first,
             remaining: ranges,
@@ -370,7 +404,7 @@ impl<'a> RequestRangeSpecIter<'a> {
     }
 }
 
-impl<'a> Iterator for RequestRangeSpecIter<'a> {
+impl<'a> Iterator for RequestRangeSpecIterInfinite<'a> {
     type Item = &'a RangeSpec;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -398,12 +432,12 @@ impl<'a> Iterator for RequestRangeSpecIter<'a> {
 /// default is what to use if the children of this RequestRangeSpec are empty.
 #[derive(Debug)]
 pub struct NonEmptyRequestRangeSpecIter<'a> {
-    inner: RequestRangeSpecIter<'a>,
+    inner: RequestRangeSpecIterInfinite<'a>,
     count: u64,
 }
 
 impl<'a> NonEmptyRequestRangeSpecIter<'a> {
-    fn new(inner: RequestRangeSpecIter<'a>) -> Self {
+    fn new(inner: RequestRangeSpecIterInfinite<'a>) -> Self {
         Self { inner, count: 0 }
     }
 
@@ -461,7 +495,7 @@ mod tests {
 
     fn range_spec_seq_roundtrip_impl(ranges: &[ChunkRanges]) -> Vec<ChunkRanges> {
         let spec = RangeSpecSeq::from_ranges(ranges.iter().cloned());
-        spec.iter()
+        spec.iter_infinite()
             .map(|x| x.to_chunk_ranges())
             .take(ranges.len())
             .collect::<Vec<_>>()
@@ -472,7 +506,7 @@ mod tests {
         let bytes = postcard::to_allocvec(&spec).unwrap();
         let spec2: RangeSpecSeq = postcard::from_bytes(&bytes).unwrap();
         spec2
-            .iter()
+            .iter_infinite()
             .map(|x| x.to_chunk_ranges())
             .take(ranges.len())
             .collect::<Vec<_>>()

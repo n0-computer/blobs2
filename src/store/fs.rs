@@ -1423,7 +1423,9 @@ pub mod tests {
             let data = test_data(100000);
             let ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
-            store.import_bao_bytes(hash, ranges.clone(), bao.clone()).await?;
+            store
+                .import_bao_bytes(hash, ranges.clone(), bao.clone())
+                .await?;
             let bitfield = store.observe(hash).await?;
             assert_eq!(bitfield.ranges, ranges);
             assert_eq!(bitfield.size(), data.len() as u64);

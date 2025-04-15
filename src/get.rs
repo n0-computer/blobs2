@@ -102,7 +102,9 @@ pub mod fsm {
 
     impl RangesIter {
         pub fn new(owner: RangeSpecSeq) -> Self {
-            Self(RangesIterInner::new(owner, |owner| owner.iter_non_empty()))
+            Self(RangesIterInner::new(owner, |owner| {
+                owner.iter_non_empty_infinite()
+            }))
         }
 
         pub fn offset(&self) -> u64 {

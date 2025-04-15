@@ -59,7 +59,10 @@ async fn two_nodes_blobs() -> TestResult<()> {
     Ok(())
 }
 
-pub async fn add_test_hash_seq(blobs: &Store, sizes: impl IntoIterator<Item = usize>) -> TestResult<HashAndFormat> {
+pub async fn add_test_hash_seq(
+    blobs: &Store,
+    sizes: impl IntoIterator<Item = usize>,
+) -> TestResult<HashAndFormat> {
     let batch = blobs.batch().await?;
     let mut tts = Vec::new();
     for size in sizes {
@@ -228,12 +231,12 @@ async fn two_nodes_size_request() -> TestResult<()> {
         .execute_request(conn.clone(), GetRequest::new(root.hash, sizes), None)
         .await?;
 
-    let missing = store2.missing(root).await?;
+    let local = store2.download().local(root).await?;
     // let missing_chunks = missing.chunks();
     // println!("{:?} {:?}", missing, missing_chunks);
     store2
         .download()
-        .execute_request(conn, GetRequest::new(root.hash, missing), None)
+        .execute_request(conn, local.missing(), None)
         .await?;
     check_presence(&store2, &INTERESTING_SIZES).await?;
     // for size in INTERESTING_SIZES {
@@ -273,7 +276,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     info!("node addr: {addr1:?}");
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
     let conn = endpoint2.connect(addr1, crate::protocol::ALPN).await?;
-    let (hs, sizes) = get::request::get_hash_seq_and_sizes(&conn, &root, 1024).await?;
+    let (hs, sizes) = get::request::get_hash_seq_and_sizes(&conn, &root, 1024, None).await?;
     println!("hash seq: {:?}", hs);
     println!("sizes: {:?}", sizes);
     r1.shutdown().await?;

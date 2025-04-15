@@ -12,6 +12,7 @@ use iroh::endpoint::Connection;
 use n0_future::{Stream, StreamExt};
 use nested_enum_utils::enum_conversions;
 use rand::Rng;
+use tokio::sync::mpsc;
 
 use super::{fsm, Stats};
 use crate::{
@@ -194,6 +195,7 @@ pub async fn get_hash_seq_and_sizes(
     connection: &Connection,
     hash: &Hash,
     max_size: u64,
+    progress: Option<mpsc::Sender<u64>>,
 ) -> anyhow::Result<(HashSeq, Arc<[u64]>)> {
     let content = HashAndFormat::hash_seq(*hash);
     tracing::debug!("Getting hash seq and children sizes of {}", content);

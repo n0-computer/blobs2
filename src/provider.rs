@@ -292,7 +292,7 @@ pub async fn handle_get(
 
     writer.send_request_received(&hash, &request.ranges).await;
     let mut hash_seq = None;
-    for (offset, ranges) in request.ranges.iter_non_empty() {
+    for (offset, ranges) in request.ranges.iter_non_empty_infinite() {
         if offset == 0 {
             send_blob(&store, offset, hash, ranges.to_chunk_ranges(), writer).await?;
         } else {

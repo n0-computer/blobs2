@@ -73,6 +73,30 @@ impl LocalInfo {
         res
     }
 
+    /// Number of children in this hash sequence
+    pub fn children(&self) -> Option<u64> {
+        if self.children.is_some() {
+            self.bitfield.validated_size().map(|x| x / 32)
+        } else {
+            Some(0)
+        }
+    }
+
+    /// All the known sizes for blobs in this hash sequence, without gaps
+    pub fn sizes(&self) -> impl Iterator<Item = Option<u64>> + '_ {
+        let first = self.bitfield.validated_size();
+        let children = self.children.as_ref().into_iter().flat_map(|children| {
+            iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
+                if let Some(hash) = hash {
+                    children.bitfields.get(&hash).unwrap().validated_size()
+                } else {
+                    None
+                }
+            })
+        });
+        iter::once(first).chain(children)
+    }
+
     /// True if the data is complete.
     ///
     /// For a blob, this is true if the blob is complete.
@@ -88,32 +112,75 @@ impl LocalInfo {
         }
     }
 
+    /// A request that when executed will give us complete sizes for all entries of the blob or hash sequence
+    pub fn complete_sizes(&self) -> GetRequest {
+        let request_last_chunk = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        let ranges = if let Some(children) = self.children.as_ref() {
+            let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
+            let start = root_missing;
+            let end = if self.bitfield.is_validated() {
+                ChunkRanges::empty()
+            } else {
+                request_last_chunk.clone()
+            };
+            let mut hashes = HashSet::new();
+            let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
+                if let Some(hash) = hash {
+                    if hashes.insert(hash) {
+                        let bitfield = children.bitfields.get(&hash).unwrap();
+                        if bitfield.is_validated() {
+                            // we have the last chunk of the blob
+                            ChunkRanges::empty()
+                        } else {
+                            // request the last chunk of the blob
+                            request_last_chunk.clone()
+                        }
+                    } else {
+                        // we have already seen this hash, so we don't need to request it again
+                        ChunkRanges::empty()
+                    }
+                } else {
+                    request_last_chunk.clone()
+                }
+            });
+            let ranges = iter::once(start).chain(children).chain(iter::once(end));
+            RangeSpecSeq::from_ranges_infinite(ranges)
+        } else {
+            if self.bitfield.is_validated() {
+                RangeSpecSeq::empty()
+            } else {
+                // request the last chunk of the blob
+                RangeSpecSeq::from_ranges([request_last_chunk])
+            }
+        };
+        GetRequest::new(self.root, ranges)
+    }
+
     /// A request to get the missing data to complete this blob or hash sequence
     pub fn missing(&self) -> GetRequest {
         let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
         let ranges = if let Some(children) = self.children.as_ref() {
-            if children.hash_seq.last().is_some() {
-                let start = root_missing;
-                let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-                    if let Some(hash) = hash {   
+            let mut hashes = HashSet::new();
+            let start = root_missing;
+            let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
+                if let Some(hash) = hash {
+                    if hashes.insert(hash) {
                         ChunkRanges::all() - &children.bitfields.get(&hash).unwrap().ranges
                     } else {
-                        ChunkRanges::all()
+                        ChunkRanges::empty()
                     }
-                });
-                let end = if self.bitfield.is_validated() {
-                    ChunkRanges::empty()
                 } else {
                     ChunkRanges::all()
-                };
-                let ranges = iter::once(start).chain(children).chain(iter::once(end));
-                RangeSpecSeq::from_ranges_infinite(ranges)
+                }
+            });
+            // is_validated means we have the last chunk and thus also the last hash
+            let end = if self.bitfield.is_validated() {
+                ChunkRanges::empty()
             } else {
-                RangeSpecSeq::from_ranges_infinite([
-                    self.bitfield.ranges.clone(),
-                    ChunkRanges::all(),
-                ])
-            }
+                ChunkRanges::all()
+            };
+            let ranges = iter::once(start).chain(children).chain(iter::once(end));
+            RangeSpecSeq::from_ranges_infinite(ranges)
         } else {
             RangeSpecSeq::from_ranges([root_missing])
         };
@@ -194,19 +261,14 @@ impl Download {
         progress: Option<spsc::Sender<u64>>,
     ) -> anyhow::Result<Stats> {
         let content = data.into();
-        let missing = self.store().missing(content).await?;
-        if missing == RangeSpecSeq::empty() {
+        let local = self.local(content).await?;
+        if local.is_complete() {
             return Ok(Default::default());
         }
-        let request = GetRequest::new(content.hash, missing);
+        let request = local.missing();
         let stats = self
             .execute_request(conn.connection().await?, request, progress)
             .await?;
-        // let data = data.into();
-        // let stats = match data.format {
-        //     BlobFormat::Raw => fetch_blob_impl(conn, data.hash, store, &mut progress).await?,
-        //     BlobFormat::HashSeq => fetch_hash_seq_impl(conn, data.hash, store, &mut progress).await?,
-        // };
         Ok(stats)
     }
 
@@ -240,15 +302,15 @@ impl Download {
         let at_closing = match next_child {
             Ok(at_start_child) => {
                 let mut next_child = Ok(at_start_child);
-                // let hash_seq = HashSeq::try_from(store.export_bytes(root).await?)?;
-                let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
+                let hash_seq = HashSeq::try_from(store.export_bytes(root).await?)?;
+                // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
                         Ok(at_start_child) => at_start_child,
                         Err(at_closing) => break at_closing,
                     };
                     let offset = at_start_child.child_offset();
-                    let Some(hash) = hash_seq.get(offset).await? else {
+                    let Some(hash) = hash_seq.get(offset as usize) else {
                         break at_start_child.finish();
                     };
                     trace!("getting child {offset} {}", hash.fmt_short());
@@ -270,12 +332,18 @@ impl Download {
 }
 
 use core::hash;
-use std::{collections::BTreeMap, fmt::{self, Display}, future::Future, iter, num::NonZeroU64};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::{self, Display},
+    future::Future,
+    iter,
+    num::NonZeroU64,
+};
 
-use bao_tree::{io::Leaf, ChunkRanges};
+use bao_tree::{io::Leaf, ChunkNum, ChunkRanges};
 use iroh::{endpoint::Connection, Endpoint, NodeAddr};
 use irpc::channel::{spsc, SendError};
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 use super::Bitfield;
 use crate::{
@@ -617,16 +685,21 @@ mod tests {
     #[tokio::test]
     async fn test_local_info_hash_seq_large() -> TestResult<()> {
         let sizes = (0..1024 + 5).map(|x| x).collect::<Vec<_>>();
-        let relevant_sizes = sizes[32 * 16..32 * 32].iter().map(|x| *x as u64).sum::<u64>();
+        let relevant_sizes = sizes[32 * 16..32 * 32]
+            .iter()
+            .map(|x| *x as u64)
+            .sum::<u64>();
         let td = tempfile::tempdir()?;
         let hash_seq_ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
         let store = FsStore::load(td.path().join("blobs.db")).await?;
         {
             // only add the hash seq itself, and only the first chunk of the children
-            let present = |i| if i == 0 {
-                hash_seq_ranges.clone()
-            } else {
-                ChunkRanges::from(..ChunkNum(1))
+            let present = |i| {
+                if i == 0 {
+                    hash_seq_ranges.clone()
+                } else {
+                    ChunkRanges::from(..ChunkNum(1))
+                }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
             let info = store.download().local(content).await?;
@@ -648,10 +721,12 @@ mod tests {
         let store = FsStore::load(td.path().join("blobs.db")).await?;
         {
             // only add the hash seq itself, none of the children
-            let present = |i| if i == 0 {
-                ChunkRanges::all()
-            } else {
-                ChunkRanges::empty()
+            let present = |i| {
+                if i == 0 {
+                    ChunkRanges::all()
+                } else {
+                    ChunkRanges::empty()
+                }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
             let info = store.download().local(content).await?;
@@ -680,10 +755,12 @@ mod tests {
         }
         {
             // only add the hash seq itself, and only the first chunk of the children
-            let present = |i| if i == 0 {
-                ChunkRanges::all()
-            } else {
-                ChunkRanges::from(..ChunkNum(1))
+            let present = |i| {
+                if i == 0 {
+                    ChunkRanges::all()
+                } else {
+                    ChunkRanges::from(..ChunkNum(1))
+                }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
             let info = store.download().local(content).await?;
