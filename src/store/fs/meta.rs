@@ -67,9 +67,7 @@ pub enum ActorError {
 
 impl From<ActorError> for io::Error {
     fn from(e: ActorError) -> Self {
-        match e {
-            e => io::Error::other(e),
-        }
+        io::Error::other(e)
     }
 }
 

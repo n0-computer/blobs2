@@ -27,7 +27,7 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use super::{util::BaoTreeSender, BlobFormat};
+use super::{util::{PartialMemStorage, BaoTreeSender}, BlobFormat};
 use crate::{
     api::{
         self,
@@ -45,52 +45,14 @@ use crate::{
     },
     store::{
         util::{
-            observer::{Observable, Observer},
-            SparseMemFile, Tag,
+            observer::Observer,
+            Tag,
         },
         HashAndFormat, IROH_BLOCK_SIZE,
     },
     util::temp_tag::TempTag,
     Hash,
 };
-
-/// Keep track of the most precise size we know of.
-///
-/// When in memory, we don't have to write the size for every chunk to a separate
-/// slot, but can just keep the best one.
-#[derive(Debug, Default)]
-pub struct SizeInfo {
-    pub offset: u64,
-    pub size: u64,
-}
-
-#[allow(dead_code)]
-impl SizeInfo {
-    /// Create a new size info for a complete file of size `size`.
-    pub(crate) fn complete(size: u64) -> Self {
-        let mask = (1 << IROH_BLOCK_SIZE.chunk_log()) - 1;
-        // offset of the last bao chunk in a file of size `size`
-        let last_chunk_offset = size & mask;
-        Self {
-            offset: last_chunk_offset,
-            size,
-        }
-    }
-
-    /// Write a size at the given offset. The size at the highest offset is going to be kept.
-    fn write(&mut self, offset: u64, size: u64) {
-        // >= instead of > because we want to be able to update size 0, the initial value.
-        if offset >= self.offset {
-            self.offset = offset;
-            self.size = size;
-        }
-    }
-
-    /// The current size, representing the most correct size we know.
-    pub fn current_size(&self) -> u64 {
-        self.size
-    }
-}
 
 impl Store {
     pub fn memory() -> Self {
@@ -647,67 +609,6 @@ impl Entry {
             Self::Partial(entry) => Some(entry),
             Self::Complete(_) => None,
         }
-    }
-}
-
-/// An incomplete entry, with all the logic to keep track of the state of the entry
-/// and for observing changes.
-#[derive(Debug, Default)]
-pub(crate) struct PartialMemStorage {
-    pub(crate) data: SparseMemFile,
-    pub(crate) outboard: SparseMemFile,
-    pub(crate) size: SizeInfo,
-    pub(crate) bitfield: Observable<Bitfield>,
-}
-
-impl PartialMemStorage {
-    pub fn add_observer(&mut self, out: Observer<Bitfield>) {
-        self.bitfield.add_observer(out);
-    }
-
-    #[allow(dead_code)]
-    pub fn bitfield(&self) -> &Observable<Bitfield> {
-        &self.bitfield
-    }
-
-    pub fn update(&mut self, update: Bitfield) {
-        self.bitfield.update(update);
-    }
-
-    pub fn current_size(&self) -> u64 {
-        self.bitfield.state().size()
-    }
-
-    pub(super) fn write_batch(
-        &mut self,
-        size: NonZeroU64,
-        batch: &[BaoContentItem],
-        ranges: &ChunkRanges,
-    ) -> io::Result<()> {
-        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
-        for item in batch {
-            match item {
-                BaoContentItem::Parent(parent) => {
-                    if let Some(offset) = tree.pre_order_offset(parent.node) {
-                        let o0 = offset
-                            .checked_mul(64)
-                            .expect("u64 overflow multiplying to hash pair offset");
-                        let outboard = &mut self.outboard;
-                        let mut buf = [0u8; 64];
-                        buf[..32].copy_from_slice(parent.pair.0.as_bytes());
-                        buf[32..].copy_from_slice(parent.pair.1.as_bytes());
-                        outboard.write_all_at(o0, &buf)?;
-                    }
-                }
-                BaoContentItem::Leaf(leaf) => {
-                    self.size.write(leaf.offset, size.get());
-                    self.data.write_all_at(leaf.offset, leaf.data.as_ref())?;
-                }
-            }
-        }
-        let update = Bitfield::new(ranges.clone(), size.get());
-        self.bitfield.update(update);
-        Ok(())
     }
 }
 

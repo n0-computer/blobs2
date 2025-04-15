@@ -19,10 +19,13 @@ pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{range_set::RangeSetEntry, RangeSetRef};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use sparse_mem_file::SparseMemFile;
+use ref_cast::RefCast;
 use tracing::trace;
 pub mod observer;
-use ref_cast::RefCast;
-
+mod size_info;
+pub use size_info::SizeInfo;
+mod partial_mem_storage;
+pub use partial_mem_storage::PartialMemStorage;
 
 /// A tag
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]

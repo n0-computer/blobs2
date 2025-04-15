@@ -32,11 +32,8 @@ use crate::{
     api::blobs::Bitfield,
     store::{
         fs::{meta::raw_outboard_size, TaskContext},
-        mem::{PartialMemStorage, SizeInfo},
         util::{
-            observer::{Observable, Observer},
-            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, SparseMemFile,
-            ValueOrPoisioned, DD,
+            observer::{Observable, Observer}, PartialMemStorage, read_checksummed_and_truncate, SizeInfo, write_checksummed, FixedSize, MemOrFile, SparseMemFile, ValueOrPoisioned, DD
         },
         Hash, IROH_BLOCK_SIZE,
     },
@@ -763,23 +760,6 @@ impl BaoFileHandle {
         } else {
             Err(io::Error::other("handle poisoned"))
         }
-    }
-}
-
-impl SizeInfo {
-    /// Persist into a file where each chunk has its own slot.
-    pub fn persist(&self, mut target: impl WriteAt) -> io::Result<()> {
-        let size_offset = (self.offset >> IROH_BLOCK_SIZE.chunk_log()) << 3;
-        target.write_all_at(size_offset, self.size.to_le_bytes().as_slice())?;
-        Ok(())
-    }
-
-    /// Convert to a vec in slot format.
-    #[allow(dead_code)]
-    pub fn to_vec(&self) -> Vec<u8> {
-        let mut res = Vec::new();
-        self.persist(&mut res).expect("io error writing to vec");
-        res
     }
 }
 

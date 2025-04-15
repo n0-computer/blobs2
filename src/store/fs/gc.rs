@@ -24,15 +24,16 @@ pub enum GcSweepEvent {
     /// A custom event (debug)
     CustomDebug(String),
     /// A custom non critical error
+    #[allow(dead_code)]
     CustomWarning(String, Option<crate::api::Error>),
     /// An unrecoverable error during GC
     Error(crate::api::Error),
 }
 
 /// Compute the set of live hashes
-pub(super) async fn gc_mark_task<'a>(
+pub(super) async fn gc_mark_task(
     store: &Store,
-    live: &'a mut HashSet<Hash>,
+    live: &mut HashSet<Hash>,
     co: &Co<GcMarkEvent>,
 ) -> crate::api::Result<()> {
     macro_rules! trace {
@@ -182,7 +183,8 @@ pub async fn run_gc(store: Store, config: GcConfig) {
     let mut live = HashSet::new();
     loop {
         tokio::time::sleep(config.interval).await;
-        if let Err(_) = gc_run_once(&store, &mut live).await {
+        if let Err(e) = gc_run_once(&store, &mut live).await {
+            error!("error during gc run: {e}");
             break;
         }
     }

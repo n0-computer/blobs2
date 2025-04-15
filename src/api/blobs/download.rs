@@ -426,38 +426,6 @@ impl DownloadProgress {
     }
 }
 
-// get a single blob, taking the locally available ranges into account
-async fn fetch_blob_impl(
-    mut conn: impl GetConnection,
-    hash: Hash,
-    store: &Store,
-    progress: &mut DownloadProgress,
-) -> anyhow::Result<Stats> {
-    trace!("get blob: {}", hash);
-    let local_ranges = store.observe(hash).await?.ranges;
-    let required_ranges = ChunkRanges::all() - local_ranges;
-    if required_ranges.is_empty() {
-        // we don't count the time for looking up the bitfield locally
-        return Ok(Default::default());
-    }
-    let request = GetRequest::new(hash, RangeSpecSeq::from_ranges([required_ranges]));
-    let conn = conn.connection().await?;
-    let start = crate::get::fsm::start(conn, request);
-    let next = start.next().await?;
-    let ConnectedNext::StartRoot(root) = next.next().await? else {
-        unreachable!()
-    };
-    let header = root.next();
-    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
-    // we need to drop the sender so the other side can finish
-    let EndBlobNext::Closing(closing) = end.next() else {
-        unreachable!()
-    };
-    let stats = closing.next().await?;
-    trace!(?stats, "get blob done");
-    Ok(stats)
-}
-
 async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
@@ -586,66 +554,6 @@ impl LazyHashSeq {
             self.current_chunk = Some(hs);
         }))
     }
-}
-
-// get a hash seq, taking the locally available ranges into account
-async fn fetch_hash_seq_impl(
-    mut conn: impl GetConnection,
-    root: Hash,
-    store: &Store,
-    progress: &mut DownloadProgress,
-) -> anyhow::Result<Stats> {
-    trace!("get hash seq: {}", root);
-    let local_ranges = store.observe(root).await?.ranges;
-    let required_ranges = ChunkRanges::all() - local_ranges;
-    let request = GetRequest::new(
-        root,
-        RangeSpecSeq::from_ranges_infinite([required_ranges, ChunkRanges::all()]),
-    );
-    let conn = conn.connection().await?;
-    let start = crate::get::fsm::start(conn, request);
-    let connected = start.next().await?;
-    trace!("Getting header");
-    // read the header
-    let mut next_child = match connected.next().await? {
-        ConnectedNext::StartRoot(at_start_root) => {
-            let header = at_start_root.next();
-            let end = get_blob_ranges_impl(header, root, store, progress).await?;
-            match end.next() {
-                EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
-                EndBlobNext::Closing(at_closing) => Err(at_closing),
-            }
-        }
-        ConnectedNext::StartChild(at_start_child) => Ok(at_start_child),
-        ConnectedNext::Closing(at_closing) => Err(at_closing),
-    };
-    let hash_seq = store.export_bytes(root).await?;
-    let Ok(hash_seq) = HashSeq::try_from(hash_seq) else {
-        anyhow::bail!("invalid hash seq");
-    };
-    // read the rest, if any
-    let at_closing = loop {
-        let at_start_child = match next_child {
-            Ok(at_start_child) => at_start_child,
-            Err(at_closing) => break at_closing,
-        };
-        let Ok(offset) = usize::try_from(at_start_child.child_offset()) else {
-            anyhow::bail!("hash seq offset too large");
-        };
-        let Some(hash) = hash_seq.get(offset) else {
-            break at_start_child.finish();
-        };
-        trace!("getting child {offset} {}", hash.fmt_short());
-        let header = at_start_child.next(hash);
-        let end = get_blob_ranges_impl(header, hash, store, progress).await?;
-        next_child = match end.next() {
-            EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
-            EndBlobNext::Closing(at_closing) => Err(at_closing),
-        }
-    };
-    let stats = at_closing.next().await?;
-    trace!(?stats, "get hash seq done");
-    Ok(stats)
 }
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ pub struct Dump {
 
 #[derive(Debug)]
 pub struct Snapshot {
-    pub tx: tokio::sync::oneshot::Sender<ReadOnlyTables>,
+    pub(crate) tx: tokio::sync::oneshot::Sender<ReadOnlyTables>,
     pub span: Span,
 }
 
