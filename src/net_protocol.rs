@@ -8,8 +8,6 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
 use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint};
-use irpc::channel::spsc;
-use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 use tracing::error;
 

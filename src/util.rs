@@ -77,12 +77,10 @@ pub mod outboard_with_progress {
     impl Progress for NoProgress {
         type Error = io::Error;
 
-        fn progress(
+        async fn progress(
             &mut self,
             _offset: ChunkNum,
-        ) -> impl Future<Output = std::result::Result<(), Self::Error>> {
-            async { Ok(()) }
-        }
+        ) -> std::result::Result<(), Self::Error> { Ok(()) }
     }
 
     pub async fn init_outboard<R, W, P>(

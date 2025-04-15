@@ -127,14 +127,12 @@ impl fmt::Debug for RangeSpec {
             write!(f, "all")
         } else if self.is_empty() {
             write!(f, "empty")
+        } else if !f.alternate() {
+            f.debug_list()
+                .entries(self.to_chunk_ranges().iter())
+                .finish()
         } else {
-            if !f.alternate() {
-                f.debug_list()
-                    .entries(self.to_chunk_ranges().iter())
-                    .finish()
-            } else {
-                f.debug_list().entries(self.0.iter()).finish()
-            }
+            f.debug_list().entries(self.0.iter()).finish()
         }
     }
 }

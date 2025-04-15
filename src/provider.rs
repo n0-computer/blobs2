@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use bao_tree::ChunkRanges;
 use iroh::{
     endpoint::{self, RecvStream, SendStream},
-    node_info::NodeInfo,
     NodeId,
 };
 use tracing::{debug, debug_span, warn, Instrument};

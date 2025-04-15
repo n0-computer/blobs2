@@ -1,12 +1,11 @@
 //! The metadata database
 #![allow(clippy::result_large_err)]
-use core::time;
 use std::{
     collections::HashSet,
     io,
     ops::{Bound, Deref, DerefMut},
     path::PathBuf,
-    time::{Instant, SystemTime},
+    time::SystemTime,
 };
 
 use bao_tree::BaoTree;

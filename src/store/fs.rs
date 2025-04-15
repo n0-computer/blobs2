@@ -80,7 +80,6 @@ use crate::{
             self, BatchMsg, Command, CreateTempTagMsg, ExportBaoMsg, ExportPathMsg, HashSpecific,
             ImportBaoMsg, ObserveMsg,
         },
-        tags::CreateTempTagRequest,
         ApiClient, Scope,
     },
     store::{
@@ -93,7 +92,7 @@ use crate::{
     },
 };
 mod bao_file;
-use bao_file::{BaoFileHandle, BaoFileHandleWeak, BaoFileStorage};
+use bao_file::{BaoFileHandle, BaoFileHandleWeak};
 mod delete_set;
 mod entry_state;
 mod import;

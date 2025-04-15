@@ -142,13 +142,11 @@ impl LocalInfo {
             });
             let ranges = iter::once(start).chain(children).chain(iter::once(end));
             RangeSpecSeq::from_ranges_infinite(ranges)
+        } else if self.bitfield.is_validated() {
+            RangeSpecSeq::empty()
         } else {
-            if self.bitfield.is_validated() {
-                RangeSpecSeq::empty()
-            } else {
-                // request the last chunk of the blob
-                RangeSpecSeq::from_ranges([request_last_chunk])
-            }
+            // request the last chunk of the blob
+            RangeSpecSeq::from_ranges([request_last_chunk])
         };
         GetRequest::new(self.root, ranges)
     }
@@ -328,10 +326,9 @@ impl Download {
     }
 }
 
-use core::hash;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt::{self, Display},
+    collections::{BTreeMap, HashSet},
+    fmt::{self},
     future::Future,
     iter,
     num::NonZeroU64,
@@ -340,7 +337,7 @@ use std::{
 use bao_tree::{io::Leaf, ChunkNum, ChunkRanges};
 use iroh::{endpoint::Connection, Endpoint, NodeAddr};
 use irpc::channel::{spsc, SendError};
-use tracing::{error, info, trace};
+use tracing::trace;
 
 use super::Bitfield;
 use crate::{
@@ -585,9 +582,8 @@ impl LazyHashSeq {
             .await?;
         // return the hash if it is in the chunk, otherwise we are behind the end
         let hs = HashSeqChunk::try_from(leaf)?;
-        Ok(hs.get(child_offset).map(|hash| {
+        Ok(hs.get(child_offset).inspect(|hash| {
             self.current_chunk = Some(hs);
-            hash
         }))
     }
 }
@@ -674,14 +670,14 @@ mod tests {
         assert_eq!(info.content(), hash.into());
         assert_eq!(info.bitfield.ranges, ChunkRanges::all());
         assert_eq!(info.local_bytes(), 4);
-        assert_eq!(info.is_complete(), true);
+        assert!(info.is_complete());
         assert_eq!(info.missing(), GetRequest::new(hash, RangeSpecSeq::empty()));
         Ok(())
     }
 
     #[tokio::test]
     async fn test_local_info_hash_seq_large() -> TestResult<()> {
-        let sizes = (0..1024 + 5).map(|x| x).collect::<Vec<_>>();
+        let sizes = (0..1024 + 5).collect::<Vec<_>>();
         let relevant_sizes = sizes[32 * 16..32 * 32]
             .iter()
             .map(|x| *x as u64)
@@ -702,7 +698,7 @@ mod tests {
             let info = store.download().local(content).await?;
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, hash_seq_ranges);
-            assert_eq!(info.is_complete(), false);
+            assert!(!info.is_complete());
             assert_eq!(info.local_bytes(), relevant_sizes + 16 * 1024);
         }
 
@@ -730,7 +726,7 @@ mod tests {
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size);
-            assert_eq!(info.is_complete(), false);
+            assert!(!info.is_complete());
             assert_eq!(
                 info.missing(),
                 GetRequest::new(
@@ -765,7 +761,7 @@ mod tests {
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size + first_chunk_size);
-            assert_eq!(info.is_complete(), false);
+            assert!(!info.is_complete());
             assert_eq!(
                 info.missing(),
                 GetRequest::new(
@@ -790,7 +786,7 @@ mod tests {
             assert_eq!(info.content(), content);
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), total_size + hash_seq_size);
-            assert_eq!(info.is_complete(), true);
+            assert!(info.is_complete());
             assert_eq!(
                 info.missing(),
                 GetRequest::new(content.hash, RangeSpecSeq::empty())

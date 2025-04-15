@@ -1,4 +1,3 @@
-use core::hash;
 use std::path::PathBuf;
 
 use bao_tree::ChunkRanges;
@@ -18,7 +17,7 @@ use crate::{
     net_protocol::Blobs,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::fs::{
-        tests::{create_n0_bao, round_up_request, test_data, INTERESTING_SIZES},
+        tests::{create_n0_bao, test_data, INTERESTING_SIZES},
         FsStore,
     },
     BlobFormat, Hash, HashAndFormat,
@@ -185,7 +184,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
 #[tokio::test]
 async fn two_nodes_size_request() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let (testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, sizes).await?;

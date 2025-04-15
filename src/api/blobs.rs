@@ -1,5 +1,4 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     future::{Future, IntoFuture},
     io,
@@ -12,12 +11,12 @@ use bao_tree::{
     io::{
         fsm::{ResponseDecoder, ResponseDecoderNext},
         mixed::EncodedItem,
-        BaoContentItem, EncodeError, Leaf,
+        BaoContentItem, Leaf,
     },
     BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
-use download::{Download, HashSeqChunk, LazyHashSeq};
+use download::{Download, HashSeqChunk};
 use genawaiter::sync::Gen;
 use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};

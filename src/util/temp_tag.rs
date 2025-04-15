@@ -199,8 +199,8 @@ impl TempTags {
 
     pub fn create(&mut self, scope: Scope, content: HashAndFormat) -> TempTag {
         let scope = self.scopes.entry(scope).or_default();
-        let tag = scope.temp_tag(content);
-        tag
+        
+        scope.temp_tag(content)
     }
 
     pub fn contains(&self, hash: Hash) -> bool {

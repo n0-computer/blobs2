@@ -17,7 +17,7 @@ use bao_tree::{
     },
     BaoTree, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode,
 };
-use bytes::{buf, Bytes};
+use bytes::Bytes;
 use irpc::channel::spsc;
 use n0_future::{future::yield_now, StreamExt};
 use tokio::{

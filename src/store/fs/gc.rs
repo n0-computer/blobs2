@@ -141,7 +141,7 @@ pub async fn gc_run_once(store: &Store, live: &mut HashSet<Hash>) -> crate::api:
     {
         live.clear();
         store.clear_protected().await?;
-        let mut stream = gc_mark(&store, live);
+        let mut stream = gc_mark(store, live);
         while let Some(ev) = stream.next().await {
             match ev {
                 GcMarkEvent::CustomDebug(msg) => {
@@ -158,7 +158,7 @@ pub async fn gc_run_once(store: &Store, live: &mut HashSet<Hash>) -> crate::api:
         }
     }
     {
-        let mut stream = gc_sweep(&store, live);
+        let mut stream = gc_sweep(store, live);
         while let Some(ev) = stream.next().await {
             match ev {
                 GcSweepEvent::CustomDebug(msg) => {
