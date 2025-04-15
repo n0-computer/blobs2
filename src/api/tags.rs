@@ -7,14 +7,13 @@ use n0_future::{Stream, StreamExt};
 use ref_cast::RefCast;
 use tracing::trace;
 
+pub use super::proto::{
+    CreateTagRequest as CreateOptions, DeleteTagsRequest as DeleteOptions,
+    ListTagsRequest as ListOptions, RenameTagRequest as RenameOptions, SetTagRequest as SetOptions,
+    TagInfo,
+};
 use super::{ApiClient, Tag};
-use crate::{api::proto::ListTempTagsRequest, HashAndFormat};
-pub use super::proto::CreateTagRequest as CreateOptions;
-pub use super::proto::ListTagsRequest as ListOptions;
-pub use super::proto::DeleteTagsRequest as DeleteOptions;
-pub use super::proto::SetTagRequest as SetOptions;
-pub use super::proto::RenameTagRequest as RenameOptions;
-pub use super::proto::TagInfo;
+use crate::{HashAndFormat, api::proto::ListTempTagsRequest};
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]

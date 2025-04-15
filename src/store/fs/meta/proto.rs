@@ -7,7 +7,13 @@ use tracing::Span;
 
 use super::{ActorResult, ReadOnlyTables};
 use crate::{
-    api::proto::{BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ProcessExitRequest, ShutdownMsg, SyncDbMsg}, store::{fs::entry_state::EntryState, util::DD}, util::channel::oneshot, Hash
+    Hash,
+    api::proto::{
+        BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ProcessExitRequest, ShutdownMsg,
+        SyncDbMsg,
+    },
+    store::{fs::entry_state::EntryState, util::DD},
+    util::channel::oneshot,
 };
 
 /// Get the entry state for a hash.

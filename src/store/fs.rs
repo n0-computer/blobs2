@@ -96,14 +96,16 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        proto::bitfield::is_validated, proto::{
+        ApiClient,
+        proto::{
             self, BatchMsg, BatchResponse, Command, CreateTempTagMsg, ExportBaoMsg,
             ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
-            ImportBaoRequest, ObserveMsg, Scope,
-        }, ApiClient
+            ImportBaoRequest, ObserveMsg, Scope, bitfield::is_validated,
+        },
     },
     store::{
-        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned}, Hash
+        Hash,
+        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
     },
     util::{
         channel::{mpsc, oneshot},

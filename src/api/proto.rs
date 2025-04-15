@@ -23,7 +23,10 @@ use std::{
 };
 
 use arrayvec::ArrayString;
-use bao_tree::{io::{mixed::EncodedItem, BaoContentItem}, ChunkRanges};
+use bao_tree::{
+    ChunkRanges,
+    io::{BaoContentItem, mixed::EncodedItem},
+};
 use bytes::Bytes;
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
@@ -31,6 +34,7 @@ use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 pub(crate) mod bitfield;
 pub use bitfield::Bitfield;
+
 use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) trait HashSpecific {
@@ -344,7 +348,6 @@ impl TagInfo {
     }
 }
 
-
 pub(crate) fn tags_from_range<R, E>(range: R) -> (Option<Tag>, Option<Tag>)
 where
     R: RangeBounds<E>,
@@ -362,7 +365,6 @@ where
     };
     (from, to)
 }
-
 
 /// List all temp tags
 #[derive(Debug, Serialize, Deserialize)]
@@ -605,7 +607,6 @@ pub enum ExportMode {
     /// if the file is very small or if the store does not support referencing files.
     TryReference,
 }
-
 
 /// Status information about a blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

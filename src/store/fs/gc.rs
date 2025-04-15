@@ -199,7 +199,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::{blobs::{AddBytesOptions}, Store}, hashseq::HashSeq, store::fs::{options::PathOptions, tests::create_n0_bao}, BlobFormat
+        BlobFormat,
+        api::{Store, blobs::AddBytesOptions},
+        hashseq::HashSeq,
+        store::fs::{options::PathOptions, tests::create_n0_bao},
     };
 
     async fn gc_smoke(_path: &Path, store: &Store) -> TestResult<()> {

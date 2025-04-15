@@ -19,7 +19,9 @@ use crate::{
         self,
         blobs::BlobStatus,
         proto::{
-            BlobDeleteRequest, BlobStatusRequest, ClearProtectedMsg, CreateTagRequest, DeleteBlobsMsg, BlobStatusMsg, ListBlobsMsg, ListRequest, ListTagsRequest, RenameTagRequest, SetTagRequest, ShutdownMsg, SyncDbMsg, DeleteTagsRequest,
+            BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest, ClearProtectedMsg,
+            CreateTagRequest, DeleteBlobsMsg, DeleteTagsRequest, ListBlobsMsg, ListRequest,
+            ListTagsRequest, RenameTagRequest, SetTagRequest, ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
     },

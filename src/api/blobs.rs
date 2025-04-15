@@ -11,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
 };
+
+pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{
     BaoTree, ChunkNum, ChunkRanges,
     io::{
@@ -31,9 +33,13 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
 use super::{
+    ApiClient, RequestResult, Tags,
     proto::{
-        BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest, ExportBaoRequest, ImportBaoRequest, ImportByteStreamRequest, ImportBytesRequest, ImportPathRequest, ListRequest, Scope
-    }, tags::TagInfo, ApiClient, RequestResult, Tags
+        BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
+        ExportBaoRequest, ImportBaoRequest, ImportByteStreamRequest, ImportBytesRequest,
+        ImportPathRequest, ListRequest, Scope,
+    },
+    tags::TagInfo,
 };
 use crate::{
     BlobFormat, Hash, HashAndFormat,
@@ -42,7 +48,6 @@ use crate::{
     store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
 };
-pub use bao_tree::io::mixed::EncodedItem;
 pub mod download;
 use ref_cast::RefCast;
 
@@ -51,12 +56,10 @@ use ref_cast::RefCast;
 // Due to the fact that the proto module is hidden from docs by default,
 // these will appear in the docs as if they were declared here.
 pub use super::proto::{
-    BlobDeleteRequest as DeleteOptions, ExportBaoRequest as ExportBaoOptions,
-    ObserveRequest as ObserveOptions, ExportPathRequest as ExportOptions,
-    ImportBaoRequest as ImportBaoOptions,
-    ImportMode, ExportMode, ImportProgress, ExportProgress,
-    BlobStatus,
-    Bitfield,
+    Bitfield, BlobDeleteRequest as DeleteOptions, BlobStatus, ExportBaoRequest as ExportBaoOptions,
+    ExportMode, ExportPathRequest as ExportOptions, ExportProgress,
+    ImportBaoRequest as ImportBaoOptions, ImportMode, ImportProgress,
+    ObserveRequest as ObserveOptions,
 };
 
 #[derive(Debug)]
@@ -271,7 +274,11 @@ impl Blobs {
         })
     }
 
-    pub fn export_bao(&self, hash: impl Into<Hash>, ranges: impl Into<ChunkRanges>) -> ExportBaoResult {
+    pub fn export_bao(
+        &self,
+        hash: impl Into<Hash>,
+        ranges: impl Into<ChunkRanges>,
+    ) -> ExportBaoResult {
         self.export_bao_with_opts(ExportBaoRequest {
             hash: hash.into(),
             ranges: ranges.into(),
