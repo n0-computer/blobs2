@@ -189,8 +189,8 @@ async fn two_nodes_size_request() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    let sizes = store2.verified_size(root).await?;
-    assert_eq!(sizes, RangeSpecSeq::verified_child_sizes());
+    let sizes = store2.download().local(root).await?.complete_sizes();
+    assert_eq!(sizes.ranges, RangeSpecSeq::verified_child_sizes());
     // get the first 3 items (hash_seq, and 2 children)
     store2
         .download()
@@ -209,9 +209,9 @@ async fn two_nodes_size_request() -> TestResult<()> {
         )
         .await?;
     // check that sizes for the data we have already are omitted
-    let sizes = store2.verified_size(root).await?;
+    let sizes = store2.download().local(root).await?.complete_sizes();
     assert_eq!(
-        sizes,
+        sizes.ranges,
         RangeSpecSeq::new([
             RangeSpec::EMPTY,
             RangeSpec::EMPTY,
@@ -227,7 +227,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     );
     store2
         .download()
-        .execute_request(conn.clone(), GetRequest::new(root.hash, sizes), None)
+        .execute_request(conn.clone(), sizes, None)
         .await?;
 
     let local = store2.download().local(root).await?;

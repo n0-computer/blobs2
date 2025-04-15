@@ -5,14 +5,12 @@
 //!
 //! The main entry point is the [`Blobs`] struct.
 use std::{
-    fmt,
     future::{Future, IntoFuture},
     io,
     num::NonZeroU64,
     path::{Path, PathBuf},
     pin::Pin,
 };
-
 use bao_tree::{
     BaoTree, ChunkNum, ChunkRanges,
     io::{
@@ -29,97 +27,59 @@ use irpc::{
     channel::{oneshot, spsc},
 };
 use n0_future::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
 use super::{
-    ApiClient, RequestResult, Tags,
     proto::{
-        BatchResponse, BlobDeleteRequest, BlobStatusRequest, ClearProtectedRequest,
-        ExportBaoRequest, ExportPathRequest, ImportBaoRequest, ImportByteStreamRequest,
-        ImportBytesRequest, ImportPathRequest, ListRequest, ObserveRequest,
-        CreateTempTagRequest,
-    },
-    tags::TagInfo,
+        BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest, ExportBaoRequest, ImportBaoRequest, ImportByteStreamRequest, ImportBytesRequest, ImportPathRequest, ListRequest, Scope
+    }, tags::TagInfo, ApiClient, RequestResult, Tags
 };
 use crate::{
     BlobFormat, Hash, HashAndFormat,
     api::proto::BatchRequest,
-    hashseq::HashSeq,
-    protocol::{RangeSpec, RangeSpecSeq},
     provider::ProgressWriter,
     store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
 };
-mod bitfield;
+pub(crate) mod bitfield;
 pub use bao_tree::io::mixed::EncodedItem;
-pub use bitfield::{Bitfield, is_validated};
+pub use bitfield::Bitfield;
 pub mod download;
 use ref_cast::RefCast;
 
+// Public reexports from the proto module.
+//
+// Due to the fact that the proto module is hidden from docs by default,
+// these will appear in the docs as if they were declared here.
 pub use super::proto::{
     BlobDeleteRequest as DeleteOptions, ExportBaoRequest as ExportBaoOptions,
-    ImportBytesRequest as ImportBytesOptions,
+    ObserveRequest as ObserveOptions, ExportPathRequest as ExportOptions,
+    ImportBaoRequest as ImportBaoOptions,
+    ImportMode, ExportMode, ImportProgress, ExportProgress,
+    BlobStatus,
 };
+
+#[derive(Debug)]
+pub struct AddBytesOptions {
+    pub data: Bytes,
+    pub format: BlobFormat,
+}
+
+impl<T: Into<Bytes>> From<(T, BlobFormat)> for AddBytesOptions {
+    fn from(item: (T, BlobFormat)) -> Self {
+        let (data, format) = item;
+        Self {
+            data: data.into(),
+            format,
+        }
+    }
+}
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Blobs {
     client: ApiClient,
-}
-
-pub struct Batch<'a> {
-    scope: Scope,
-    blobs: &'a Blobs,
-    _tx: spsc::Sender<BatchResponse>,
-}
-
-impl<'a> Batch<'a> {
-    pub fn add_bytes(&self, data: impl Into<Bytes>) -> ImportResult {
-        let options = ImportBytesRequest {
-            data: data.into(),
-            format: crate::BlobFormat::Raw,
-            scope: self.scope,
-        };
-        self.blobs.add_bytes_impl(options)
-    }
-
-    pub fn add_bytes_with_opts(&self, options: impl Into<BytesAndFormat>) -> ImportResult {
-        let options = options.into();
-        self.blobs.add_bytes_impl(ImportBytesRequest {
-            data: options.data,
-            format: options.format,
-            scope: self.scope,
-        })
-    }
-
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
-        let options = ImportBytesRequest {
-            data: Bytes::copy_from_slice(data.as_ref()),
-            format: crate::BlobFormat::Raw,
-            scope: self.scope,
-        };
-        self.blobs.add_bytes_impl(options)
-    }
-
-    pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
-        self.blobs.add_path_with_opts_impl(ImportPathRequest {
-            path: options.path,
-            mode: options.mode,
-            format: options.format,
-            scope: self.scope,
-        })
-    }
-
-    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
-        let value = value.into();
-        let msg = CreateTempTagRequest {
-            scope: self.scope,
-            value,
-        };
-        self.blobs.client.rpc(msg).await
-    }
 }
 
 impl Blobs {
@@ -155,7 +115,7 @@ impl Blobs {
         })
     }
 
-    pub async fn delete_with_opts(&self, options: BlobDeleteRequest) -> RequestResult<()> {
+    pub async fn delete_with_opts(&self, options: DeleteOptions) -> RequestResult<()> {
         trace!("{options:?}");
         self.client.rpc(options).await??;
         Ok(())
@@ -165,7 +125,7 @@ impl Blobs {
         &self,
         hashes: impl IntoIterator<Item = impl Into<Hash>>,
     ) -> RequestResult<()> {
-        self.delete_with_opts(BlobDeleteRequest {
+        self.delete_with_opts(DeleteOptions {
             hashes: hashes.into_iter().map(Into::into).collect(),
             force: false,
         })
@@ -176,7 +136,7 @@ impl Blobs {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
-            scope: Scope::default(),
+            scope: Scope::GLOBAL,
         };
         self.add_bytes_impl(options)
     }
@@ -185,13 +145,19 @@ impl Blobs {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
-            scope: Scope::default(),
+            scope: Scope::GLOBAL,
         };
         self.add_bytes_impl(options)
     }
 
-    pub fn add_bytes_with_opts(&self, options: ImportBytesRequest) -> ImportResult {
-        self.add_bytes_impl(options)
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> ImportResult {
+        let options = options.into();
+        let request = ImportBytesRequest {
+            data: options.data,
+            format: options.format,
+            scope: Scope::GLOBAL,
+        };
+        self.add_bytes_impl(request)
     }
 
     fn add_bytes_impl(&self, options: ImportBytesRequest) -> ImportResult {
@@ -213,7 +179,8 @@ impl Blobs {
         })
     }
 
-    pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> ImportResult {
+        let options = options.into();
         self.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
             mode: options.mode,
@@ -241,7 +208,7 @@ impl Blobs {
     }
 
     pub fn add_path(&self, path: impl AsRef<Path>) -> ImportResult {
-        self.add_path_with_opts(ImportPathOptions {
+        self.add_path_with_opts(AddPathOptions {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,
@@ -305,10 +272,10 @@ impl Blobs {
         })
     }
 
-    pub fn export_bao(&self, hash: impl Into<Hash>, ranges: ChunkRanges) -> ExportBaoResult {
+    pub fn export_bao(&self, hash: impl Into<Hash>, ranges: impl Into<ChunkRanges>) -> ExportBaoResult {
         self.export_bao_with_opts(ExportBaoRequest {
             hash: hash.into(),
-            ranges,
+            ranges: ranges.into(),
         })
     }
 
@@ -333,8 +300,10 @@ impl Blobs {
         Err(io::Error::other("unexpected end of stream").into())
     }
 
-    /// Helper to just export the entire blob into a Bytes
-    pub async fn export_bytes(&self, hash: impl Into<Hash>) -> super::ExportBaoResult<Bytes> {
+    /// Get the entire blob into a Bytes
+    ///
+    /// This will run out of memory when called for very large blobs, so be careful!
+    pub async fn get_bytes(&self, hash: impl Into<Hash>) -> super::ExportBaoResult<Bytes> {
         self.export_bao(hash.into(), ChunkRanges::all())
             .data_to_bytes()
             .await
@@ -342,13 +311,12 @@ impl Blobs {
 
     /// Observe the bitfield of the given hash.
     pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
-        self.observe_with_opts(ObserveRequest { hash: hash.into() })
+        self.observe_with_opts(ObserveOptions { hash: hash.into() })
     }
 
-    pub fn observe_with_opts(&self, options: ObserveRequest) -> ObserveResult {
+    pub fn observe_with_opts(&self, options: ObserveOptions) -> ObserveResult {
         trace!("{:?}", options);
-        let ObserveRequest { hash } = options;
-        if hash == Hash::EMPTY {
+        if options.hash == Hash::EMPTY {
             return ObserveResult::new(async move {
                 let (mut tx, rx) = spsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
@@ -360,11 +328,11 @@ impl Blobs {
         ObserveResult::new(async move {
             let rx = match request.await? {
                 Request::Local(c) => {
-                    c.send((ObserveRequest { hash }, tx)).await?;
+                    c.send((options, tx)).await?;
                     rx
                 }
                 Request::Remote(r) => {
-                    let (_, rx) = r.write(ObserveRequest { hash }).await?;
+                    let (_, rx) = r.write(options).await?;
                     rx.into()
                 }
             };
@@ -372,54 +340,7 @@ impl Blobs {
         })
     }
 
-    /// Construct a request to get the verified size of a hash or hashseq.
-    pub async fn verified_size(
-        &self,
-        data: impl Into<HashAndFormat>,
-    ) -> RequestResult<RangeSpecSeq> {
-        let data = data.into();
-        Ok(match data.format {
-            BlobFormat::Raw => self.verified_size_blob(data.hash).await?,
-            BlobFormat::HashSeq => self.verified_size_hash_seq(data.hash).await?,
-        })
-    }
-
-    async fn verified_size_blob(&self, hash: Hash) -> RequestResult<RangeSpecSeq> {
-        let bitfield = self.observe(hash).await?;
-        if bitfield.is_validated() {
-            Ok(RangeSpecSeq::empty())
-        } else {
-            Ok(RangeSpecSeq::verified_size())
-        }
-    }
-
-    async fn verified_size_hash_seq(&self, root: Hash) -> RequestResult<RangeSpecSeq> {
-        let bitfield = self.observe(root).await?;
-        if !bitfield.is_complete() {
-            // todo: we don't deal with the case where the hashseq is incomplete.
-            return Ok(RangeSpecSeq::verified_child_sizes());
-        }
-        let hash_seq = self
-            .export_bao(root, ChunkRanges::all())
-            .data_to_bytes()
-            .await
-            .map_err(super::Error::other)?;
-        let hash_seq = HashSeq::try_from(hash_seq).map_err(super::Error::other)?;
-        let mut ranges = Vec::with_capacity(hash_seq.len() + 1);
-        ranges.push(RangeSpec::EMPTY);
-        for hash in hash_seq {
-            let bitfield = self.observe(hash).await?;
-            if bitfield.is_validated() {
-                ranges.push(RangeSpec::EMPTY);
-            } else {
-                ranges.push(RangeSpec::verified_size());
-            }
-        }
-        ranges.push(RangeSpec::EMPTY);
-        Ok(RangeSpecSeq::new(ranges))
-    }
-
-    pub fn export_with_opts(&self, options: ExportPathRequest) -> ExportResult {
+    pub fn export_with_opts(&self, options: ExportOptions) -> ExportResult {
         trace!("{:?}", options);
         let request = self.client.request();
         ExportResult::new(async move {
@@ -437,19 +358,20 @@ impl Blobs {
         })
     }
 
-    pub fn export(&self, hash: Hash, target: impl AsRef<Path>) -> ExportResult {
-        let options = ExportPathRequest {
-            hash,
+    pub fn export(&self, hash: impl Into<Hash>, target: impl AsRef<Path>) -> ExportResult {
+        let options = ExportOptions {
+            hash: hash.into(),
             mode: ExportMode::Copy,
             target: target.as_ref().to_owned(),
         };
         self.export_with_opts(options)
     }
 
+    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
     pub fn import_bao_with_opts(
         &self,
         mut data: spsc::Receiver<BaoContentItem>,
-        options: ImportBaoRequest,
+        options: ImportBaoOptions,
     ) -> ImportBaoResult {
         trace!("{:?}", options);
         let request = self.client.request();
@@ -474,7 +396,7 @@ impl Blobs {
         })
     }
 
-    // todo: export_path_with_opts
+    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
     async fn import_bao_reader<R: AsyncStreamReader>(
         &self,
         hash: Hash,
@@ -515,6 +437,7 @@ impl Blobs {
     /// Import BaoContentItems from a stream.
     ///
     /// The store assumes that these are already verified and in the correct order.
+    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
     pub fn import_bao(
         &self,
         hash: impl Into<Hash>,
@@ -529,6 +452,7 @@ impl Blobs {
         self.import_bao_with_opts(data.into(), options)
     }
 
+    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
     pub async fn import_bao_quinn(
         &self,
         hash: Hash,
@@ -540,6 +464,7 @@ impl Blobs {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
     pub async fn import_bao_bytes(
         &self,
         hash: Hash,
@@ -581,183 +506,72 @@ impl Blobs {
         }
     }
 
-    pub async fn clear_protected(&self) -> RequestResult<()> {
+    pub(crate) async fn clear_protected(&self) -> RequestResult<()> {
         let msg = ClearProtectedRequest;
         self.client.rpc(msg).await??;
         Ok(())
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportPathOptions {
+pub struct Batch<'a> {
+    scope: Scope,
+    blobs: &'a Blobs,
+    _tx: spsc::Sender<BatchResponse>,
+}
+
+impl<'a> Batch<'a> {
+    pub fn add_bytes(&self, data: impl Into<Bytes>) -> ImportResult {
+        let options = ImportBytesRequest {
+            data: data.into(),
+            format: crate::BlobFormat::Raw,
+            scope: self.scope,
+        };
+        self.blobs.add_bytes_impl(options)
+    }
+
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> ImportResult {
+        let options = options.into();
+        self.blobs.add_bytes_impl(ImportBytesRequest {
+            data: options.data,
+            format: options.format,
+            scope: self.scope,
+        })
+    }
+
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
+        let options = ImportBytesRequest {
+            data: Bytes::copy_from_slice(data.as_ref()),
+            format: crate::BlobFormat::Raw,
+            scope: self.scope,
+        };
+        self.blobs.add_bytes_impl(options)
+    }
+
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> ImportResult {
+        let options = options.into();
+        self.blobs.add_path_with_opts_impl(ImportPathRequest {
+            path: options.path,
+            mode: options.mode,
+            format: options.format,
+            scope: self.scope,
+        })
+    }
+
+    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
+        let value = value.into();
+        let msg = CreateTempTagRequest {
+            scope: self.scope,
+            value,
+        };
+        self.blobs.client.rpc(msg).await
+    }
+}
+
+#[derive(Debug)]
+pub struct AddPathOptions {
     pub path: PathBuf,
-    pub mode: ImportMode,
     pub format: BlobFormat,
-}
-
-/// Progress events for importing from any local source.
-///
-/// For sources with known size such as blobs or files, you will get the events
-/// in the following order:
-///
-/// Size -> CopyProgress(*n) -> CopyDone -> OutboardProgress(*n) -> Done
-///
-/// For sources with unknown size such as streams, you will get the events
-/// in the following order:
-///
-/// CopyProgress(*n) -> Size -> CopyDone -> OutboardProgress(*n) -> Done
-///
-/// Errors can happen at any time, and will be reported as an `Error` event.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ImportProgress {
-    /// Progress copying the file into the data directory.
-    ///
-    /// On most modern systems, copying will be done with copy on write,
-    /// so copying will be instantaneous and you won't get any of these.
-    ///
-    /// The number is the *byte offset* of the copy process.
-    ///
-    /// This is an ephemeral progress event, so you can't rely on getting
-    /// regular updates.
-    CopyProgress(u64),
-    /// Size of the file or stream has been determined.
-    ///
-    /// For some input such as blobs or files, the size is immediately known.
-    /// For other inputs such as streams, the size is determined by reading
-    /// the stream to the end.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these.
-    Size(u64),
-    /// The copy part of the import operation is done.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these.
-    CopyDone,
-    /// Progress computing the outboard and root hash of the imported data.
-    ///
-    /// This is an ephemeral progress event, so you can't rely on getting
-    /// regular updates.
-    OutboardProgress(u64),
-    /// The import is done. Once you get this event the data is available
-    /// and protected in the store via the temp tag.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these if the operation was successful.
-    ///
-    /// This is one of the two possible final events. After this event, there
-    /// won't be any more progress events.
-    Done(TempTag),
-    /// The import failed with an error. Partial data will be deleted.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these if the operation was unsuccessful.
-    ///
-    /// This is one of the two possible final events. After this event, there
-    /// won't be any more progress events.
-    Error(#[serde(with = "crate::util::serde::io_error_serde")] io::Error),
-}
-
-impl From<io::Error> for ImportProgress {
-    fn from(e: io::Error) -> Self {
-        Self::Error(e)
-    }
-}
-
-/// Progress events for exporting to a local file.
-///
-/// Exporting does not involve outboard computation, so the events are simpler
-/// than [`ImportProgress`].
-///
-/// Size -> CopyProgress(*n) -> Done
-///
-/// Errors can happen at any time, and will be reported as an `Error` event.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ExportProgress {
-    /// The size of the file being exported.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these.
-    Size(u64),
-    /// Progress copying the file to the target directory.
-    ///
-    /// On many modern systems, copying will be done with copy on write,
-    /// so copying will be instantaneous and you won't get any of these.
-    ///
-    /// This is an ephemeral progress event, so you can't rely on getting
-    /// regular updates.
-    CopyProgress(u64),
-    /// The export is done. Once you get this event the data is available.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these if the operation was successful.
-    ///
-    /// This is one of the two possible final events. After this event, there
-    /// won't be any more progress events.
-    Done,
-    /// The export failed with an error.
-    ///
-    /// This is a guaranteed progress event, so you can rely on getting exactly
-    /// one of these if the operation was unsuccessful.
-    ///
-    /// This is one of the two possible final events. After this event, there
-    /// won't be any more progress events.
-    Error(super::Error),
-}
-
-impl From<super::Error> for ExportProgress {
-    fn from(e: super::Error) -> Self {
-        Self::Error(e)
-    }
-}
-
-/// The import mode describes how files will be imported.
-///
-/// This is a hint to the import trait method. For some implementations, this
-/// does not make any sense. E.g. an in memory implementation will always have
-/// to copy the file into memory. Also, a disk based implementation might choose
-/// to copy small files even if the mode is `Reference`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ImportMode {
-    /// This mode will copy the file into the database before hashing.
-    ///
-    /// This is the safe default because the file can not be accidentally modified
-    /// after it has been imported.
-    #[default]
-    Copy,
-    /// This mode will try to reference the file in place and assume it is unchanged after import.
-    ///
-    /// This has a large performance and storage benefit, but it is less safe since
-    /// the file might be modified after it has been imported.
-    ///
-    /// Stores are allowed to ignore this mode and always copy the file, e.g.
-    /// if the file is very small or if the store does not support referencing files.
-    TryReference,
-}
-
-/// The import mode describes how files will be imported.
-///
-/// This is a hint to the import trait method. For some implementations, this
-/// does not make any sense. E.g. an in memory implementation will always have
-/// to copy the file into memory. Also, a disk based implementation might choose
-/// to copy small files even if the mode is `Reference`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub enum ExportMode {
-    /// This mode will copy the file to the target directory.
-    ///
-    /// This is the safe default because the file can not be accidentally modified
-    /// after it has been exported.
-    #[default]
-    Copy,
-    /// This mode will try to move the file to the target directory and then reference it from
-    /// the database.
-    ///
-    /// This has a large performance and storage benefit, but it is less safe since
-    /// the file might be modified in the target directory after it has been exported.
-    ///
-    /// Stores are allowed to ignore this mode and always copy the file, e.g.
-    /// if the file is very small or if the store does not support referencing files.
-    TryReference,
+    pub mode: ImportMode,
 }
 
 pub struct ImportResult<'a> {
@@ -1121,7 +935,7 @@ impl ExportBaoResult {
     }
 
     /// Write quinn variant that also feeds a progress writer.
-    pub async fn write_quinn_with_progress(
+    pub(crate) async fn write_quinn_with_progress(
         self,
         writer: &mut ProgressWriter,
         hash: &Hash,
@@ -1194,80 +1008,5 @@ impl ExportBaoResult {
                 co.yield_(item).await;
             }
         })
-    }
-}
-
-pub struct HashSeqStream {
-    /// number of hashes in the hash sequence, if known
-    count: Option<u64>,
-    stream: Box<dyn Stream<Item = (u64, Hash)>>,
-}
-
-/// Import the given bytes.
-pub struct BytesAndFormat {
-    pub data: Bytes,
-    pub format: BlobFormat,
-}
-
-impl<T: Into<Bytes>> From<(T, BlobFormat)> for BytesAndFormat {
-    fn from(item: (T, BlobFormat)) -> Self {
-        let (data, format) = item;
-        Self {
-            data: data.into(),
-            format,
-        }
-    }
-}
-
-impl fmt::Debug for ImportBytesRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImportBytes")
-            .field("data", &self.data.len())
-            .field("format", &self.format)
-            .field("scope", &self.scope)
-            .finish()
-    }
-}
-
-/// Status information about a blob.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BlobStatus {
-    /// The blob is not stored at all.
-    NotFound,
-    /// The blob is only stored partially.
-    Partial {
-        /// The size of the currently stored partial blob.
-        size: Option<u64>,
-    },
-    /// The blob is stored completely.
-    Complete {
-        /// The size of the blob.
-        size: u64,
-    },
-}
-
-/// Debug tool to exit the process in the middle of a write transaction, for testing.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessExit {
-    pub code: i32,
-}
-
-/// A scope for a write operation.
-#[derive(
-    Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
-)]
-pub struct Scope(pub(crate) u64);
-
-impl Scope {
-    pub const GLOBAL: Self = Self(0);
-}
-
-impl std::fmt::Debug for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "Global")
-        } else {
-            f.debug_tuple("Scope").field(&self.0).finish()
-        }
     }
 }

@@ -312,7 +312,7 @@ pub async fn handle_get(
             let hash_seq = match &hash_seq {
                 Some(b) => b,
                 None => {
-                    let bytes = store.export_bytes(hash).await?;
+                    let bytes = store.get_bytes(hash).await?;
                     let hs = HashSeq::try_from(bytes)?;
                     hash_seq = Some(hs);
                     hash_seq.as_ref().unwrap()

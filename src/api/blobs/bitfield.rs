@@ -10,7 +10,7 @@ use crate::store::util::{
     observer::{Combine, CombineInPlace},
 };
 
-pub fn is_validated(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
+pub(crate) fn is_validated(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
     let size = size.get();
     // ChunkNum::chunks will be at least 1, so this is safe.
     let last_chunk = ChunkNum::chunks(size) - 1;

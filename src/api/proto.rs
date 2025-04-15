@@ -14,7 +14,7 @@
 //! The file system store is quite complex and optimized, so to get started take a look at
 //! the much simpler memory store.
 use std::{
-    fmt::Debug,
+    fmt::{self, Debug},
     io,
     num::NonZeroU64,
     ops::{Bound, RangeBounds},
@@ -32,10 +32,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     blobs::{
-        self, Bitfield, BlobStatus, EncodedItem, ExportMode, ExportProgress, ImportMode,
-        ImportProgress, Scope,
+        Bitfield, EncodedItem,
     },
-    tags::{self, TagInfo},
+    tags::TagInfo,
 };
 use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
 
@@ -99,7 +98,7 @@ pub enum Request {
     #[rpc(tx = spsc::Sender<Bitfield>)]
     Observe(ObserveRequest),
     #[rpc(tx = oneshot::Sender<BlobStatus>)]
-    GetBlobStatus(BlobStatusRequest),
+    BlobStatus(BlobStatusRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
     ImportBytes(ImportBytesRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
@@ -113,7 +112,7 @@ pub enum Request {
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SetTag(SetTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    DeleteTags(TagsDeleteRequest),
+    DeleteTags(DeleteTagsRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     RenameTag(RenameTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
@@ -169,6 +168,16 @@ pub struct ImportBytesRequest {
     pub data: Bytes,
     pub format: BlobFormat,
     pub scope: Scope,
+}
+
+impl fmt::Debug for ImportBytesRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportBytes")
+            .field("data", &self.data.len())
+            .field("format", &self.format)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -349,14 +358,14 @@ pub struct RenameTagRequest {
 
 /// Options for a delete operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TagsDeleteRequest {
+pub struct DeleteTagsRequest {
     /// Optional from tag (inclusive)
     pub from: Option<Tag>,
     /// Optional to tag (exclusive)
     pub to: Option<Tag>,
 }
 
-impl TagsDeleteRequest {
+impl DeleteTagsRequest {
     /// Delete a single tag
     pub fn single(name: &[u8]) -> Self {
         let name = Tag::from(name);
@@ -396,4 +405,213 @@ pub struct SetTagRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTagRequest {
     pub value: HashAndFormat,
+}
+
+/// Debug tool to exit the process in the middle of a write transaction, for testing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessExitRequest {
+    pub code: i32,
+}
+
+/// Progress events for importing from any local source.
+///
+/// For sources with known size such as blobs or files, you will get the events
+/// in the following order:
+///
+/// Size -> CopyProgress(*n) -> CopyDone -> OutboardProgress(*n) -> Done
+///
+/// For sources with unknown size such as streams, you will get the events
+/// in the following order:
+///
+/// CopyProgress(*n) -> Size -> CopyDone -> OutboardProgress(*n) -> Done
+///
+/// Errors can happen at any time, and will be reported as an `Error` event.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ImportProgress {
+    /// Progress copying the file into the data directory.
+    ///
+    /// On most modern systems, copying will be done with copy on write,
+    /// so copying will be instantaneous and you won't get any of these.
+    ///
+    /// The number is the *byte offset* of the copy process.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
+    CopyProgress(u64),
+    /// Size of the file or stream has been determined.
+    ///
+    /// For some input such as blobs or files, the size is immediately known.
+    /// For other inputs such as streams, the size is determined by reading
+    /// the stream to the end.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    Size(u64),
+    /// The copy part of the import operation is done.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    CopyDone,
+    /// Progress computing the outboard and root hash of the imported data.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
+    OutboardProgress(u64),
+    /// The import is done. Once you get this event the data is available
+    /// and protected in the store via the temp tag.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was successful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Done(TempTag),
+    /// The import failed with an error. Partial data will be deleted.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was unsuccessful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Error(#[serde(with = "crate::util::serde::io_error_serde")] io::Error),
+}
+
+impl From<io::Error> for ImportProgress {
+    fn from(e: io::Error) -> Self {
+        Self::Error(e)
+    }
+}
+
+/// Progress events for exporting to a local file.
+///
+/// Exporting does not involve outboard computation, so the events are simpler
+/// than [`ImportProgress`].
+///
+/// Size -> CopyProgress(*n) -> Done
+///
+/// Errors can happen at any time, and will be reported as an `Error` event.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ExportProgress {
+    /// The size of the file being exported.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    Size(u64),
+    /// Progress copying the file to the target directory.
+    ///
+    /// On many modern systems, copying will be done with copy on write,
+    /// so copying will be instantaneous and you won't get any of these.
+    ///
+    /// This is an ephemeral progress event, so you can't rely on getting
+    /// regular updates.
+    CopyProgress(u64),
+    /// The export is done. Once you get this event the data is available.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was successful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Done,
+    /// The export failed with an error.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these if the operation was unsuccessful.
+    ///
+    /// This is one of the two possible final events. After this event, there
+    /// won't be any more progress events.
+    Error(super::Error),
+}
+
+impl From<super::Error> for ExportProgress {
+    fn from(e: super::Error) -> Self {
+        Self::Error(e)
+    }
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ImportMode {
+    /// This mode will copy the file into the database before hashing.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been imported.
+    #[default]
+    Copy,
+    /// This mode will try to reference the file in place and assume it is unchanged after import.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified after it has been imported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
+}
+
+/// The import mode describes how files will be imported.
+///
+/// This is a hint to the import trait method. For some implementations, this
+/// does not make any sense. E.g. an in memory implementation will always have
+/// to copy the file into memory. Also, a disk based implementation might choose
+/// to copy small files even if the mode is `Reference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum ExportMode {
+    /// This mode will copy the file to the target directory.
+    ///
+    /// This is the safe default because the file can not be accidentally modified
+    /// after it has been exported.
+    #[default]
+    Copy,
+    /// This mode will try to move the file to the target directory and then reference it from
+    /// the database.
+    ///
+    /// This has a large performance and storage benefit, but it is less safe since
+    /// the file might be modified in the target directory after it has been exported.
+    ///
+    /// Stores are allowed to ignore this mode and always copy the file, e.g.
+    /// if the file is very small or if the store does not support referencing files.
+    TryReference,
+}
+
+
+/// Status information about a blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlobStatus {
+    /// The blob is not stored at all.
+    NotFound,
+    /// The blob is only stored partially.
+    Partial {
+        /// The size of the currently stored partial blob.
+        size: Option<u64>,
+    },
+    /// The blob is stored completely.
+    Complete {
+        /// The size of the blob.
+        size: u64,
+    },
+}
+
+/// A scope for a write operation.
+#[derive(
+    Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
+)]
+pub struct Scope(pub(crate) u64);
+
+impl Scope {
+    pub const GLOBAL: Self = Self(0);
+}
+
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "Global")
+        } else {
+            f.debug_tuple("Scope").field(&self.0).finish()
+        }
+    }
 }

@@ -7,13 +7,7 @@ use tracing::Span;
 
 use super::{ActorResult, ReadOnlyTables};
 use crate::{
-    Hash,
-    api::{
-        blobs::ProcessExit,
-        proto::{ClearProtectedMsg, DeleteBlobsMsg, GetBlobStatusMsg, ShutdownMsg, SyncDbMsg},
-    },
-    store::{fs::entry_state::EntryState, util::DD},
-    util::channel::oneshot,
+    api::proto::{BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ProcessExitRequest, ShutdownMsg, SyncDbMsg}, store::{fs::entry_state::EntryState, util::DD}, util::channel::oneshot, Hash
 };
 
 /// Get the entry state for a hash.
@@ -107,7 +101,7 @@ pub enum ReadOnlyCommand {
     Dump(Dump),
     ListTags(ListTagsMsg),
     ClearProtected(ClearProtectedMsg),
-    GetBlobStatus(GetBlobStatusMsg),
+    GetBlobStatus(BlobStatusMsg),
 }
 
 impl ReadOnlyCommand {
@@ -138,7 +132,7 @@ pub enum ReadWriteCommand {
     DeleteTags(DeleteTagsMsg),
     RenameTag(RenameTagMsg),
     CreateTag(CreateTagMsg),
-    ProcessExit(ProcessExit),
+    ProcessExit(ProcessExitRequest),
 }
 
 impl ReadWriteCommand {

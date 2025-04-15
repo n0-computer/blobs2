@@ -19,7 +19,7 @@ use crate::{
         self,
         blobs::BlobStatus,
         proto::{
-            BlobDeleteRequest, BlobStatusRequest, ClearProtectedMsg, CreateTagRequest, DeleteBlobsMsg, GetBlobStatusMsg, ListBlobsMsg, ListRequest, ListTagsRequest, RenameTagRequest, SetTagRequest, ShutdownMsg, SyncDbMsg, TagsDeleteRequest,
+            BlobDeleteRequest, BlobStatusRequest, ClearProtectedMsg, CreateTagRequest, DeleteBlobsMsg, BlobStatusMsg, ListBlobsMsg, ListRequest, ListTagsRequest, RenameTagRequest, SetTagRequest, ShutdownMsg, SyncDbMsg, DeleteTagsRequest,
         },
         tags::TagInfo,
     },
@@ -179,11 +179,11 @@ async fn handle_clear_protected(
 }
 
 async fn handle_get_blob_status(
-    msg: GetBlobStatusMsg,
+    msg: BlobStatusMsg,
     tables: &impl ReadableTables,
 ) -> ActorResult<()> {
     trace!("{msg:?}");
-    let GetBlobStatusMsg {
+    let BlobStatusMsg {
         inner: BlobStatusRequest { hash },
         tx,
         ..
@@ -510,7 +510,7 @@ impl Actor {
     async fn delete_tags(tables: &mut Tables<'_>, cmd: DeleteTagsMsg) -> ActorResult<()> {
         trace!("{cmd:?}");
         let DeleteTagsMsg {
-            inner: TagsDeleteRequest { from, to },
+            inner: DeleteTagsRequest { from, to },
             tx,
             ..
         } = cmd;

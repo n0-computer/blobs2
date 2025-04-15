@@ -7,11 +7,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BlobFormat, Hash,
-    api::{Store, blobs::Scope, proto::ImportBytesRequest},
-    get::{Stats, fsm},
-    hashseq::HashSeq,
-    util::temp_tag::TempTag,
+    api::{blobs::AddBytesOptions, Store}, get::{fsm, Stats}, hashseq::HashSeq, util::temp_tag::TempTag, BlobFormat, Hash
 };
 
 /// A collection of blobs
@@ -71,7 +67,7 @@ pub trait SimpleStore {
 
 impl SimpleStore for crate::api::Store {
     async fn load(&self, hash: Hash) -> anyhow::Result<Bytes> {
-        Ok(self.export_bytes(hash).await?)
+        Ok(self.get_bytes(hash).await?)
     }
 }
 
@@ -195,10 +191,9 @@ impl Collection {
             .chain(links)
             .collect::<HashSeq>();
         let links_tag = db
-            .add_bytes_with_opts(ImportBytesRequest {
+            .add_bytes_with_opts(AddBytesOptions {
                 data: links_bytes.into(),
                 format: BlobFormat::HashSeq,
-                scope: Scope::GLOBAL,
             })
             .temp_tag()
             .await?;

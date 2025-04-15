@@ -42,7 +42,7 @@ use super::{
 use crate::{
     api::{
         self, blobs::{Bitfield, ExportProgress, ImportProgress}, proto::{
-            TagsDeleteRequest,
+            DeleteTagsRequest,
             BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, DeleteTagsMsg, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest, ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg, ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, ListTagsMsg, ListTagsRequest, ObserveMsg, ObserveRequest, RenameTagMsg, RenameTagRequest, SetTagMsg, SetTagRequest, ShutdownMsg, SyncDbMsg
         }, tags::TagInfo, ApiClient
     }, store::{
@@ -146,7 +146,7 @@ impl Actor {
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
-                    inner: TagsDeleteRequest { from, to },
+                    inner: DeleteTagsRequest { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -253,7 +253,7 @@ impl Actor {
             Command::ListBlobs(_cmd) => {
                 todo!()
             }
-            Command::GetBlobStatus(_cmd) => {
+            Command::BlobStatus(_cmd) => {
                 todo!()
             }
             Command::DeleteBlobs(_cmd) => {

@@ -35,7 +35,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let tt = blobs.add_bytes(expected.clone()).temp_tag().await?;
         let hash = *tt.hash();
         assert_eq!(hash, expected_hash);
-        let actual = blobs.export_bytes(hash).await?;
+        let actual = blobs.get_bytes(hash).await?;
         assert_eq!(actual, expected);
     }
 

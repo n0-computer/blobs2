@@ -220,7 +220,7 @@ impl Store {
                     Request::ListTempTags(msg) => local.send((msg, tx)),
                     Request::CreateTempTag(msg) => local.send((msg, tx)),
 
-                    Request::GetBlobStatus(msg) => local.send((msg, tx)),
+                    Request::BlobStatus(msg) => local.send((msg, tx)),
 
                     Request::ImportBytes(msg) => local.send((msg, tx)),
                     Request::ImportByteStream(msg) => local.send((msg, tx)),

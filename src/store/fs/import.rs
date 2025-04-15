@@ -34,19 +34,14 @@ use tracing::{instrument, trace};
 
 use super::{TaskContext, meta::raw_outboard_size, options::Options};
 use crate::{
-    BlobFormat, Hash,
     api::{
-        blobs::{ImportMode, ImportProgress, Scope},
+        blobs::{ImportMode, ImportProgress},
         proto::{
-            HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportBytesMsg,
-            ImportBytesRequest, ImportPathMsg, ImportPathRequest, StoreService,
+            HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, Scope, StoreService
         },
-    },
-    store::{
-        IROH_BLOCK_SIZE,
-        util::{DD, MemOrFile},
-    },
-    util::outboard_with_progress::{Progress, init_outboard},
+    }, store::{
+        util::{MemOrFile, DD}, IROH_BLOCK_SIZE
+    }, util::outboard_with_progress::{init_outboard, Progress}, BlobFormat, Hash
 };
 
 /// An import source.

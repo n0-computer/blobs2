@@ -297,7 +297,7 @@ impl Download {
         let at_closing = match next_child {
             Ok(at_start_child) => {
                 let mut next_child = Ok(at_start_child);
-                let hash_seq = HashSeq::try_from(store.export_bytes(root).await?)?;
+                let hash_seq = HashSeq::try_from(store.get_bytes(root).await?)?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -551,7 +551,7 @@ impl LazyHashSeq {
             .await?;
         // return the hash if it is in the chunk, otherwise we are behind the end
         let hs = HashSeqChunk::try_from(leaf)?;
-        Ok(hs.get(child_offset).inspect(|hash| {
+        Ok(hs.get(child_offset).inspect(|_hash| {
             self.current_chunk = Some(hs);
         }))
     }

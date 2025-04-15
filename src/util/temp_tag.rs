@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Scope};
+use crate::{BlobFormat, Hash, HashAndFormat, api::proto::Scope};
 
 /// An ephemeral, in-memory tag that protects content while the process is running.
 ///

@@ -96,17 +96,14 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        ApiClient,
-        blobs::{Scope, is_validated},
-        proto::{
+        blobs::bitfield::is_validated, proto::{
             self, BatchMsg, BatchResponse, Command, CreateTempTagMsg, ExportBaoMsg,
             ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
-            ImportBaoRequest, ObserveMsg,
-        },
+            ImportBaoRequest, ObserveMsg, Scope,
+        }, ApiClient
     },
     store::{
-        Hash,
-        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
+        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned}, Hash
     },
     util::{
         channel::{mpsc, oneshot},
@@ -500,7 +497,7 @@ impl Actor {
                 self.clear_dead_handles().await;
                 self.db().send(cmd.into()).await.ok();
             }
-            Command::GetBlobStatus(cmd) => {
+            Command::BlobStatus(cmd) => {
                 trace!("{cmd:?}");
                 self.db().send(cmd.into()).await.ok();
             }
@@ -1330,7 +1327,7 @@ pub mod tests {
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
-            let actual = store.export_bytes(expected_hash).await?;
+            let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
         }
@@ -1354,7 +1351,7 @@ pub mod tests {
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
-            let actual = store.export_bytes(expected_hash).await?;
+            let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
         }
@@ -1380,7 +1377,7 @@ pub mod tests {
             let obs = store.observe(expected_hash).aggregated().await?;
             let tt = store.add_bytes(expected.clone()).temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
-            let actual = store.export_bytes(expected_hash).await?;
+            let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
             assert_eq!(
@@ -1415,7 +1412,7 @@ pub mod tests {
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
-            let actual = store.export_bytes(expected_hash).await?;
+            let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual, "size={size}");
         }

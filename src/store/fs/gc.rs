@@ -199,10 +199,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        BlobFormat,
-        api::{Store, blobs::Scope, proto::ImportBytesRequest},
-        hashseq::HashSeq,
-        store::fs::{options::PathOptions, tests::create_n0_bao},
+        api::{blobs::{AddBytesOptions}, Store}, hashseq::HashSeq, store::fs::{options::PathOptions, tests::create_n0_bao}, BlobFormat
     };
 
     async fn gc_smoke(_path: &Path, store: &Store) -> TestResult<()> {
@@ -224,19 +221,17 @@ mod tests {
         store.tags().set("c", *ct.hash_and_format()).await?;
         let dehs = [d, e].into_iter().collect::<HashSeq>();
         let hehs = blobs
-            .add_bytes_with_opts(ImportBytesRequest {
+            .add_bytes_with_opts(AddBytesOptions {
                 data: dehs.into(),
                 format: BlobFormat::HashSeq,
-                scope: Scope::GLOBAL,
             })
             .temp_tag()
             .await?;
         let fghs = [f, g].into_iter().collect::<HashSeq>();
         let fghs = blobs
-            .add_bytes_with_opts(ImportBytesRequest {
+            .add_bytes_with_opts(AddBytesOptions {
                 data: fghs.into(),
                 format: BlobFormat::HashSeq,
-                scope: Scope::GLOBAL,
             })
             .temp_tag()
             .await?;

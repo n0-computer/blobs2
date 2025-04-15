@@ -12,7 +12,7 @@ use super::ApiClient;
 use crate::{api::proto::ListTempTagsRequest, store::util::Tag, BlobFormat, Hash, HashAndFormat};
 pub use super::proto::CreateTagRequest as CreateOptions;
 pub use super::proto::ListTagsRequest as ListOptions;
-pub use super::proto::TagsDeleteRequest as DeleteOptions;
+pub use super::proto::DeleteTagsRequest as DeleteOptions;
 pub use super::proto::SetTagRequest as SetOptions;
 pub use super::proto::RenameTagRequest as RenameOptions;
 
