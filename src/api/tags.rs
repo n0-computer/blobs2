@@ -5,53 +5,21 @@ use std::ops::RangeBounds;
 
 use n0_future::{Stream, StreamExt};
 use ref_cast::RefCast;
-use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::ApiClient;
-use crate::{api::proto::ListTempTagsRequest, store::util::Tag, BlobFormat, Hash, HashAndFormat};
+use super::{ApiClient, Tag};
+use crate::{api::proto::ListTempTagsRequest, HashAndFormat};
 pub use super::proto::CreateTagRequest as CreateOptions;
 pub use super::proto::ListTagsRequest as ListOptions;
 pub use super::proto::DeleteTagsRequest as DeleteOptions;
 pub use super::proto::SetTagRequest as SetOptions;
 pub use super::proto::RenameTagRequest as RenameOptions;
+pub use super::proto::TagInfo;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {
     client: ApiClient,
-}
-
-/// Information about a tag.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TagInfo {
-    /// Name of the tag
-    pub name: Tag,
-    /// Format of the data
-    pub format: BlobFormat,
-    /// Hash of the data
-    pub hash: Hash,
-}
-
-impl TagInfo {
-    /// Create a new tag info.
-    pub fn new(name: impl AsRef<[u8]>, value: impl Into<HashAndFormat>) -> Self {
-        let name = name.as_ref();
-        let value = value.into();
-        Self {
-            name: Tag::from(name),
-            hash: value.hash,
-            format: value.format,
-        }
-    }
-
-    /// Get the hash and format of the tag.
-    pub fn hash_and_format(&self) -> HashAndFormat {
-        HashAndFormat {
-            hash: self.hash,
-            format: self.format,
-        }
-    }
 }
 
 impl Tags {

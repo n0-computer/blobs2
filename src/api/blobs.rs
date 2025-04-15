@@ -42,9 +42,7 @@ use crate::{
     store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
 };
-pub(crate) mod bitfield;
 pub use bao_tree::io::mixed::EncodedItem;
-pub use bitfield::Bitfield;
 pub mod download;
 use ref_cast::RefCast;
 
@@ -58,6 +56,7 @@ pub use super::proto::{
     ImportBaoRequest as ImportBaoOptions,
     ImportMode, ExportMode, ImportProgress, ExportProgress,
     BlobStatus,
+    Bitfield,
 };
 
 #[derive(Debug)]

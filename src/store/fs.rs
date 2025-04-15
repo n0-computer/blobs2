@@ -96,7 +96,7 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        blobs::bitfield::is_validated, proto::{
+        proto::bitfield::is_validated, proto::{
             self, BatchMsg, BatchResponse, Command, CreateTempTagMsg, ExportBaoMsg,
             ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
             ImportBaoRequest, ObserveMsg, Scope,

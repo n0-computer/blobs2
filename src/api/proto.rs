@@ -23,19 +23,14 @@ use std::{
 };
 
 use arrayvec::ArrayString;
-use bao_tree::{ChunkRanges, io::BaoContentItem};
+use bao_tree::{io::{mixed::EncodedItem, BaoContentItem}, ChunkRanges};
 use bytes::Bytes;
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
 use n0_future::Stream;
 use serde::{Deserialize, Serialize};
-
-use super::{
-    blobs::{
-        Bitfield, EncodedItem,
-    },
-    tags::TagInfo,
-};
+pub(crate) mod bitfield;
+pub use bitfield::Bitfield;
 use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) trait HashSpecific {
@@ -316,6 +311,39 @@ impl ListTagsRequest {
         }
     }
 }
+
+/// Information about a tag.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagInfo {
+    /// Name of the tag
+    pub name: Tag,
+    /// Format of the data
+    pub format: BlobFormat,
+    /// Hash of the data
+    pub hash: Hash,
+}
+
+impl TagInfo {
+    /// Create a new tag info.
+    pub fn new(name: impl AsRef<[u8]>, value: impl Into<HashAndFormat>) -> Self {
+        let name = name.as_ref();
+        let value = value.into();
+        Self {
+            name: Tag::from(name),
+            hash: value.hash,
+            format: value.format,
+        }
+    }
+
+    /// Get the hash and format of the tag.
+    pub fn hash_and_format(&self) -> HashAndFormat {
+        HashAndFormat {
+            hash: self.hash,
+            format: self.format,
+        }
+    }
+}
+
 
 pub(crate) fn tags_from_range<R, E>(range: R) -> (Option<Tag>, Option<Tag>)
 where
