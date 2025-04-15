@@ -1,4 +1,8 @@
-//! The server side API
+//! The low level server side API
+//!
+//! Note that while using this API directly is fine, the standard way
+//! to provide data is to just register a [`crate::net_protocol`] protocol
+//! handler with an [`iroh::Endpoint`](iroh::protocol::Router).
 use std::{fmt::Debug, time::Duration};
 
 use anyhow::{Context, Result};
@@ -114,7 +118,7 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
     Ok((request, payload.len()))
 }
 
-/// Wrapper for a quinn::SendStream with additional per request information.
+/// Wrapper for a [`quinn::SendStream`] with additional per request information.
 #[derive(Debug)]
 pub struct ProgressWriter {
     /// The quinn::SendStream to write to
@@ -130,7 +134,7 @@ pub struct ProgressWriter {
     /// The number of bytes read from the stream
     bytes_read: u64,
     /// The progress sender to send events to
-    progress: ProgressSender,
+    progress: EventSender,
 }
 
 impl ProgressWriter {
@@ -212,7 +216,7 @@ impl ProgressWriter {
 pub async fn handle_connection(
     connection: endpoint::Connection,
     store: Store,
-    progress: ProgressSender,
+    progress: EventSender,
 ) {
     let connection_id = connection.stable_id() as u64;
     let span = debug_span!("connection", connection_id);
@@ -366,19 +370,19 @@ impl LazyEvent for Event {
 
 /// A sender for provider events.
 #[derive(Debug, Clone)]
-pub struct ProgressSender(ProgressSenderInner);
+pub struct EventSender(EventSenderInner);
 
 #[derive(Debug, Clone)]
-enum ProgressSenderInner {
+enum EventSenderInner {
     Disabled,
     Enabled(mpsc::Sender<Event>),
 }
 
-impl ProgressSender {
+impl EventSender {
     pub fn new(sender: Option<mpsc::Sender<Event>>) -> Self {
         match sender {
-            Some(sender) => Self(ProgressSenderInner::Enabled(sender)),
-            None => Self(ProgressSenderInner::Disabled),
+            Some(sender) => Self(EventSenderInner::Enabled(sender)),
+            None => Self(EventSenderInner::Disabled),
         }
     }
 
@@ -387,11 +391,11 @@ impl ProgressSender {
     /// The event will only be created if the sender is enabled.
     pub fn try_send(&self, event: impl LazyEvent) {
         match &self.0 {
-            ProgressSenderInner::Enabled(sender) => {
+            EventSenderInner::Enabled(sender) => {
                 let value = event.call();
                 sender.try_send(value).ok();
             }
-            ProgressSenderInner::Disabled => {}
+            EventSenderInner::Disabled => {}
         }
     }
 
@@ -400,13 +404,13 @@ impl ProgressSender {
     /// The event only be created if the sender is enabled.
     pub async fn send(&self, event: impl LazyEvent) {
         match &self.0 {
-            ProgressSenderInner::Enabled(sender) => {
+            EventSenderInner::Enabled(sender) => {
                 let value = event.call();
                 if let Err(err) = sender.send(value).await {
                     error!("failed to send progress event: {:?}", err);
                 }
             }
-            ProgressSenderInner::Disabled => {}
+            EventSenderInner::Disabled => {}
         }
     }
 }

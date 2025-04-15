@@ -15,6 +15,7 @@ pub use super::proto::{
 use super::{ApiClient, Tag};
 use crate::{HashAndFormat, api::proto::ListTempTagsRequest};
 
+/// The API for interacting with tags and temp tags.
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Tags {

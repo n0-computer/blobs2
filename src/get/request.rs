@@ -1,4 +1,11 @@
-//! Utilities for complex get requests.
+//! Utilities to generate or execute complex get requests without persisting to a store.
+//! 
+//! Any complex request can be executed with downloading to a store, using the
+//! [`crate::api::download::Download::execute`] method. But for some requests it
+//! is useful to just get the data without persisting it to a store.
+//!
+//! In addition to these utilities, there are also constructors in [`crate::protocol::RangeSpecSeq`]
+//! to construct complex requests.
 use std::{
     pin::Pin,
     sync::Arc,
@@ -21,8 +28,21 @@ use crate::{
     protocol::{GetRequest, RangeSpecSeq},
 };
 
+/// Result of a [`get_blob`] request.
+///
+/// This is a stream of [`GetBlobItem`]s. You can also await it to get just
+/// the bytes of the blob.
 pub struct GetBlobResult {
     rx: n0_future::stream::Boxed<GetBlobItem>,
+}
+
+impl IntoFuture for GetBlobResult {
+    type Output = anyhow::Result<Bytes>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.bytes())
+    }
 }
 
 impl GetBlobResult {
@@ -72,11 +92,15 @@ impl Stream for GetBlobResult {
     }
 }
 
+/// A single item in a [`GetBlobResult`].
 #[derive(Debug)]
 #[enum_conversions()]
 pub enum GetBlobItem {
+    /// Content
     Item(BaoContentItem),
+    /// Request completed successfully
     Done(Stats),
+    /// Request failed
     Error(anyhow::Error),
 }
 
@@ -192,12 +216,15 @@ pub async fn get_verified_size(
 /// Given a hash of a hash seq, get the hash seq and the verified sizes of its
 /// children.
 ///
+/// If this operation succeeds we have a strong indication that the peer has
+/// the hash seq and the last chunk of each child.
+///
 /// This can be used to compute the total size when requesting a hash seq.
 pub async fn get_hash_seq_and_sizes(
     connection: &Connection,
     hash: &Hash,
     max_size: u64,
-    progress: Option<mpsc::Sender<u64>>,
+    _progress: Option<mpsc::Sender<u64>>,
 ) -> anyhow::Result<(HashSeq, Arc<[u64]>)> {
     let content = HashAndFormat::hash_seq(*hash);
     tracing::debug!("Getting hash seq and children sizes of {}", content);
@@ -249,7 +276,15 @@ pub async fn get_hash_seq_and_sizes(
 
 /// Probe for a single chunk of a blob.
 ///
-/// This is used to check if a peer has a specific chunk.
+/// This is used to check if a peer has a specific chunk. If the operation
+/// is successful, we have a strong indication that the peer had the chunk at
+/// the time of the request.
+///
+/// If the operation fails, either the connection failed or the peer did not
+/// have the chunk.
+///
+/// It is usually not very helpful to try to distinguish between these two
+/// cases.
 pub async fn get_chunk_probe(
     connection: &Connection,
     hash: &Hash,

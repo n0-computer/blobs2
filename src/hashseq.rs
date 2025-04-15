@@ -1,4 +1,4 @@
-//! traits related to collections of blobs
+//! Helpers for blobs that contain a sequence of hashes.
 use std::{fmt::Debug, io};
 
 use bytes::Bytes;

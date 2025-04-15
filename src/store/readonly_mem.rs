@@ -1,4 +1,4 @@
-//! A readonly in-memory store implementation.
+//! Readonly in-memory store.
 //!
 //! This can only serve data that is provided at creation time. It is much simpler
 //! than the mutable in-memory store and the file system store, and can serve as a

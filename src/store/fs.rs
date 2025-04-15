@@ -1274,7 +1274,7 @@ pub mod tests {
                 let mut agg = obs.aggregated().await?;
                 while let Some(_delta) = agg.next().await {
                     let state = agg.state();
-                    println!("{:?} complete={}", state, state.is_complete());
+                    trace!("{:?} complete={}", state, state.is_complete());
                     if state.is_complete() {
                         break;
                     }
@@ -1344,12 +1344,12 @@ pub mod tests {
         let db_dir = testdir.path().join("db");
         let store = FsStore::load(&db_dir).await?;
         let sizes = INTERESTING_SIZES;
-        println!("{}", Options::new(&db_dir).is_inlined_data(16385));
+        trace!("{}", Options::new(&db_dir).is_inlined_data(16385));
         for size in sizes {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
+            let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1377,7 +1377,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
+            let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
@@ -1410,7 +1410,7 @@ pub mod tests {
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash).aggregated().await?;
-            let tt = store.add_path(&path).temp_tag().await?;
+            let tt = store.add_path(&path).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
             await_completion(obs).await;
@@ -1432,10 +1432,10 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let tt = store.add_bytes(expected.clone()).temp_tag().await?;
+            let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             let out_path = testdir.path().join(format!("out-{}", size));
-            store.export(expected_hash, &out_path).finish().await?;
+            store.export(expected_hash, &out_path).await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
         }
@@ -1497,7 +1497,7 @@ pub mod tests {
                 let data = vec![0u8; size];
                 let (hash, encoded) = create_n0_bao(&data, &ChunkRanges::all())?;
                 let data = Bytes::from(encoded);
-                println!("importing size={}", size);
+                trace!("importing size={}", size);
                 store
                     .import_bao_bytes(hash, ChunkRanges::all(), data)
                     .await?;
@@ -1755,12 +1755,7 @@ pub mod tests {
                 let Some(_) = stream.next().await else {
                     panic!("no update");
                 };
-                println!(
-                    "expected={:?} actual={:?}",
-                    expected_ranges,
-                    stream.state().ranges
-                );
-                // assert_eq!(stream.state().ranges, expected_ranges, "size={}", size);
+                assert_eq!(stream.state().ranges, expected_ranges, "size={}", size);
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1776,10 +1771,11 @@ pub mod tests {
         let db_dir = testdir.path().join("db");
         {
             let store = FsStore::load(&db_dir).await?;
+            let mut tts = Vec::new();
             for size in sizes {
                 let data = test_data(size);
                 let data = data;
-                store.add_bytes(data.clone()).temp_tag().await?;
+                tts.push(store.add_bytes(data.clone()).await?);
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1866,7 +1862,7 @@ pub mod tests {
         for tt in &hashes {
             let hash = *tt.hash();
             let path = testdir.path().join(format!("{hash}.txt"));
-            store.export(hash, path).finish().await?;
+            store.export(hash, path).await?;
         }
         for tt in &hashes {
             let hash = tt.hash();

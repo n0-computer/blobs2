@@ -13,6 +13,7 @@ use tags::Tags;
 pub mod blobs;
 pub mod proto;
 pub mod tags;
+pub mod download;
 pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) type ApiClient = irpc::Client<proto::Command, proto::Request, proto::StoreService>;
@@ -173,6 +174,7 @@ impl std::error::Error for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The main entry point for the store API.
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Store {
@@ -196,6 +198,10 @@ impl Store {
     /// The blobs API.
     pub fn blobs(&self) -> &blobs::Blobs {
         blobs::Blobs::ref_from_sender(&self.client)
+    }
+
+    pub fn download(&self) -> &download::Download {
+        download::Download::ref_from_sender(&self.client)
     }
 
     /// Connect to a remote store as a rpc client.

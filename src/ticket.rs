@@ -22,6 +22,15 @@ pub struct BlobTicket {
     hash: Hash,
 }
 
+impl Into<HashAndFormat> for BlobTicket {
+    fn into(self) -> HashAndFormat {
+        HashAndFormat {
+            hash: self.hash,
+            format: self.format,
+        }
+    }
+}
+
 /// Wire format for [`BlobTicket`].
 ///
 /// In the future we might have multiple variants (not versions, since they
@@ -95,8 +104,8 @@ impl FromStr for BlobTicket {
 
 impl BlobTicket {
     /// Creates a new ticket.
-    pub fn new(node: NodeAddr, hash: Hash, format: BlobFormat) -> Result<Self> {
-        Ok(Self { hash, format, node })
+    pub fn new(node: NodeAddr, hash: Hash, format: BlobFormat) -> Self {
+        Self { hash, format, node }
     }
 
     /// The hash of the item this ticket can retrieve.
@@ -151,7 +160,7 @@ impl<'de> Deserialize<'de> for BlobTicket {
             Self::from_str(&s).map_err(serde::de::Error::custom)
         } else {
             let (peer, format, hash) = Deserialize::deserialize(deserializer)?;
-            Self::new(peer, hash, format).map_err(serde::de::Error::custom)
+            Ok(Self::new(peer, hash, format))
         }
     }
 }

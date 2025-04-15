@@ -21,7 +21,7 @@ use bao_tree::{
     },
 };
 use bytes::Bytes;
-use download::{Download, HashSeqChunk};
+use super::download::HashSeqChunk;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::{
@@ -48,7 +48,6 @@ use crate::{
     store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
 };
-pub mod download;
 use ref_cast::RefCast;
 
 // Public reexports from the proto module.
@@ -62,6 +61,7 @@ pub use super::proto::{
     ObserveRequest as ObserveOptions,
 };
 
+/// Options for adding bytes.
 #[derive(Debug)]
 pub struct AddBytesOptions {
     pub data: Bytes,
@@ -78,6 +78,7 @@ impl<T: Into<Bytes>> From<(T, BlobFormat)> for AddBytesOptions {
     }
 }
 
+/// Blobs API
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
 pub struct Blobs {
@@ -87,10 +88,6 @@ pub struct Blobs {
 impl Blobs {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
-    }
-
-    pub fn download(&self) -> &Download {
-        Download::ref_from_sender(&self.client)
     }
 
     pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
@@ -134,7 +131,7 @@ impl Blobs {
         .await
     }
 
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddResult {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
@@ -143,7 +140,7 @@ impl Blobs {
         self.add_bytes_impl(options)
     }
 
-    pub fn add_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
+    pub fn add_bytes(&self, data: impl Into<bytes::Bytes>) -> AddResult {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
@@ -152,7 +149,7 @@ impl Blobs {
         self.add_bytes_impl(options)
     }
 
-    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> ImportResult {
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddResult {
         let options = options.into();
         let request = ImportBytesRequest {
             data: options.data,
@@ -162,10 +159,10 @@ impl Blobs {
         self.add_bytes_impl(request)
     }
 
-    fn add_bytes_impl(&self, options: ImportBytesRequest) -> ImportResult {
+    fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddResult {
         trace!("{options:?}");
         let request = self.client.request();
-        ImportResult::new(self, async move {
+        AddResult::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -181,7 +178,7 @@ impl Blobs {
         })
     }
 
-    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> ImportResult {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddResult {
         let options = options.into();
         self.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
@@ -191,10 +188,10 @@ impl Blobs {
         })
     }
 
-    fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> ImportResult {
+    fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddResult {
         trace!("{:?}", options);
         let request = self.client.request();
-        ImportResult::new(self, async move {
+        AddResult::new(self, async move {
             Ok(match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -209,7 +206,7 @@ impl Blobs {
         })
     }
 
-    pub fn add_path(&self, path: impl AsRef<Path>) -> ImportResult {
+    pub fn add_path(&self, path: impl AsRef<Path>) -> AddResult {
         self.add_path_with_opts(AddPathOptions {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
@@ -220,14 +217,14 @@ impl Blobs {
     pub async fn add_stream(
         &self,
         data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
-    ) -> ImportResult {
+    ) -> AddResult {
         self.add_stream_impl(Box::pin(data)).await
     }
 
     async fn add_stream_impl(
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
-    ) -> ImportResult {
+    ) -> AddResult {
         let data = data
             .collect::<Vec<_>>()
             .await
@@ -240,7 +237,7 @@ impl Blobs {
             scope: Scope::default(),
         };
         let request = self.client.request();
-        ImportResult::new(self, async move {
+        AddResult::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -519,6 +516,7 @@ impl Blobs {
     }
 }
 
+/// A batch of operations that modify the blob store.
 pub struct Batch<'a> {
     scope: Scope,
     blobs: &'a Blobs,
@@ -526,7 +524,7 @@ pub struct Batch<'a> {
 }
 
 impl<'a> Batch<'a> {
-    pub fn add_bytes(&self, data: impl Into<Bytes>) -> ImportResult {
+    pub fn add_bytes(&self, data: impl Into<Bytes>) -> AddResult {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
@@ -535,7 +533,7 @@ impl<'a> Batch<'a> {
         self.blobs.add_bytes_impl(options)
     }
 
-    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> ImportResult {
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddResult {
         let options = options.into();
         self.blobs.add_bytes_impl(ImportBytesRequest {
             data: options.data,
@@ -544,7 +542,7 @@ impl<'a> Batch<'a> {
         })
     }
 
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> ImportResult {
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddResult {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
@@ -553,7 +551,7 @@ impl<'a> Batch<'a> {
         self.blobs.add_bytes_impl(options)
     }
 
-    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> ImportResult {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddResult {
         let options = options.into();
         self.blobs.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
@@ -573,6 +571,7 @@ impl<'a> Batch<'a> {
     }
 }
 
+/// Options for adding data from a file system path.
 #[derive(Debug)]
 pub struct AddPathOptions {
     pub path: PathBuf,
@@ -580,12 +579,32 @@ pub struct AddPathOptions {
     pub mode: ImportMode,
 }
 
-pub struct ImportResult<'a> {
+/// A lazy result of an import operation.
+///
+/// Internally this is a stream of [`ImportProgress`] items. Working with this
+/// stream directly can be inconvenient, so this struct provides some convenience
+/// methods to work with the result.
+/// 
+/// It also implements [`IntoFuture`], so you can await it to get the [`TempTag`] that
+/// contains the hash of the added content and also protects the content.
+///
+/// If you want access to the stream, you can use the [`AddResult::stream`] method.
+pub struct AddResult<'a> {
     blobs: &'a Blobs,
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ImportProgress>>>,
 }
 
-impl<'a> ImportResult<'a> {
+impl<'a> IntoFuture for AddResult<'a> {
+    type Output = RequestResult<TempTag>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.temp_tag())
+    }
+}
+
+impl<'a> AddResult<'a> {
     fn new(
         blobs: &'a Blobs,
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<ImportProgress>>> + Send + 'static,
@@ -700,8 +719,28 @@ impl ObserveResult {
     }
 }
 
+/// Lazy result of an export operation.
+///
+/// Internally this is a stream of [`ExportProgress`] items. Working with this
+/// stream directly can be inconvenient, so this struct provides some convenience
+/// methods to work with the result.
+/// 
+/// To get the underlying stream, use the [`ExportResult::stream`] method.
+///
+/// It also implements [`IntoFuture`], so you can await it to get the size of the
+/// exported blob.
 pub struct ExportResult {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ExportProgress>>>,
+}
+
+impl IntoFuture for ExportResult {
+    type Output = RequestResult<u64>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.finish())
+    }
 }
 
 impl ExportResult {
@@ -772,6 +811,8 @@ impl IntoFuture for ImportBaoResult {
         Box::pin(self.inner)
     }
 }
+
+/// Lazy result of a blobs list operation.
 pub struct BlobsListResult {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
 }
@@ -806,6 +847,13 @@ impl BlobsListResult {
     }
 }
 
+/// A lazy result of a bao export operation.
+///
+/// Internally, this is a stream of [`EncodedItem`]s. Using this stream directly
+/// is often inconvenient, so there are a number of higher level methods to
+/// process the stream.
+///
+/// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportBaoResult {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
 }

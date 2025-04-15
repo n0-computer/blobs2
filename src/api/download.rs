@@ -1,8 +1,26 @@
+//! Download API
+//! 
+//! The entry point is the [`Download`] struct.
 use n0_future::StreamExt;
 use ref_cast::RefCast;
 
 use crate::{api::ApiClient, get::Stats};
 
+/// API to compute request and to download from remote nodes.
+///
+/// Usually you want to first find out what, if any, data you have locally.
+/// This can be done using [`Download::local`], which inspects the local store
+/// and returns a [`LocalInfo`].
+///
+/// From this you can compute various values such as the number of locally present
+/// bytes. You can also compute a request to get the missing data using [`LocalInfo::missing`].
+///
+/// Once you have a request, you can execute it using [`Download::execute`].
+/// Executing a request will store to the local store, but otherwise does not take
+/// the available data into account.
+///
+/// If you are not interested in the details and just want your data, you can use
+/// [`Download::fetch`]. This will internally do the dance described above.
 #[derive(Debug, RefCast)]
 #[repr(transparent)]
 pub struct Download {
@@ -184,7 +202,7 @@ impl LocalInfo {
 }
 
 #[derive(Debug)]
-pub struct HashSeqLocalInfo {
+struct HashSeqLocalInfo {
     /// the available part of the hash sequence
     hash_seq: Vec<(u64, Hash)>,
     /// Bitfield for every hash in the hash sequence
@@ -248,6 +266,9 @@ impl Download {
     /// Get a blob or hash sequence from the given connection, taking the locally available
     /// ranges into account.
     ///
+    /// You can provide a progress channel to get updates on the download progress. This progress
+    /// is the aggregated number of downloaded payload bytes in the request.
+    ///
     /// This will return the stats of the download.
     pub async fn fetch(
         &self,
@@ -262,13 +283,20 @@ impl Download {
         }
         let request = local.missing();
         let stats = self
-            .execute_request(conn.connection().await?, request, progress)
+            .execute(conn.connection().await?, request, progress)
             .await?;
         Ok(stats)
     }
 
     /// Execute a get request *without* taking the locally available ranges into account.
-    pub async fn execute_request(
+    ///
+    /// You can provide a progress channel to get updates on the download progress. This progress
+    /// is the aggregated number of downloaded payload bytes in the request.
+    ///
+    /// This will download the data again even if the data is locally present.
+    ///
+    /// This will return the stats of the download.
+    pub async fn execute(
         &self,
         conn: Connection,
         request: GetRequest,
@@ -339,7 +367,6 @@ use iroh::{Endpoint, NodeAddr, endpoint::Connection};
 use irpc::channel::{SendError, spsc};
 use tracing::trace;
 
-use super::Bitfield;
 use crate::{
     BlobFormat, Hash, HashAndFormat,
     api::{self, Store, blobs::Blobs},
@@ -349,6 +376,8 @@ use crate::{
     store::IROH_BLOCK_SIZE,
     util::channel::mpsc,
 };
+
+use super::blobs::Bitfield;
 
 /// Trait to lazily get a connection
 pub trait GetConnection {
@@ -375,7 +404,7 @@ impl GetConnection for &Connection {
     }
 }
 
-pub struct Dialer {
+pub(crate) struct Dialer {
     endpoint: Endpoint,
     addr: NodeAddr,
     conn: Option<Connection>,
@@ -410,7 +439,7 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
     (size.get() / (IROH_BLOCK_SIZE.bytes() as u64) + 2).min(64) as usize
 }
 
-pub struct DownloadProgress {
+struct DownloadProgress {
     sender: Option<spsc::Sender<u64>>,
 }
 
@@ -470,14 +499,14 @@ async fn get_blob_ranges_impl(
 }
 
 #[derive(Debug)]
-pub struct LazyHashSeq {
+pub(crate) struct LazyHashSeq {
     blobs: Blobs,
     hash: Hash,
     current_chunk: Option<HashSeqChunk>,
 }
 
 #[derive(Debug)]
-pub struct HashSeqChunk {
+pub(crate) struct HashSeqChunk {
     /// the offset of the first hash in this chunk, in bytes
     offset: u64,
     /// the hashes in this chunk
@@ -575,7 +604,7 @@ mod tests {
         let blobs = store.blobs();
         let tt = blobs.add_slice(b"test").temp_tag().await?;
         let hash = *tt.hash();
-        let info = blobs.download().local(hash).await?;
+        let info = store.download().local(hash).await?;
         assert_eq!(info.content(), hash.into());
         assert_eq!(info.bitfield.ranges, ChunkRanges::all());
         assert_eq!(info.local_bytes(), 4);

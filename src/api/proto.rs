@@ -426,12 +426,14 @@ impl DeleteTagsRequest {
     }
 }
 
+/// Options for creating a tag or setting it to a new value.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetTagRequest {
     pub name: Tag,
     pub value: HashAndFormat,
 }
 
+/// Options for creating a tag
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTagRequest {
     pub value: HashAndFormat,

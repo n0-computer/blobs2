@@ -67,6 +67,12 @@ pub struct MemStore {
     client: ApiClient,
 }
 
+impl AsRef<crate::api::Store> for MemStore {
+    fn as_ref(&self) -> &crate::api::Store {
+        crate::api::Store::ref_from_sender(&self.client)
+    }
+}
+
 impl Deref for MemStore {
     type Target = crate::api::Store;
 

@@ -32,7 +32,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
     {
         let expected = b"hello".to_vec();
         let expected_hash = Hash::new(&expected);
-        let tt = blobs.add_bytes(expected.clone()).temp_tag().await?;
+        let tt = blobs.add_bytes(expected.clone()).await?;
         let hash = *tt.hash();
         assert_eq!(hash, expected_hash);
         let actual = blobs.get_bytes(hash).await?;
@@ -44,13 +44,13 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let expected = b"somestuffinafile".to_vec();
         let temp1 = path.join("test1");
         std::fs::write(&temp1, &expected)?;
-        let tt = blobs.add_path(temp1).temp_tag().await?;
+        let tt = blobs.add_path(temp1).await?;
         let hash = *tt.hash();
         let expected_hash = Hash::new(&expected);
         assert_eq!(hash, expected_hash);
 
         let temp2 = path.join("test2");
-        blobs.export(hash, &temp2).finish().await?;
+        blobs.export(hash, &temp2).await?;
         let actual = std::fs::read(&temp2)?;
         assert_eq!(actual, expected);
     }

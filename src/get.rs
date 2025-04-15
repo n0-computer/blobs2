@@ -1,8 +1,13 @@
-//! The client side API
+//! The low level client side API
 //!
-//! To get data, create a connection using an [`iroh Endpoint`](`iroh::endpoint::Endpoint`).
+//! Note that while using this API directly is fine, a simpler way to get data
+//! to a store is to use the [`crate::api::download`] API, in particular the
+//! [`crate::api::download::Download::fetch`] function to download data to your
+//! local store.
 //!
-//! Create a request describing the data you want to get.
+//! To get data, create a connection using an [`iroh::Endpoint`].
+//!
+//! Create a [`crate::protocol::GetRequest`] describing the data you want to get.
 //!
 //! Then create a state machine using [fsm::start] and
 //! drive it to completion by calling next on each state.

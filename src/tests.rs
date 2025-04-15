@@ -32,8 +32,9 @@ async fn two_nodes_blobs() -> TestResult<()> {
     let store1 = FsStore::load(&db1_path).await?;
     let store2 = FsStore::load(&db2_path).await?;
     let sizes = INTERESTING_SIZES;
+    let mut tts = Vec::new();
     for size in sizes {
-        store1.add_bytes(test_data(size)).temp_tag().await?;
+        tts.push(store1.add_bytes(test_data(size)).await?);
     }
     let ep1 = Endpoint::builder().discovery_n0().bind().await?;
     let ep2 = Endpoint::builder().bind().await?;
@@ -65,7 +66,7 @@ pub async fn add_test_hash_seq(
     let batch = blobs.batch().await?;
     let mut tts = Vec::new();
     for size in sizes {
-        tts.push(batch.add_bytes(test_data(size)).temp_tag().await?);
+        tts.push(batch.add_bytes(test_data(size)).await?);
     }
     let hash_seq = tts.iter().map(|tt| *tt.hash()).collect::<HashSeq>();
     let root = batch
@@ -194,7 +195,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     // get the first 3 items (hash_seq, and 2 children)
     store2
         .download()
-        .execute_request(
+        .execute(
             conn.clone(),
             GetRequest::new(
                 root.hash,
@@ -227,7 +228,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     );
     store2
         .download()
-        .execute_request(conn.clone(), sizes, None)
+        .execute(conn.clone(), sizes, None)
         .await?;
 
     let local = store2.download().local(root).await?;
@@ -235,7 +236,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     // println!("{:?} {:?}", missing, missing_chunks);
     store2
         .download()
-        .execute_request(conn, local.missing(), None)
+        .execute(conn, local.missing(), None)
         .await?;
     check_presence(&store2, &INTERESTING_SIZES).await?;
     // for size in INTERESTING_SIZES {
@@ -256,14 +257,14 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
     let sizes = INTERESTING_SIZES;
-    let mut hashes = Vec::new();
+    let mut tts = Vec::new();
     // add all the sizes
     for size in sizes {
-        let hash = store.add_bytes(test_data(size)).temp_tag().await?;
-        hashes.push(hash);
+        let tt = store.add_bytes(test_data(size)).await?;
+        tts.push(tt);
     }
-    let hash_seq = hashes.iter().map(|x| *x.hash()).collect::<HashSeq>();
-    let root_tt = store.add_bytes(hash_seq).temp_tag().await?;
+    let hash_seq = tts.iter().map(|x| *x.hash()).collect::<HashSeq>();
+    let root_tt = store.add_bytes(hash_seq).await?;
     let root = *root_tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
@@ -293,8 +294,9 @@ async fn node_serve_blobs() -> TestResult<()> {
     let store = crate::store::fs::FsStore::load(&db_path).await?;
     let sizes = INTERESTING_SIZES;
     // add all the sizes
+    let mut tts = Vec::new();
     for size in sizes {
-        store.add_bytes(test_data(size)).temp_tag().await?;
+        tts.push(store.add_bytes(test_data(size)).await?);
     }
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
@@ -313,7 +315,7 @@ async fn node_serve_blobs() -> TestResult<()> {
         while let Some(item) = stream.next().await {
             println!("{:?}", item);
         }
-        let actual = get::request::get_blob(conn.clone(), hash).bytes().await?;
+        let actual = get::request::get_blob(conn.clone(), hash).await?;
         assert_eq!(actual.len(), expected.len(), "size: {}", size);
     }
     r1.shutdown().await?;
@@ -340,7 +342,7 @@ async fn node_smoke() -> TestResult<()> {
     let conn = endpoint2.connect(addr1, crate::protocol::ALPN).await?;
     let (size, stats) = get::request::get_unverified_size(&conn, &hash).await?;
     info!("size: {} stats: {:?}", size, stats);
-    let data = get::request::get_blob(conn, hash).bytes().await?;
+    let data = get::request::get_blob(conn, hash).await?;
     assert_eq!(data.as_ref(), b"hello world");
     r1.shutdown().await?;
     Ok(())
