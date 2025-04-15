@@ -10,7 +10,7 @@ use super::{
     observer::{Observable, Observer},
     size_info::SizeInfo,
 };
-use crate::{IROH_BLOCK_SIZE, api::blobs::Bitfield};
+use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.

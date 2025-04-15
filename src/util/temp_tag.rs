@@ -9,7 +9,7 @@ use tracing::{trace, warn};
 
 use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Scope};
 
-/// A hash and format pair that is protected from garbage collection.
+/// An ephemeral, in-memory tag that protects content while the process is running.
 ///
 /// If format is raw, this will protect just the blob
 /// If format is collection, this will protect the collection and all blobs in it

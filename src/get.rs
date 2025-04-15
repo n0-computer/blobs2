@@ -1,7 +1,6 @@
 //! The client side API
 //!
-//! To get data, create a connection using [iroh-net] or use any quinn
-//! connection that was obtained in another way.
+//! To get data, create a connection using an [`iroh Endpoint`](`iroh::endpoint::Endpoint`).
 //!
 //! Create a request describing the data you want to get.
 //!
@@ -11,7 +10,7 @@
 //! For some states you have to provide additional arguments when calling next,
 //! or you can choose to finish early.
 //!
-//! [iroh-net]: https://docs.rs/iroh-net
+//! [iroh]: https://docs.rs/iroh
 use std::{
     error::Error,
     fmt::{self, Debug},
@@ -25,7 +24,7 @@ use iroh_io::TokioStreamReader;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use crate::{Hash, IROH_BLOCK_SIZE, protocol::RangeSpecSeq};
+use crate::{Hash, protocol::RangeSpecSeq, store::IROH_BLOCK_SIZE};
 
 pub mod request;
 

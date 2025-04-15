@@ -17,15 +17,11 @@ use tokio::pin;
 use crate::{
     api::{
         self,
-        blobs::{BlobStatus, BlobStatusRequest, DeleteRequest, ListRequest},
+        blobs::BlobStatus,
         proto::{
-            ClearProtectedMsg, DeleteBlobsMsg, GetBlobStatusMsg, ListBlobsMsg, ShutdownMsg,
-            SyncDbMsg,
+            BlobDeleteRequest, BlobStatusRequest, ClearProtectedMsg, CreateTagRequest, DeleteBlobsMsg, GetBlobStatusMsg, ListBlobsMsg, ListRequest, ListTagsRequest, RenameTagRequest, SetTagRequest, ShutdownMsg, SyncDbMsg, TagsDeleteRequest,
         },
-        tags::{
-            self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTagsRequest,
-            SetTagRequest, TagInfo,
-        },
+        tags::TagInfo,
     },
     util::channel::{mpsc, oneshot},
 };
@@ -429,7 +425,7 @@ impl Actor {
         cmd: DeleteBlobsMsg,
     ) -> ActorResult<()> {
         let DeleteBlobsMsg {
-            inner: DeleteRequest { hashes, force },
+            inner: BlobDeleteRequest { hashes, force },
             ..
         } = cmd;
         for hash in hashes {
@@ -532,7 +528,7 @@ impl Actor {
     async fn rename_tag(tables: &mut Tables<'_>, cmd: RenameTagMsg) -> ActorResult<()> {
         trace!("{cmd:?}");
         let RenameTagMsg {
-            inner: tags::RenameRequest { from, to },
+            inner: RenameTagRequest { from, to },
             tx,
             ..
         } = cmd;

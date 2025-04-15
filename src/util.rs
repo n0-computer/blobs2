@@ -155,8 +155,7 @@ pub mod outboard_with_progress {
         use testresult::TestResult;
 
         use crate::{
-            IROH_BLOCK_SIZE,
-            store::fs::tests::test_data,
+            store::{IROH_BLOCK_SIZE, fs::tests::test_data},
             util::outboard_with_progress::{NoProgress, init_outboard},
         };
 

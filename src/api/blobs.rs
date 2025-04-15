@@ -23,7 +23,6 @@ use bao_tree::{
 use bytes::Bytes;
 use download::{Download, HashSeqChunk};
 use genawaiter::sync::Gen;
-use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::{
     Request,
@@ -35,15 +34,22 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
 use super::{
-    ApiClient, ClearProtected, RequestResult, ShutdownRequest, SyncDbRequest, Tags,
-    tags::{CreateTempTagRequest, TagInfo},
+    ApiClient, RequestResult, Tags,
+    proto::{
+        BatchResponse, BlobDeleteRequest, BlobStatusRequest, ClearProtectedRequest,
+        ExportBaoRequest, ExportPathRequest, ImportBaoRequest, ImportByteStreamRequest,
+        ImportBytesRequest, ImportPathRequest, ListRequest, ObserveRequest,
+        CreateTempTagRequest,
+    },
+    tags::TagInfo,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
+    BlobFormat, Hash, HashAndFormat,
+    api::proto::BatchRequest,
     hashseq::HashSeq,
     protocol::{RangeSpec, RangeSpecSeq},
     provider::ProgressWriter,
-    store::util::observer::Aggregator,
+    store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
 };
 mod bitfield;
@@ -51,6 +57,11 @@ pub use bao_tree::io::mixed::EncodedItem;
 pub use bitfield::{Bitfield, is_validated};
 pub mod download;
 use ref_cast::RefCast;
+
+pub use super::proto::{
+    BlobDeleteRequest as DeleteOptions, ExportBaoRequest as ExportBaoOptions,
+    ImportBytesRequest as ImportBytesOptions,
+};
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
@@ -71,12 +82,12 @@ impl<'a> Batch<'a> {
             format: crate::BlobFormat::Raw,
             scope: self.scope,
         };
-        self.blobs.add_bytes_with_opts(options)
+        self.blobs.add_bytes_impl(options)
     }
 
     pub fn add_bytes_with_opts(&self, options: impl Into<BytesAndFormat>) -> ImportResult {
         let options = options.into();
-        self.blobs.add_bytes_with_opts(ImportBytesRequest {
+        self.blobs.add_bytes_impl(ImportBytesRequest {
             data: options.data,
             format: options.format,
             scope: self.scope,
@@ -89,11 +100,11 @@ impl<'a> Batch<'a> {
             format: crate::BlobFormat::Raw,
             scope: self.scope,
         };
-        self.blobs.add_bytes_with_opts(options)
+        self.blobs.add_bytes_impl(options)
     }
 
     pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
-        self.blobs.add_path_with_opts_impl(ImportPath {
+        self.blobs.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
             mode: options.mode,
             format: options.format,
@@ -144,7 +155,7 @@ impl Blobs {
         })
     }
 
-    pub async fn delete_with_opts(&self, options: DeleteRequest) -> RequestResult<()> {
+    pub async fn delete_with_opts(&self, options: BlobDeleteRequest) -> RequestResult<()> {
         trace!("{options:?}");
         self.client.rpc(options).await??;
         Ok(())
@@ -154,7 +165,7 @@ impl Blobs {
         &self,
         hashes: impl IntoIterator<Item = impl Into<Hash>>,
     ) -> RequestResult<()> {
-        self.delete_with_opts(DeleteRequest {
+        self.delete_with_opts(BlobDeleteRequest {
             hashes: hashes.into_iter().map(Into::into).collect(),
             force: false,
         })
@@ -167,7 +178,7 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        self.add_bytes_with_opts(options)
+        self.add_bytes_impl(options)
     }
 
     pub fn add_bytes(&self, data: impl Into<bytes::Bytes>) -> ImportResult {
@@ -176,10 +187,14 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        self.add_bytes_with_opts(options)
+        self.add_bytes_impl(options)
     }
 
     pub fn add_bytes_with_opts(&self, options: ImportBytesRequest) -> ImportResult {
+        self.add_bytes_impl(options)
+    }
+
+    fn add_bytes_impl(&self, options: ImportBytesRequest) -> ImportResult {
         trace!("{options:?}");
         let request = self.client.request();
         ImportResult::new(self, async move {
@@ -199,7 +214,7 @@ impl Blobs {
     }
 
     pub fn add_path_with_opts(&self, options: ImportPathOptions) -> ImportResult {
-        self.add_path_with_opts_impl(ImportPath {
+        self.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
             mode: options.mode,
             format: options.format,
@@ -207,7 +222,7 @@ impl Blobs {
         })
     }
 
-    pub fn add_path_with_opts_impl(&self, options: ImportPath) -> ImportResult {
+    fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> ImportResult {
         trace!("{:?}", options);
         let request = self.client.request();
         ImportResult::new(self, async move {
@@ -250,7 +265,7 @@ impl Blobs {
             .into_iter()
             .collect::<io::Result<Vec<_>>>()
             .unwrap();
-        let inner = ImportByteStream {
+        let inner = ImportByteStreamRequest {
             data,
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
@@ -272,7 +287,7 @@ impl Blobs {
         })
     }
 
-    pub fn export_bao_with_opts(&self, options: ExportBaoRequest) -> ExportBaoResult {
+    pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoResult {
         trace!("{options:?}");
         let request = self.client.request();
         ExportBaoResult::new(async move {
@@ -404,7 +419,7 @@ impl Blobs {
         Ok(RangeSpecSeq::new(ranges))
     }
 
-    pub fn export_with_opts(&self, options: ExportPath) -> ExportResult {
+    pub fn export_with_opts(&self, options: ExportPathRequest) -> ExportResult {
         trace!("{:?}", options);
         let request = self.client.request();
         ExportResult::new(async move {
@@ -423,7 +438,7 @@ impl Blobs {
     }
 
     pub fn export(&self, hash: Hash, target: impl AsRef<Path>) -> ExportResult {
-        let options = ExportPath {
+        let options = ExportPathRequest {
             hash,
             mode: ExportMode::Copy,
             target: target.as_ref().to_owned(),
@@ -567,18 +582,10 @@ impl Blobs {
     }
 
     pub async fn clear_protected(&self) -> RequestResult<()> {
-        let msg = ClearProtected;
+        let msg = ClearProtectedRequest;
         self.client.rpc(msg).await??;
         Ok(())
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportPath {
-    pub path: PathBuf,
-    pub mode: ImportMode,
-    pub format: BlobFormat,
-    pub scope: Scope,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -586,51 +593,6 @@ pub struct ImportPathOptions {
     pub path: PathBuf,
     pub mode: ImportMode,
     pub format: BlobFormat,
-}
-
-/// Import bao encoded data for the given hash with the iroh block size.
-///
-/// The result is just a single item, indicating if a write error occurred.
-/// To observe the incoming data more granularly, use the `Observe` command
-/// concurrently.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportBaoRequest {
-    pub hash: Hash,
-    pub size: NonZeroU64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ObserveRequest {
-    pub hash: Hash,
-}
-
-/// Export the given ranges in bao format, with the iroh block size.
-///
-/// The returned stream should be verified by the store.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportBaoRequest {
-    pub hash: Hash,
-    pub ranges: ChunkRanges,
-}
-
-/// Export a file to a target path.
-///
-/// For an incomplete file, the size might be truncated and gaps will be filled
-/// with zeros. If possible, a store implementation should try to write as a
-/// sparse file.
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportPath {
-    pub hash: Hash,
-    pub mode: ExportMode,
-    pub target: PathBuf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportByteStream {
-    pub format: BlobFormat,
-    pub data: Vec<Bytes>,
-    pub scope: Scope,
 }
 
 /// Progress events for importing from any local source.
@@ -1158,7 +1120,7 @@ impl ExportBaoResult {
         Ok(())
     }
 
-    /// Write quinn variant that also feeds a
+    /// Write quinn variant that also feeds a progress writer.
     pub async fn write_quinn_with_progress(
         self,
         writer: &mut ProgressWriter,
@@ -1241,25 +1203,6 @@ pub struct HashSeqStream {
     stream: Box<dyn Stream<Item = (u64, Hash)>>,
 }
 
-pub struct DownloadRequest {
-    pub hash: Hash,
-    pub node: NodeAddr,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeleteRequest {
-    pub hashes: Vec<Hash>,
-    pub force: bool,
-}
-
-/// Import the given bytes.
-#[derive(Serialize, Deserialize)]
-pub struct ImportBytesRequest {
-    pub data: Bytes,
-    pub format: BlobFormat,
-    pub scope: Scope,
-}
-
 /// Import the given bytes.
 pub struct BytesAndFormat {
     pub data: Bytes,
@@ -1286,23 +1229,6 @@ impl fmt::Debug for ImportBytesRequest {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListRequest;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BatchRequest;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum BatchResponse {
-    Drop(HashAndFormat),
-    Ping,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobStatusRequest {
-    pub hash: Hash,
-}
-
 /// Status information about a blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlobStatus {
@@ -1326,6 +1252,7 @@ pub struct ProcessExit {
     pub code: i32,
 }
 
+/// A scope for a write operation.
 #[derive(
     Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
 )]

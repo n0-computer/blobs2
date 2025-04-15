@@ -8,10 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BlobFormat, Hash,
-    api::{
-        Store,
-        blobs::{ImportBytesRequest, Scope},
-    },
+    api::{Store, blobs::Scope, proto::ImportBytesRequest},
     get::{Stats, fsm},
     hashseq::HashSeq,
     util::temp_tag::TempTag,

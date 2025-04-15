@@ -97,12 +97,11 @@ use tracing::{error, instrument, trace};
 use crate::{
     api::{
         ApiClient,
-        blobs::{
-            BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest, Scope, is_validated,
-        },
+        blobs::{Scope, is_validated},
         proto::{
-            self, BatchMsg, Command, CreateTempTagMsg, ExportBaoMsg, ExportPathMsg, HashSpecific,
-            ImportBaoMsg, ObserveMsg,
+            self, BatchMsg, BatchResponse, Command, CreateTempTagMsg, ExportBaoMsg,
+            ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
+            ImportBaoRequest, ObserveMsg,
         },
     },
     store::{
@@ -980,11 +979,11 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
 }
 
 async fn export_path_impl(
-    cmd: ExportPath,
+    cmd: ExportPathRequest,
     tx: &mut spsc::Sender<ExportProgress>,
     ctx: HashContext,
 ) -> api::Result<()> {
-    let ExportPath { mode, target, .. } = cmd;
+    let ExportPathRequest { mode, target, .. } = cmd;
     if !target.is_absolute() {
         return Err(api::Error::io(
             io::ErrorKind::InvalidInput,

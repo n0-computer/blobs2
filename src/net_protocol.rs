@@ -11,69 +11,16 @@ use iroh::{Endpoint, endpoint::Connection, protocol::ProtocolHandler};
 use tokio::sync::mpsc;
 use tracing::error;
 
-use crate::{api::Store, provider::Event};
+use crate::{
+    api::Store,
+    provider::{Event, ProgressSender},
+};
 
 #[derive(Debug)]
 pub(crate) struct BlobsInner {
     pub(crate) store: Store,
     pub(crate) endpoint: Endpoint,
     pub(crate) progress: ProgressSender,
-}
-
-pub trait LazyEvent {
-    fn call(self) -> Event;
-}
-
-impl<T> LazyEvent for T
-where
-    T: FnOnce() -> Event,
-{
-    fn call(self) -> Event {
-        self()
-    }
-}
-
-impl LazyEvent for Event {
-    fn call(self) -> Event {
-        self
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ProgressSender {
-    Disabled,
-    Enabled(mpsc::Sender<Event>),
-}
-
-impl ProgressSender {
-    pub fn new(sender: Option<mpsc::Sender<Event>>) -> Self {
-        match sender {
-            Some(sender) => Self::Enabled(sender),
-            None => Self::Disabled,
-        }
-    }
-
-    pub fn try_send(&self, event: impl LazyEvent) {
-        match self {
-            Self::Enabled(sender) => {
-                let value = event.call();
-                sender.try_send(value).ok();
-            }
-            Self::Disabled => {}
-        }
-    }
-
-    pub async fn send(&self, event: impl LazyEvent) {
-        match self {
-            Self::Enabled(sender) => {
-                let value = event.call();
-                if let Err(err) = sender.send(value).await {
-                    error!("failed to send progress event: {:?}", err);
-                }
-            }
-            Self::Disabled => {}
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

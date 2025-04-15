@@ -341,11 +341,12 @@ use tracing::trace;
 
 use super::Bitfield;
 use crate::{
-    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
+    BlobFormat, Hash, HashAndFormat,
     api::{self, Store, blobs::Blobs},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},
     protocol::{GetRequest, RangeSpecSeq},
+    store::IROH_BLOCK_SIZE,
     util::channel::mpsc,
 };
 

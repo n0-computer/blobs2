@@ -40,25 +40,14 @@ use super::{
     util::{BaoTreeSender, PartialMemStorage},
 };
 use crate::{
-    Hash,
     api::{
-        self, ApiClient,
-        blobs::{
-            Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest,
-            ImportBytesRequest, ImportPath, ImportProgress, ObserveRequest,
-        },
-        proto::{
-            BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
-            ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ListTagsMsg,
-            ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
-        },
-        tags::{self, DeleteRequest, TagInfo},
-    },
-    store::{
-        HashAndFormat, IROH_BLOCK_SIZE,
-        util::{Tag, observer::Observer},
-    },
-    util::temp_tag::TempTag,
+        self, blobs::{Bitfield, ExportProgress, ImportProgress}, proto::{
+            TagsDeleteRequest,
+            BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, DeleteTagsMsg, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest, ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg, ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, ListTagsMsg, ListTagsRequest, ObserveMsg, ObserveRequest, RenameTagMsg, RenameTagRequest, SetTagMsg, SetTagRequest, ShutdownMsg, SyncDbMsg
+        }, tags::TagInfo, ApiClient
+    }, store::{
+        util::{observer::Observer, Tag}, HashAndFormat, IROH_BLOCK_SIZE
+    }, util::temp_tag::TempTag, Hash
 };
 
 #[derive(Debug, Clone)]
@@ -157,7 +146,7 @@ impl Actor {
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
-                    inner: DeleteRequest { from, to },
+                    inner: TagsDeleteRequest { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -182,7 +171,7 @@ impl Actor {
             }
             Command::RenameTag(cmd) => {
                 let RenameTagMsg {
-                    inner: tags::RenameRequest { from, to },
+                    inner: RenameTagRequest { from, to },
                     tx,
                     ..
                 } = cmd;
@@ -204,7 +193,7 @@ impl Actor {
             Command::ListTags(cmd) => {
                 let ListTagsMsg {
                     inner:
-                        tags::ListTagsRequest {
+                        ListTagsRequest {
                             from,
                             to,
                             raw,
@@ -239,7 +228,7 @@ impl Actor {
                 tx.send(tags.collect()).await.ok();
             }
             Command::SetTag(SetTagMsg {
-                inner: tags::SetTagRequest { name: tag, value },
+                inner: SetTagRequest { name: tag, value },
                 tx,
                 ..
             }) => {
@@ -247,7 +236,7 @@ impl Actor {
                 tx.send(Ok(())).await.ok();
             }
             Command::CreateTag(CreateTagMsg {
-                inner: tags::CreateTagRequest { value },
+                inner: CreateTagRequest { value },
                 tx,
                 ..
             }) => {
@@ -463,7 +452,7 @@ async fn import_byte_stream(
 #[instrument(skip_all, fields(path = %cmd.inner.path.display()))]
 async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
     let ImportPathMsg {
-        inner: ImportPath { path, .. },
+        inner: ImportPathRequest { path, .. },
         mut tx,
         ..
     } = cmd;
@@ -501,10 +490,10 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg)
 
 async fn export_path_impl(
     entry: Arc<RwLock<Entry>>,
-    cmd: ExportPath,
+    cmd: ExportPathRequest,
     tx: &mut spsc::Sender<ExportProgress>,
 ) -> io::Result<()> {
-    let ExportPath { target, .. } = cmd;
+    let ExportPathRequest { target, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();

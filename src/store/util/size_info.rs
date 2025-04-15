@@ -2,7 +2,7 @@ use std::io;
 
 use bao_tree::io::sync::WriteAt;
 
-use crate::IROH_BLOCK_SIZE;
+use crate::store::IROH_BLOCK_SIZE;
 
 /// Keep track of the most precise size we know of.
 ///

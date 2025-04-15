@@ -1,8 +1,11 @@
 //! The user facing API of the store.
+//!
+//! This API is both for interacting with an in-process store and for interacting
+//! with a remote store via rpc calls.
 use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use irpc::rpc::{Handler, listen};
-use proto::Request;
+use proto::{Request, ShutdownRequest, SyncDbRequest};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tags::Tags;
@@ -10,6 +13,7 @@ use tags::Tags;
 pub mod blobs;
 pub mod proto;
 pub mod tags;
+pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) type ApiClient = irpc::Client<proto::Command, proto::Request, proto::StoreService>;
 
@@ -260,12 +264,3 @@ impl Store {
         Self::ref_cast(client)
     }
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SyncDbRequest;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ShutdownRequest;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClearProtected;

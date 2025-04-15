@@ -36,10 +36,11 @@ use super::{TaskContext, meta::raw_outboard_size, options::Options};
 use crate::{
     BlobFormat, Hash,
     api::{
-        blobs::{
-            ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress, Scope,
+        blobs::{ImportMode, ImportProgress, Scope},
+        proto::{
+            HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportBytesMsg,
+            ImportBytesRequest, ImportPathMsg, ImportPathRequest, StoreService,
         },
-        proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
     },
     store::{
         IROH_BLOCK_SIZE,
@@ -161,7 +162,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
         let cmd = ImportByteStreamMsg {
-            inner: ImportByteStream {
+            inner: ImportByteStreamRequest {
                 format: cmd.inner.format,
                 scope: cmd.scope,
                 data: vec![cmd.inner.data],
@@ -249,11 +250,11 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
 }
 
 async fn import_byte_stream_impl(
-    cmd: ImportByteStream,
+    cmd: ImportByteStreamRequest,
     tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let ImportByteStream {
+    let ImportByteStreamRequest {
         format,
         data,
         scope: batch,
@@ -422,11 +423,11 @@ pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
 }
 
 async fn import_path_impl(
-    cmd: ImportPath,
+    cmd: ImportPathRequest,
     tx: &mut spsc::Sender<ImportProgress>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let ImportPath {
+    let ImportPathRequest {
         path,
         mode,
         format,
@@ -533,7 +534,7 @@ mod tests {
         let (mut tx, rx) = spsc::channel(1024 * 1024);
         let data = stream.collect::<Vec<_>>().await;
         let data = data.into_iter().collect::<io::Result<Vec<_>>>()?;
-        let cmd = ImportByteStream {
+        let cmd = ImportByteStreamRequest {
             data,
             format: BlobFormat::Raw,
             scope: Default::default(),
@@ -560,7 +561,7 @@ mod tests {
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
         let (mut tx, rx) = spsc::channel(1024 * 1024);
-        let cmd = ImportPath {
+        let cmd = ImportPathRequest {
             path,
             mode: ImportMode::Copy,
             format: BlobFormat::Raw,

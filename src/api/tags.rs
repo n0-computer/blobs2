@@ -1,15 +1,19 @@
 //! Tags API
 //!
 //! The main entry point is the [`Tags`] struct.
-use std::ops::{Bound, RangeBounds};
+use std::ops::RangeBounds;
 
 use n0_future::{Stream, StreamExt};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{ApiClient, blobs::Scope};
-use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag};
+use super::{
+    blobs::Scope, proto::{tags_from_range, CreateTagRequest, ListTagsRequest, RenameTagRequest, SetTagRequest}, ApiClient
+};
+use crate::{api::proto::ListTempTagsRequest, store::util::Tag, BlobFormat, Hash, HashAndFormat};
+pub use super::proto::ListTagsRequest as ListTagsOptions;
+pub use super::proto::TagsDeleteRequest as DeleteOptions;
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
@@ -49,178 +53,6 @@ impl TagInfo {
     }
 }
 
-/// Options for a list operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListTagsRequest {
-    /// List tags to hash seqs
-    pub hash_seq: bool,
-    /// List tags to raw blobs
-    pub raw: bool,
-    /// Optional from tag (inclusive)
-    pub from: Option<Tag>,
-    /// Optional to tag (exclusive)
-    pub to: Option<Tag>,
-}
-
-impl ListTagsRequest {
-    /// List a range of tags
-    pub fn range<R, E>(range: R) -> Self
-    where
-        R: RangeBounds<E>,
-        E: AsRef<[u8]>,
-    {
-        let (from, to) = tags_from_range(range);
-        Self {
-            from,
-            to,
-            raw: true,
-            hash_seq: true,
-        }
-    }
-
-    /// List tags with a prefix
-    pub fn prefix(prefix: &[u8]) -> Self {
-        let from = Tag::from(prefix);
-        let to = from.next_prefix();
-        Self {
-            raw: true,
-            hash_seq: true,
-            from: Some(from),
-            to,
-        }
-    }
-
-    /// List a single tag
-    pub fn single(name: &[u8]) -> Self {
-        let from = Tag::from(name);
-        Self {
-            to: Some(from.successor()),
-            from: Some(from),
-            raw: true,
-            hash_seq: true,
-        }
-    }
-
-    /// List all tags
-    pub fn all() -> Self {
-        Self {
-            raw: true,
-            hash_seq: true,
-            from: None,
-            to: None,
-        }
-    }
-
-    /// List raw tags
-    pub fn raw() -> Self {
-        Self {
-            raw: true,
-            hash_seq: false,
-            from: None,
-            to: None,
-        }
-    }
-
-    /// List hash seq tags
-    pub fn hash_seq() -> Self {
-        Self {
-            raw: false,
-            hash_seq: true,
-            from: None,
-            to: None,
-        }
-    }
-}
-
-/// List all temp tags
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateTempTagRequest {
-    pub scope: Scope,
-    pub value: HashAndFormat,
-}
-
-/// List all temp tags
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListTempTagsRequest;
-
-/// Rename a tag atomically
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RenameRequest {
-    /// Old tag name
-    pub from: Tag,
-    /// New tag name
-    pub to: Tag,
-}
-
-/// Options for a delete operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeleteRequest {
-    /// Optional from tag (inclusive)
-    pub from: Option<Tag>,
-    /// Optional to tag (exclusive)
-    pub to: Option<Tag>,
-}
-
-impl DeleteRequest {
-    /// Delete a single tag
-    pub fn single(name: &[u8]) -> Self {
-        let name = Tag::from(name);
-        Self {
-            to: Some(name.successor()),
-            from: Some(name),
-        }
-    }
-
-    /// Delete a range of tags
-    pub fn range<R, E>(range: R) -> Self
-    where
-        R: RangeBounds<E>,
-        E: AsRef<[u8]>,
-    {
-        let (from, to) = tags_from_range(range);
-        Self { from, to }
-    }
-
-    /// Delete tags with a prefix
-    pub fn prefix(prefix: &[u8]) -> Self {
-        let from = Tag::from(prefix);
-        let to = from.next_prefix();
-        Self {
-            from: Some(from),
-            to,
-        }
-    }
-}
-
-fn tags_from_range<R, E>(range: R) -> (Option<Tag>, Option<Tag>)
-where
-    R: RangeBounds<E>,
-    E: AsRef<[u8]>,
-{
-    let from = match range.start_bound() {
-        Bound::Included(start) => Some(Tag::from(start.as_ref())),
-        Bound::Excluded(start) => Some(Tag::from(start.as_ref()).successor()),
-        Bound::Unbounded => None,
-    };
-    let to = match range.end_bound() {
-        Bound::Included(end) => Some(Tag::from(end.as_ref()).successor()),
-        Bound::Excluded(end) => Some(Tag::from(end.as_ref())),
-        Bound::Unbounded => None,
-    };
-    (from, to)
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SetTagRequest {
-    pub name: Tag,
-    pub value: HashAndFormat,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateTagRequest {
-    pub value: HashAndFormat,
-}
-
 impl Tags {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
@@ -239,7 +71,7 @@ impl Tags {
     /// methods that call this one with the appropriate options.
     pub async fn list_with_opts(
         &self,
-        options: ListTagsRequest,
+        options: ListTagsOptions,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
@@ -306,7 +138,7 @@ impl Tags {
     }
 
     /// Deletes a tag.
-    pub async fn delete_with_opts(&self, options: DeleteRequest) -> super::RequestResult<()> {
+    pub async fn delete_with_opts(&self, options: DeleteOptions) -> super::RequestResult<()> {
         trace!("{:?}", options);
         self.client.rpc(options).await??;
         Ok(())
@@ -314,7 +146,7 @@ impl Tags {
 
     /// Deletes a tag.
     pub async fn delete(&self, name: impl AsRef<[u8]>) -> super::RequestResult<()> {
-        self.delete_with_opts(DeleteRequest::single(name.as_ref()))
+        self.delete_with_opts(DeleteOptions::single(name.as_ref()))
             .await
     }
 
@@ -324,18 +156,18 @@ impl Tags {
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
     {
-        self.delete_with_opts(DeleteRequest::range(range)).await
+        self.delete_with_opts(DeleteOptions::range(range)).await
     }
 
     /// Delete all tags with the given prefix.
     pub async fn delete_prefix(&self, prefix: impl AsRef<[u8]>) -> super::RequestResult<()> {
-        self.delete_with_opts(DeleteRequest::prefix(prefix.as_ref()))
+        self.delete_with_opts(DeleteOptions::prefix(prefix.as_ref()))
             .await
     }
 
     /// Delete all tags. Use with care. After this, all data will be garbage collected.
     pub async fn delete_all(&self) -> super::RequestResult<()> {
-        self.delete_with_opts(DeleteRequest {
+        self.delete_with_opts(DeleteOptions {
             from: None,
             to: None,
         })
@@ -345,7 +177,7 @@ impl Tags {
     /// Rename a tag atomically
     ///
     /// If the tag does not exist, this will return an error.
-    pub async fn rename_with_opts(&self, options: RenameRequest) -> super::RequestResult<()> {
+    pub async fn rename_with_opts(&self, options: RenameTagRequest) -> super::RequestResult<()> {
         trace!("{:?}", options);
         self.client.rpc(options).await??;
         Ok(())
@@ -359,7 +191,7 @@ impl Tags {
         from: impl AsRef<[u8]>,
         to: impl AsRef<[u8]>,
     ) -> super::RequestResult<()> {
-        self.rename_with_opts(RenameRequest {
+        self.rename_with_opts(RenameTagRequest {
             from: Tag::from(from.as_ref()),
             to: Tag::from(to.as_ref()),
         })

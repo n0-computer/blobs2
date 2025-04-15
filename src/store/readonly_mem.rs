@@ -33,8 +33,9 @@ use crate::{
         self, ApiClient, Store,
         blobs::{self, Bitfield, ExportProgress, ImportProgress},
         proto::{
-            self, Command, ExportBaoMsg, ExportPathMsg, ImportBaoMsg, ImportByteStreamMsg,
-            ImportBytesMsg, ImportPathMsg, ObserveMsg,
+            self, Command, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
+            ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ObserveMsg,
+            ObserveRequest,
         },
     },
     store::{IROH_BLOCK_SIZE, mem::CompleteStorage, util::observer::Observable},
@@ -100,7 +101,7 @@ impl Actor {
                 .ok();
             }
             Command::Observe(ObserveMsg {
-                inner: blobs::ObserveRequest { hash },
+                inner: ObserveRequest { hash },
                 tx,
                 ..
             }) => {
@@ -112,7 +113,7 @@ impl Actor {
                 }
             }
             Command::ExportBao(ExportBaoMsg {
-                inner: blobs::ExportBaoRequest { hash, ranges },
+                inner: ExportBaoRequest { hash, ranges },
                 tx,
                 ..
             }) => {
@@ -124,7 +125,7 @@ impl Actor {
                     .spawn(export_bao_task(hash, entry, ranges, tx));
             }
             Command::ExportPath(ExportPathMsg {
-                inner: blobs::ExportPath { hash, target, .. },
+                inner: ExportPathRequest { hash, target, .. },
                 tx,
                 ..
             }) => {

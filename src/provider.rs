@@ -7,13 +7,13 @@ use iroh::{
     NodeId,
     endpoint::{self, RecvStream, SendStream},
 };
-use tracing::{Instrument, debug, debug_span, warn};
+use tokio::sync::mpsc;
+use tracing::{Instrument, debug, debug_span, error, warn};
 
 use crate::{
     Hash,
     api::{self, Store},
     hashseq::HashSeq,
-    net_protocol::ProgressSender,
     protocol::{GetRequest, RangeSpecSeq, Request},
 };
 
@@ -83,11 +83,20 @@ pub enum Event {
     },
 }
 
+/// Statistics about a successful or failed transfer.
 #[derive(Debug)]
 pub struct TransferStats {
+    /// The number of bytes sent that are part of the payload.
     pub payload_bytes_sent: u64,
+    /// The number of bytes sent that are not part of the payload.
+    ///
+    /// Hash pairs and the initial size header.
     pub other_bytes_sent: u64,
+    /// The number of bytes read from the stream.
+    ///
+    /// This is the size of the request.
     pub bytes_read: u64,
+    /// Total duration from reading the request to transfer completed.
     pub duration: Duration,
 }
 
@@ -107,7 +116,7 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
 
 /// Wrapper for a quinn::SendStream with additional per request information.
 #[derive(Debug)]
-pub struct ProgressWriter {
+pub(crate) struct ProgressWriter {
     /// The quinn::SendStream to write to
     pub inner: SendStream,
     /// The connection ID from the connection
@@ -121,7 +130,7 @@ pub struct ProgressWriter {
     /// The number of bytes read from the stream
     pub bytes_read: u64,
     /// The progress sender to send events to
-    pub progress: ProgressSender,
+    progress: ProgressSender,
 }
 
 impl ProgressWriter {
@@ -320,34 +329,8 @@ pub async fn handle_get(
     Ok(())
 }
 
-/// A helper struct that combines a quinn::SendStream with auxiliary information
-#[derive(Debug)]
-pub struct ResponseWriter {
-    inner: SendStream,
-    connection_id: u64,
-}
-
-impl ResponseWriter {
-    pub fn connection_id(&self) -> u64 {
-        self.connection_id
-    }
-
-    pub fn request_id(&self) -> u64 {
-        self.inner.id().index()
-    }
-}
-
-/// Status  of a send operation
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SentStatus {
-    /// The requested data was sent
-    Sent,
-    /// The requested data was not found
-    NotFound,
-}
-
 /// Send a blob to the client.
-pub async fn send_blob(
+pub(crate) async fn send_blob(
     store: &Store,
     index: u64,
     hash: Hash,
@@ -358,4 +341,69 @@ pub async fn send_blob(
         .export_bao(hash, ranges)
         .write_quinn_with_progress(writer, &hash, index)
         .await?)
+}
+
+/// Helper to lazyly create an [`Event`], in the case that the event creation
+/// is expensive and we want to avoid it if the progress sender is disabled.
+pub trait LazyEvent {
+    fn call(self) -> Event;
+}
+
+impl<T> LazyEvent for T
+where
+    T: FnOnce() -> Event,
+{
+    fn call(self) -> Event {
+        self()
+    }
+}
+
+impl LazyEvent for Event {
+    fn call(self) -> Event {
+        self
+    }
+}
+
+/// A sender for provider events.
+#[derive(Debug, Clone)]
+pub enum ProgressSender {
+    Disabled,
+    Enabled(mpsc::Sender<Event>),
+}
+
+impl ProgressSender {
+    pub fn new(sender: Option<mpsc::Sender<Event>>) -> Self {
+        match sender {
+            Some(sender) => Self::Enabled(sender),
+            None => Self::Disabled,
+        }
+    }
+
+    /// Send an ephemeral event, if the progress sender is enabled.
+    ///
+    /// The event will only be created if the sender is enabled.
+    pub fn try_send(&self, event: impl LazyEvent) {
+        match self {
+            Self::Enabled(sender) => {
+                let value = event.call();
+                sender.try_send(value).ok();
+            }
+            Self::Disabled => {}
+        }
+    }
+
+    /// Send a mandatory event, if the progress sender is enabled.
+    ///
+    /// The event only be created if the sender is enabled.
+    pub async fn send(&self, event: impl LazyEvent) {
+        match self {
+            Self::Enabled(sender) => {
+                let value = event.call();
+                if let Err(err) = sender.send(value).await {
+                    error!("failed to send progress event: {:?}", err);
+                }
+            }
+            Self::Disabled => {}
+        }
+    }
 }

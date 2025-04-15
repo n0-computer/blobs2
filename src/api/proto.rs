@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "proto-docs"), doc(hidden))]
 //! The protocol that a store implementation needs to implement.
 //!
 //! A store needs to handle [`Request`]s. It is fine to just return an error for some
@@ -12,10 +13,17 @@
 //!
 //! The file system store is quite complex and optimized, so to get started take a look at
 //! the much simpler memory store.
-use std::{fmt::Debug, io, pin::Pin};
+use std::{
+    fmt::Debug,
+    io,
+    num::NonZeroU64,
+    ops::{Bound, RangeBounds},
+    path::PathBuf,
+    pin::Pin,
+};
 
 use arrayvec::ArrayString;
-use bao_tree::io::BaoContentItem;
+use bao_tree::{ChunkRanges, io::BaoContentItem};
 use bytes::Bytes;
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
@@ -23,14 +31,13 @@ use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ClearProtected, ShutdownRequest, SyncDbRequest,
     blobs::{
-        self, BatchResponse, Bitfield, BlobStatus, EncodedItem, ExportProgress, ImportProgress,
-        Scope,
+        self, Bitfield, BlobStatus, EncodedItem, ExportMode, ExportProgress, ImportMode,
+        ImportProgress, Scope,
     },
     tags::{self, TagInfo},
 };
-use crate::{Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
+use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) trait HashSpecific {
     fn hash(&self) -> Hash;
@@ -80,45 +87,313 @@ impl irpc::Service for StoreService {}
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     #[rpc(tx = spsc::Sender<super::Result<Hash>>)]
-    ListBlobs(blobs::ListRequest),
+    ListBlobs(ListRequest),
     #[rpc(tx = oneshot::Sender<Scope>, rx = spsc::Receiver<BatchResponse>)]
-    Batch(blobs::BatchRequest),
+    Batch(BatchRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    DeleteBlobs(blobs::DeleteRequest),
+    DeleteBlobs(BlobDeleteRequest),
     #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
-    ImportBao(blobs::ImportBaoRequest),
+    ImportBao(ImportBaoRequest),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
-    ExportBao(blobs::ExportBaoRequest),
+    ExportBao(ExportBaoRequest),
     #[rpc(tx = spsc::Sender<Bitfield>)]
-    Observe(blobs::ObserveRequest),
+    Observe(ObserveRequest),
     #[rpc(tx = oneshot::Sender<BlobStatus>)]
-    GetBlobStatus(blobs::BlobStatusRequest),
+    GetBlobStatus(BlobStatusRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportBytes(blobs::ImportBytesRequest),
+    ImportBytes(ImportBytesRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportByteStream(blobs::ImportByteStream),
+    ImportByteStream(ImportByteStreamRequest),
     #[rpc(tx = spsc::Sender<ImportProgress>)]
-    ImportPath(blobs::ImportPath),
+    ImportPath(ImportPathRequest),
     #[rpc(tx = spsc::Sender<ExportProgress>)]
-    ExportPath(blobs::ExportPath),
+    ExportPath(ExportPathRequest),
     #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
-    ListTags(tags::ListTagsRequest),
+    ListTags(ListTagsRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    SetTag(tags::SetTagRequest),
+    SetTag(SetTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    DeleteTags(tags::DeleteRequest),
+    DeleteTags(TagsDeleteRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    RenameTag(tags::RenameRequest),
+    RenameTag(RenameTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<Tag>>)]
-    CreateTag(tags::CreateTagRequest),
+    CreateTag(CreateTagRequest),
     #[rpc(tx = oneshot::Sender<Vec<HashAndFormat>>)]
-    ListTempTags(tags::ListTempTagsRequest),
+    ListTempTags(ListTempTagsRequest),
     #[rpc(tx = oneshot::Sender<TempTag>)]
-    CreateTempTag(tags::CreateTempTagRequest),
+    CreateTempTag(CreateTempTagRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     SyncDb(SyncDbRequest),
     #[rpc(tx = oneshot::Sender<()>)]
     Shutdown(ShutdownRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
-    ClearProtected(ClearProtected),
+    ClearProtected(ClearProtectedRequest),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncDbRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShutdownRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearProtectedRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlobStatusRequest {
+    pub hash: Hash,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum BatchResponse {
+    Drop(HashAndFormat),
+    Ping,
+}
+
+/// Options for force deletion of blobs.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlobDeleteRequest {
+    pub hashes: Vec<Hash>,
+    pub force: bool,
+}
+
+/// Import the given bytes.
+#[derive(Serialize, Deserialize)]
+pub struct ImportBytesRequest {
+    pub data: Bytes,
+    pub format: BlobFormat,
+    pub scope: Scope,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportPathRequest {
+    pub path: PathBuf,
+    pub mode: ImportMode,
+    pub format: BlobFormat,
+    pub scope: Scope,
+}
+
+/// Import bao encoded data for the given hash with the iroh block size.
+///
+/// The result is just a single item, indicating if a write error occurred.
+/// To observe the incoming data more granularly, use the `Observe` command
+/// concurrently.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportBaoRequest {
+    pub hash: Hash,
+    pub size: NonZeroU64,
+}
+
+/// Observe the local bitfield of the given hash.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObserveRequest {
+    pub hash: Hash,
+}
+
+/// Export the given ranges in bao format, with the iroh block size.
+///
+/// The returned stream should be verified by the store.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportBaoRequest {
+    pub hash: Hash,
+    pub ranges: ChunkRanges,
+}
+
+/// Export a file to a target path.
+///
+/// For an incomplete file, the size might be truncated and gaps will be filled
+/// with zeros. If possible, a store implementation should try to write as a
+/// sparse file.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportPathRequest {
+    pub hash: Hash,
+    pub mode: ExportMode,
+    pub target: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportByteStreamRequest {
+    pub format: BlobFormat,
+    pub data: Vec<Bytes>,
+    pub scope: Scope,
+}
+
+/// Options for a list operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListTagsRequest {
+    /// List tags to hash seqs
+    pub hash_seq: bool,
+    /// List tags to raw blobs
+    pub raw: bool,
+    /// Optional from tag (inclusive)
+    pub from: Option<Tag>,
+    /// Optional to tag (exclusive)
+    pub to: Option<Tag>,
+}
+
+impl ListTagsRequest {
+    /// List a range of tags
+    pub fn range<R, E>(range: R) -> Self
+    where
+        R: RangeBounds<E>,
+        E: AsRef<[u8]>,
+    {
+        let (from, to) = tags_from_range(range);
+        Self {
+            from,
+            to,
+            raw: true,
+            hash_seq: true,
+        }
+    }
+
+    /// List tags with a prefix
+    pub fn prefix(prefix: &[u8]) -> Self {
+        let from = Tag::from(prefix);
+        let to = from.next_prefix();
+        Self {
+            raw: true,
+            hash_seq: true,
+            from: Some(from),
+            to,
+        }
+    }
+
+    /// List a single tag
+    pub fn single(name: &[u8]) -> Self {
+        let from = Tag::from(name);
+        Self {
+            to: Some(from.successor()),
+            from: Some(from),
+            raw: true,
+            hash_seq: true,
+        }
+    }
+
+    /// List all tags
+    pub fn all() -> Self {
+        Self {
+            raw: true,
+            hash_seq: true,
+            from: None,
+            to: None,
+        }
+    }
+
+    /// List raw tags
+    pub fn raw() -> Self {
+        Self {
+            raw: true,
+            hash_seq: false,
+            from: None,
+            to: None,
+        }
+    }
+
+    /// List hash seq tags
+    pub fn hash_seq() -> Self {
+        Self {
+            raw: false,
+            hash_seq: true,
+            from: None,
+            to: None,
+        }
+    }
+}
+
+pub(crate) fn tags_from_range<R, E>(range: R) -> (Option<Tag>, Option<Tag>)
+where
+    R: RangeBounds<E>,
+    E: AsRef<[u8]>,
+{
+    let from = match range.start_bound() {
+        Bound::Included(start) => Some(Tag::from(start.as_ref())),
+        Bound::Excluded(start) => Some(Tag::from(start.as_ref()).successor()),
+        Bound::Unbounded => None,
+    };
+    let to = match range.end_bound() {
+        Bound::Included(end) => Some(Tag::from(end.as_ref()).successor()),
+        Bound::Excluded(end) => Some(Tag::from(end.as_ref())),
+        Bound::Unbounded => None,
+    };
+    (from, to)
+}
+
+
+/// List all temp tags
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateTempTagRequest {
+    pub scope: Scope,
+    pub value: HashAndFormat,
+}
+
+/// List all temp tags
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListTempTagsRequest;
+
+/// Rename a tag atomically
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenameTagRequest {
+    /// Old tag name
+    pub from: Tag,
+    /// New tag name
+    pub to: Tag,
+}
+
+/// Options for a delete operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagsDeleteRequest {
+    /// Optional from tag (inclusive)
+    pub from: Option<Tag>,
+    /// Optional to tag (exclusive)
+    pub to: Option<Tag>,
+}
+
+impl TagsDeleteRequest {
+    /// Delete a single tag
+    pub fn single(name: &[u8]) -> Self {
+        let name = Tag::from(name);
+        Self {
+            to: Some(name.successor()),
+            from: Some(name),
+        }
+    }
+
+    /// Delete a range of tags
+    pub fn range<R, E>(range: R) -> Self
+    where
+        R: RangeBounds<E>,
+        E: AsRef<[u8]>,
+    {
+        let (from, to) = tags_from_range(range);
+        Self { from, to }
+    }
+
+    /// Delete tags with a prefix
+    pub fn prefix(prefix: &[u8]) -> Self {
+        let from = Tag::from(prefix);
+        let to = from.next_prefix();
+        Self {
+            from: Some(from),
+            to,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetTagRequest {
+    pub name: Tag,
+    pub value: HashAndFormat,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateTagRequest {
+    pub value: HashAndFormat,
 }

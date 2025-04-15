@@ -27,7 +27,7 @@ pub use size_info::SizeInfo;
 mod partial_mem_storage;
 pub use partial_mem_storage::PartialMemStorage;
 
-/// A tag
+/// A named, persistent tag.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Tag(pub Bytes);
 

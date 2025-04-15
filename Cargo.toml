@@ -51,3 +51,5 @@ tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
 tracing-test = "0.2.5"
 walkdir = "2.5.0"
 
+[features]
+proto-docs = []
