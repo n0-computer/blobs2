@@ -30,8 +30,8 @@ use super::util::{BaoTreeSender, observer::Observer};
 use crate::{
     Hash,
     api::{
-        self, ApiClient, Store,
-        blobs::{self, Bitfield, ExportProgress, ImportProgress},
+        self, ApiClient,
+        blobs::{Bitfield, ExportProgress, ImportProgress},
         proto::{
             self, Command, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ObserveMsg,

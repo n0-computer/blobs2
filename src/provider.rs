@@ -120,15 +120,15 @@ pub struct ProgressWriter {
     /// The quinn::SendStream to write to
     pub inner: SendStream,
     /// The connection ID from the connection
-    pub connection_id: u64,
+    connection_id: u64,
     /// The request ID from the recv stream
-    pub request_id: u64,
+    request_id: u64,
     /// The number of bytes written that are part of the payload
-    pub payload_bytes_sent: u64,
+    payload_bytes_sent: u64,
     /// The number of bytes written that are not part of the payload
-    pub other_bytes_sent: u64,
+    other_bytes_sent: u64,
     /// The number of bytes read from the stream
-    pub bytes_read: u64,
+    bytes_read: u64,
     /// The progress sender to send events to
     progress: ProgressSender,
 }
@@ -366,7 +366,10 @@ impl LazyEvent for Event {
 
 /// A sender for provider events.
 #[derive(Debug, Clone)]
-pub enum ProgressSender {
+pub struct ProgressSender(ProgressSenderInner);
+
+#[derive(Debug, Clone)]
+enum ProgressSenderInner {
     Disabled,
     Enabled(mpsc::Sender<Event>),
 }
@@ -374,8 +377,8 @@ pub enum ProgressSender {
 impl ProgressSender {
     pub fn new(sender: Option<mpsc::Sender<Event>>) -> Self {
         match sender {
-            Some(sender) => Self::Enabled(sender),
-            None => Self::Disabled,
+            Some(sender) => Self(ProgressSenderInner::Enabled(sender)),
+            None => Self(ProgressSenderInner::Disabled),
         }
     }
 
@@ -383,12 +386,12 @@ impl ProgressSender {
     ///
     /// The event will only be created if the sender is enabled.
     pub fn try_send(&self, event: impl LazyEvent) {
-        match self {
-            Self::Enabled(sender) => {
+        match &self.0 {
+            ProgressSenderInner::Enabled(sender) => {
                 let value = event.call();
                 sender.try_send(value).ok();
             }
-            Self::Disabled => {}
+            ProgressSenderInner::Disabled => {}
         }
     }
 
@@ -396,14 +399,14 @@ impl ProgressSender {
     ///
     /// The event only be created if the sender is enabled.
     pub async fn send(&self, event: impl LazyEvent) {
-        match self {
-            Self::Enabled(sender) => {
+        match &self.0 {
+            ProgressSenderInner::Enabled(sender) => {
                 let value = event.call();
                 if let Err(err) = sender.send(value).await {
                     error!("failed to send progress event: {:?}", err);
                 }
             }
-            Self::Disabled => {}
+            ProgressSenderInner::Disabled => {}
         }
     }
 }
