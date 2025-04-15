@@ -9,33 +9,34 @@ use std::{
 };
 
 use bao_tree::{
-    blake3,
+    BaoTree, ChunkRanges, blake3,
     io::{
         fsm::BaoContentItem,
         mixed::ReadBytesAt,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
     },
-    BaoTree, ChunkRanges,
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
-use tracing::{info, trace, warn, Span};
+use tracing::{Span, info, trace, warn};
 
 use super::{
+    BaoFilePart,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     meta::{self, Update},
     options::{Options, PathOptions},
-    BaoFilePart,
 };
 use crate::{
     api::blobs::Bitfield,
     store::{
-        fs::{meta::raw_outboard_size, TaskContext},
-        util::{
-            observer::{Observable, Observer}, PartialMemStorage, read_checksummed_and_truncate, SizeInfo, write_checksummed, FixedSize, MemOrFile, SparseMemFile, ValueOrPoisioned, DD
-        },
         Hash, IROH_BLOCK_SIZE,
+        fs::{TaskContext, meta::raw_outboard_size},
+        util::{
+            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, ValueOrPoisioned,
+            observer::{Observable, Observer},
+            read_checksummed_and_truncate, write_checksummed,
+        },
     },
     util::channel::mpsc,
 };

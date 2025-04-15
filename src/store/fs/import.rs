@@ -19,31 +19,33 @@ use std::{
 };
 
 use bao_tree::{
-    io::outboard::{PreOrderMemOutboard, PreOrderOutboard},
     BaoTree, ChunkNum,
+    io::outboard::{PreOrderMemOutboard, PreOrderOutboard},
 };
 use bytes::Bytes;
 use irpc::{
-    channel::{none::NoReceiver, spsc},
     Channels, WithChannels,
+    channel::{none::NoReceiver, spsc},
 };
-use n0_future::{stream, Stream, StreamExt};
+use n0_future::{Stream, StreamExt, stream};
 use ref_cast::RefCast;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
 
-use super::{meta::raw_outboard_size, options::Options, TaskContext};
+use super::{TaskContext, meta::raw_outboard_size, options::Options};
 use crate::{
+    BlobFormat, Hash,
     api::{
-        blobs::{Scope, ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress},
+        blobs::{
+            ImportByteStream, ImportBytesRequest, ImportMode, ImportPath, ImportProgress, Scope,
+        },
         proto::{HashSpecific, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, StoreService},
     },
     store::{
-        util::{MemOrFile, DD},
         IROH_BLOCK_SIZE,
+        util::{DD, MemOrFile},
     },
-    util::outboard_with_progress::{init_outboard, Progress},
-    BlobFormat, Hash,
+    util::outboard_with_progress::{Progress, init_outboard},
 };
 
 /// An import source.
@@ -490,8 +492,8 @@ mod tests {
     use crate::{
         api::proto::BoxedByteStream,
         store::{
-            fs::options::{InlineOptions, PathOptions},
             BlobFormat,
+            fs::options::{InlineOptions, PathOptions},
         },
     };
 
@@ -504,12 +506,16 @@ mod tests {
     }
 
     fn assert_expected_progress(progress: &[ImportProgress]) {
-        assert!(progress
-            .iter()
-            .any(|x| matches!(&x, ImportProgress::Size { .. })));
-        assert!(progress
-            .iter()
-            .any(|x| matches!(&x, ImportProgress::CopyDone)));
+        assert!(
+            progress
+                .iter()
+                .any(|x| matches!(&x, ImportProgress::Size { .. }))
+        );
+        assert!(
+            progress
+                .iter()
+                .any(|x| matches!(&x, ImportProgress::CopyDone))
+        );
     }
 
     fn chunk_bytes(data: Bytes, chunk_size: usize) -> impl Iterator<Item = Bytes> {

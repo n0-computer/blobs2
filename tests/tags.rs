@@ -1,9 +1,15 @@
-use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::Deref};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    ops::Deref,
+};
 
 use blobs2::{
-    api::{self, tags::{Tags, TagInfo}, Store},
-    store::fs::FsStore,
     BlobFormat, Hash, HashAndFormat,
+    api::{
+        self, Store,
+        tags::{TagInfo, Tags},
+    },
+    store::fs::FsStore,
 };
 use futures_lite::StreamExt;
 use n0_future::Stream;

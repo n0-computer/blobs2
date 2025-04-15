@@ -1,5 +1,5 @@
 //! Tags API
-//! 
+//!
 //! The main entry point is the [`Tags`] struct.
 use std::ops::{Bound, RangeBounds};
 
@@ -8,8 +8,8 @@ use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use super::{blobs::Scope, ApiClient};
-use crate::{store::util::Tag, BlobFormat, Hash, HashAndFormat};
+use super::{ApiClient, blobs::Scope};
+use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag};
 
 #[derive(Debug, Clone, ref_cast::RefCast)]
 #[repr(transparent)]
@@ -248,7 +248,9 @@ impl Tags {
 
     /// Get the value of a single tag
     pub async fn get(&self, name: impl AsRef<[u8]>) -> super::RequestResult<Option<TagInfo>> {
-        let mut stream = self.list_with_opts(ListTagsRequest::single(name.as_ref())).await?;
+        let mut stream = self
+            .list_with_opts(ListTagsRequest::single(name.as_ref()))
+            .await?;
         Ok(stream.next().await.transpose()?)
     }
 
@@ -287,7 +289,8 @@ impl Tags {
         &self,
         prefix: impl AsRef<[u8]>,
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
-        self.list_with_opts(ListTagsRequest::prefix(prefix.as_ref())).await
+        self.list_with_opts(ListTagsRequest::prefix(prefix.as_ref()))
+            .await
     }
 
     /// Lists all tags.

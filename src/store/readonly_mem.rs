@@ -6,16 +6,19 @@
 //!
 //! It can also be useful as a lightweight store for tests.
 use std::{
-    collections::HashMap, io::{self, Write}, ops::Deref, path::PathBuf
+    collections::HashMap,
+    io::{self, Write},
+    ops::Deref,
+    path::PathBuf,
 };
 
 use bao_tree::{
+    BaoTree, ChunkRanges,
     io::{
-        mixed::{traverse_ranges_validated, EncodedItem},
+        mixed::{EncodedItem, traverse_ranges_validated},
         outboard::PreOrderMemOutboard,
         sync::ReadAt,
     },
-    BaoTree, ChunkRanges,
 };
 use bytes::Bytes;
 use irpc::channel::spsc;
@@ -23,17 +26,19 @@ use n0_future::future::yield_now;
 use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
-use super::util::{observer::Observer, BaoTreeSender};
+use super::util::{BaoTreeSender, observer::Observer};
 use crate::{
+    Hash,
     api::{
-        self, blobs::{self, Bitfield, ExportProgress, ImportProgress}, proto::{
+        self, ApiClient, Store,
+        blobs::{self, Bitfield, ExportProgress, ImportProgress},
+        proto::{
             self, Command, ExportBaoMsg, ExportPathMsg, ImportBaoMsg, ImportByteStreamMsg,
             ImportBytesMsg, ImportPathMsg, ObserveMsg,
-        }, ApiClient, Store
+        },
     },
-    store::{mem::CompleteStorage, util::observer::Observable, IROH_BLOCK_SIZE},
+    store::{IROH_BLOCK_SIZE, mem::CompleteStorage, util::observer::Observable},
     util::channel::mpsc,
-    Hash,
 };
 
 #[derive(Debug, Clone)]

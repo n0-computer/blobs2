@@ -7,11 +7,14 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{blobs::ImportBytesRequest, blobs::Scope, Store},
-    get::{fsm, Stats},
+    BlobFormat, Hash,
+    api::{
+        Store,
+        blobs::{ImportBytesRequest, Scope},
+    },
+    get::{Stats, fsm},
     hashseq::HashSeq,
     util::temp_tag::TempTag,
-    BlobFormat, Hash,
 };
 
 /// A collection of blobs

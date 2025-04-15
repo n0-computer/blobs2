@@ -1,11 +1,16 @@
 use std::{io, num::NonZeroU64};
 
-use bao_tree::{io::{sync::WriteAt, BaoContentItem}, BaoTree, ChunkRanges};
+use bao_tree::{
+    BaoTree, ChunkRanges,
+    io::{BaoContentItem, sync::WriteAt},
+};
 
-use crate::{api::blobs::Bitfield, IROH_BLOCK_SIZE};
-
-use super::{observer::{Observable, Observer}, size_info::SizeInfo, SparseMemFile};
-
+use super::{
+    SparseMemFile,
+    observer::{Observable, Observer},
+    size_info::SizeInfo,
+};
+use crate::{IROH_BLOCK_SIZE, api::blobs::Bitfield};
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.

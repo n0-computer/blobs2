@@ -4,17 +4,17 @@ use std::{fmt::Debug, time::Duration};
 use anyhow::{Context, Result};
 use bao_tree::ChunkRanges;
 use iroh::{
-    endpoint::{self, RecvStream, SendStream},
     NodeId,
+    endpoint::{self, RecvStream, SendStream},
 };
-use tracing::{debug, debug_span, warn, Instrument};
+use tracing::{Instrument, debug, debug_span, warn};
 
 use crate::{
+    Hash,
     api::{self, Store},
     hashseq::HashSeq,
     net_protocol::ProgressSender,
     protocol::{GetRequest, RangeSpecSeq, Request},
-    Hash,
 };
 
 /// Provider progress events, to keep track of what the provider is doing.

@@ -6,8 +6,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 
 use crate::store::util::{
-    observer::{Combine, CombineInPlace},
     RangeSetExt,
+    observer::{Combine, CombineInPlace},
 };
 
 pub fn is_validated(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
@@ -192,7 +192,7 @@ impl CombineInPlace for Bitfield {
 #[cfg(test)]
 mod tests {
     use bao_tree::{ChunkNum, ChunkRanges};
-    use proptest::prelude::{prop, Strategy};
+    use proptest::prelude::{Strategy, prop};
     use smallvec::SmallVec;
     use test_strategy::proptest;
 

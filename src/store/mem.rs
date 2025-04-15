@@ -17,18 +17,17 @@ use std::{
 };
 
 use bao_tree::{
-    blake3,
+    BaoTree, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode, blake3,
     io::{
-        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
+        BaoContentItem,
+        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
-        BaoContentItem,
     },
-    BaoTree, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode,
 };
 use bytes::Bytes;
 use irpc::channel::spsc;
-use n0_future::{future::yield_now, StreamExt};
+use n0_future::{StreamExt, future::yield_now};
 use tokio::{
     io::AsyncReadExt,
     sync::mpsc,
@@ -36,27 +35,30 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use super::{util::{PartialMemStorage, BaoTreeSender}, BlobFormat};
+use super::{
+    BlobFormat,
+    util::{BaoTreeSender, PartialMemStorage},
+};
 use crate::{
+    Hash,
     api::{
-        self, blobs::{
+        self, ApiClient,
+        blobs::{
             Bitfield, ExportBaoRequest, ExportPath, ExportProgress, ImportBaoRequest,
             ImportBytesRequest, ImportPath, ImportProgress, ObserveRequest,
-        }, proto::{
+        },
+        proto::{
             BoxedByteStream, Command, CreateTagMsg, DeleteTagsMsg, ExportBaoMsg, ExportPathMsg,
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ListTagsMsg,
             ObserveMsg, RenameTagMsg, SetTagMsg, ShutdownMsg, SyncDbMsg,
-        }, tags::{self, DeleteRequest, TagInfo}, ApiClient,
+        },
+        tags::{self, DeleteRequest, TagInfo},
     },
     store::{
-        util::{
-            observer::Observer,
-            Tag,
-        },
         HashAndFormat, IROH_BLOCK_SIZE,
+        util::{Tag, observer::Observer},
     },
     util::temp_tag::TempTag,
-    Hash,
 };
 
 #[derive(Debug, Clone)]
@@ -74,7 +76,6 @@ impl Deref for MemStore {
 }
 
 impl MemStore {
-
     pub fn from_sender(client: ApiClient) -> Self {
         Self { client }
     }

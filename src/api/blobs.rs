@@ -1,5 +1,5 @@
 //! Blobs API
-//! 
+//!
 //! This API is for local interactions with the blob store, such as importing
 //! and exporting blobs, observing the bitfield of a blob, and deleting blobs.
 //!
@@ -14,11 +14,11 @@ use std::{
 };
 
 use bao_tree::{
-    io::{
-        fsm::{ResponseDecoder, ResponseDecoderNext},
-        BaoContentItem, Leaf,
-    },
     BaoTree, ChunkNum, ChunkRanges,
+    io::{
+        BaoContentItem, Leaf,
+        fsm::{ResponseDecoder, ResponseDecoderNext},
+    },
 };
 use bytes::Bytes;
 use download::{Download, HashSeqChunk};
@@ -26,8 +26,8 @@ use genawaiter::sync::Gen;
 use iroh::NodeAddr;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::{
-    channel::{oneshot, spsc},
     Request,
+    channel::{oneshot, spsc},
 };
 use n0_future::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -35,19 +35,20 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
 use super::{
-    tags::{CreateTempTagRequest, TagInfo}, ApiClient, ClearProtected, RequestResult, ShutdownRequest, SyncDbRequest, Tags
+    ApiClient, ClearProtected, RequestResult, ShutdownRequest, SyncDbRequest, Tags,
+    tags::{CreateTempTagRequest, TagInfo},
 };
 use crate::{
+    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
     hashseq::HashSeq,
     protocol::{RangeSpec, RangeSpecSeq},
     provider::ProgressWriter,
     store::util::observer::Aggregator,
     util::temp_tag::TempTag,
-    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 mod bitfield;
-pub use bitfield::{is_validated, Bitfield};
 pub use bao_tree::io::mixed::EncodedItem;
+pub use bitfield::{Bitfield, is_validated};
 pub mod download;
 use ref_cast::RefCast;
 
@@ -996,8 +997,8 @@ pub struct BlobsListResult {
 impl BlobsListResult {
     fn new(
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<super::Result<Hash>>>>
-            + Send
-            + 'static,
+        + Send
+        + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),

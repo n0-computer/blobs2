@@ -5,7 +5,7 @@ use bao_tree::io::{
     sync::{ReadAt, Size, WriteAt},
 };
 use bytes::Bytes;
-use range_collections::{range_set::RangeSetRange, RangeSet2};
+use range_collections::{RangeSet2, range_set::RangeSetRange};
 
 /// A file that is sparse in memory
 ///

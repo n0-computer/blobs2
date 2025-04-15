@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bao_tree::{io::BaoContentItem, ChunkNum, ChunkRanges};
+use bao_tree::{ChunkNum, ChunkRanges, io::BaoContentItem};
 use bytes::Bytes;
 use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::Connection;
@@ -14,11 +14,11 @@ use nested_enum_utils::enum_conversions;
 use rand::Rng;
 use tokio::sync::mpsc;
 
-use super::{fsm, Stats};
+use super::{Stats, fsm};
 use crate::{
+    Hash, HashAndFormat,
     hashseq::HashSeq,
     protocol::{GetRequest, RangeSpecSeq},
-    Hash, HashAndFormat,
 };
 
 pub struct GetBlobResult {
@@ -86,7 +86,9 @@ pub fn get_blob(connection: Connection, hash: Hash) -> GetBlobResult {
             co.yield_(GetBlobItem::Error(cause)).await;
         }
     });
-    GetBlobResult { rx: Box::pin(generator) }
+    GetBlobResult {
+        rx: Box::pin(generator),
+    }
 }
 
 async fn get_blob_impl(

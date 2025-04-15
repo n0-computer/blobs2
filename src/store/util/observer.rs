@@ -3,7 +3,7 @@ use std::{
     future::Future,
 };
 
-use n0_future::{join_all, Stream};
+use n0_future::{Stream, join_all};
 
 use crate::util::channel::mpsc;
 
@@ -73,11 +73,12 @@ impl<U> Observer<U> {
         self.pending_update.as_ref()
     }
 
-    pub fn receiver_dropped(&self) -> impl Future<Output = ()> {
+    pub fn receiver_dropped(&self) -> impl Future<Output = ()> + 'static
+    where
+        U: 'static,
+    {
         let tx = self.tx.clone();
-        async move {
-            tx.closed().await;
-        }
+        async move { tx.closed().await }
     }
 }
 

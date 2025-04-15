@@ -6,8 +6,8 @@ pub mod serde {
         use std::{fmt, io};
 
         use serde::{
-            de::{self, Visitor},
             Deserializer, Serializer,
+            de::{self, Visitor},
         };
 
         pub fn serialize<S>(error: &io::Error, serializer: S) -> Result<S::Ok, S::Error>
@@ -53,13 +53,12 @@ pub mod outboard_with_progress {
     };
 
     use bao_tree::{
-        blake3,
+        BaoTree, ChunkNum, blake3,
         io::{
             outboard::PreOrderOutboard,
             sync::{OutboardMut, WriteAt},
         },
         iter::BaoChunk,
-        BaoTree, ChunkNum,
     };
     use blake3::guts::parent_cv;
     use smallvec::SmallVec;
@@ -77,10 +76,9 @@ pub mod outboard_with_progress {
     impl Progress for NoProgress {
         type Error = io::Error;
 
-        async fn progress(
-            &mut self,
-            _offset: ChunkNum,
-        ) -> std::result::Result<(), Self::Error> { Ok(()) }
+        async fn progress(&mut self, _offset: ChunkNum) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
     }
 
     pub async fn init_outboard<R, W, P>(
@@ -151,16 +149,15 @@ pub mod outboard_with_progress {
     #[cfg(test)]
     mod tests {
         use bao_tree::{
-            blake3,
+            BaoTree, blake3,
             io::{outboard::PreOrderOutboard, sync::CreateOutboard},
-            BaoTree,
         };
         use testresult::TestResult;
 
         use crate::{
-            store::fs::tests::test_data,
-            util::outboard_with_progress::{init_outboard, NoProgress},
             IROH_BLOCK_SIZE,
+            store::fs::tests::test_data,
+            util::outboard_with_progress::{NoProgress, init_outboard},
         };
 
         #[tokio::test]

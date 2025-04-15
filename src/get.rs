@@ -19,13 +19,13 @@ use std::{
 };
 
 use anyhow::Result;
-use bao_tree::{io::fsm::BaoContentItem, ChunkNum};
+use bao_tree::{ChunkNum, io::fsm::BaoContentItem};
 use iroh::endpoint::{self, RecvStream, SendStream};
 use iroh_io::TokioStreamReader;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use crate::{protocol::RangeSpecSeq, Hash, IROH_BLOCK_SIZE};
+use crate::{Hash, IROH_BLOCK_SIZE, protocol::RangeSpecSeq};
 
 pub mod request;
 
@@ -64,15 +64,15 @@ pub mod fsm {
     use std::{io, result};
 
     use bao_tree::{
-        io::fsm::{OutboardMut, ResponseDecoder, ResponseDecoderNext},
         BaoTree, ChunkRanges, TreeNode,
+        io::fsm::{OutboardMut, ResponseDecoder, ResponseDecoderNext},
     };
     use derive_more::From;
     use iroh::endpoint::Connection;
     use iroh_io::{AsyncSliceWriter, AsyncStreamReader, TokioStreamReader};
 
     use super::*;
-    use crate::protocol::{GetRequest, NonEmptyRequestRangeSpecIter, Request, MAX_MESSAGE_SIZE};
+    use crate::protocol::{GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request};
 
     self_cell::self_cell! {
         struct RangesIterInner {

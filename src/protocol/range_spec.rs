@@ -9,7 +9,7 @@ use std::fmt::{self, Debug};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
 use serde::{Deserialize, Serialize};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 /// A chunk range specification as a sequence of chunk offsets.
 ///
@@ -188,9 +188,7 @@ impl fmt::Display for RangeSpecSeq {
 impl fmt::Debug for RangeSpecSeq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !f.alternate() {
-            f.debug_list()
-                .entries(self.iter())
-                .finish()
+            f.debug_list().entries(self.iter()).finish()
         } else {
             f.debug_tuple("RangeSpecSeq").field(&self.0).finish()
         }

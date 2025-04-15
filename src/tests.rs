@@ -2,25 +2,25 @@ use std::path::PathBuf;
 
 use bao_tree::ChunkRanges;
 use bytes::Bytes;
-use iroh::{protocol::Router, Endpoint};
+use iroh::{Endpoint, protocol::Router};
 use irpc::channel::spsc;
-use n0_future::{pin, StreamExt};
+use n0_future::{StreamExt, pin};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::select;
 use tracing::info;
 
 use crate::{
+    BlobFormat, Hash, HashAndFormat,
     api::Store,
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
     protocol::{GetRequest, RangeSpec, RangeSpecSeq},
     store::fs::{
-        tests::{create_n0_bao, test_data, INTERESTING_SIZES},
         FsStore,
+        tests::{INTERESTING_SIZES, create_n0_bao, test_data},
     },
-    BlobFormat, Hash, HashAndFormat,
 };
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 //! Store implementations
-//! 
+//!
 //! Use the [`mem`] store for sharing a small amount of data,
 //! the [`readonly_mem`] store for sharing static data, and the [`fs`] store
 //! for when you want to efficiently share more than the available memory and

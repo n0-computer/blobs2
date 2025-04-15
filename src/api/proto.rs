@@ -23,9 +23,14 @@ use n0_future::Stream;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    blobs::{self, BatchResponse, Bitfield, BlobStatus, EncodedItem, ExportProgress, ImportProgress, Scope}, tags::{self, TagInfo}, ClearProtected, ShutdownRequest, SyncDbRequest
+    ClearProtected, ShutdownRequest, SyncDbRequest,
+    blobs::{
+        self, BatchResponse, Bitfield, BlobStatus, EncodedItem, ExportProgress, ImportProgress,
+        Scope,
+    },
+    tags::{self, TagInfo},
 };
-use crate::{store::util::Tag, util::temp_tag::TempTag, Hash, HashAndFormat};
+use crate::{Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) trait HashSpecific {
     fn hash(&self) -> Hash;

@@ -1,5 +1,5 @@
 //! # File based blob store.
-//! 
+//!
 //! A file based blob store needs a writeable directory to work with.
 //!
 //! General design:
@@ -44,21 +44,21 @@
 //! For tasks that are specific to a hash, a HashContext combines the task
 //! context with a slot from the table of the main actor that can be used
 //! to obtain an unqiue handle for the hash.
-//! 
+//!
 //! # Runtime
-//! 
+//!
 //! The fs store owns and manages its own tokio runtime. Dropping the store
 //! will clean up the database and shut down the runtime. However, some parts
 //! of the persistent state won't make it to disk, so operations involving large
 //! partial blobs will have a large initial delay on the next startup.
-//! 
+//!
 //! It is also not guaranteed that all write operations will make it to disk.
 //! The on-disk store will be in a consistent state, but might miss some writes
 //! in the last seconds before shutdown.
-//! 
+//!
 //! To avoid this, you can use the [`crate::api::Store::shutdown`] method to
 //! cleanly shut down the store and save ephemeral state to disk.
-//! 
+//!
 //! Note that if you use the store inside a [`iroh::protocol::Router`] and shut
 //! down the router using [`iroh::protocol::Router::shutdown`], the store will be
 //! safely shut down as well. Any store refs you are holding will be inoperable
@@ -75,12 +75,12 @@ use std::{
 };
 
 use bao_tree::{
-    io::{
-        mixed::{traverse_ranges_validated, EncodedItem},
-        sync::ReadAt,
-        BaoContentItem, Leaf,
-    },
     ChunkNum, ChunkRanges,
+    io::{
+        BaoContentItem, Leaf,
+        mixed::{EncodedItem, traverse_ranges_validated},
+        sync::ReadAt,
+    },
 };
 use bytes::Bytes;
 use delete_set::{BaoFilePart, ProtectHandle};
@@ -88,7 +88,7 @@ use entry_state::{DataLocation, OutboardLocation};
 use gc::run_gc;
 use import::{ImportEntry, ImportSource};
 use irpc::channel::spsc;
-use meta::{list_blobs, Snapshot};
+use meta::{Snapshot, list_blobs};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use tokio::task::{Id, JoinError, JoinSet};
@@ -96,16 +96,18 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        blobs::{is_validated, Scope, BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest},
+        ApiClient,
+        blobs::{
+            BatchResponse, ExportBaoRequest, ExportPath, ImportBaoRequest, Scope, is_validated,
+        },
         proto::{
             self, BatchMsg, Command, CreateTempTagMsg, ExportBaoMsg, ExportPathMsg, HashSpecific,
             ImportBaoMsg, ObserveMsg,
         },
-        ApiClient,
     },
     store::{
-        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
         Hash,
+        util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
     },
     util::{
         channel::{mpsc, oneshot},
@@ -121,16 +123,15 @@ mod meta;
 pub mod options;
 pub(crate) mod util;
 use entry_state::EntryState;
-use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
+use import::{ImportEntryMsg, import_byte_stream, import_bytes, import_path};
 use options::Options;
 use tracing::Instrument;
 mod gc;
 
-use super::{util::observer::Observer, HashAndFormat};
+use super::{HashAndFormat, util::observer::Observer};
 use crate::api::{
-    self,
+    self, Store,
     blobs::{ExportMode, ExportProgress, ImportProgress},
-    Store,
 };
 
 /// Create a 16 byte unique ID.
@@ -1195,10 +1196,10 @@ pub mod tests {
     use std::collections::{HashMap, HashSet};
 
     use bao_tree::{
-        io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
         ChunkRanges,
+        io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
     };
-    use n0_future::{stream, Stream, StreamExt};
+    use n0_future::{Stream, StreamExt, stream};
     use testresult::TestResult;
     use walkdir::WalkDir;
 
@@ -1206,8 +1207,8 @@ pub mod tests {
     use crate::{
         api::blobs::Bitfield,
         store::{
-            util::{observer::Aggregator, read_checksummed, SliceInfoExt, Tag},
             HashAndFormat, IROH_BLOCK_SIZE,
+            util::{SliceInfoExt, Tag, observer::Aggregator, read_checksummed},
         },
     };
 

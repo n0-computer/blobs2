@@ -7,7 +7,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use futures_lite::future::Boxed as BoxedFuture;
-use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint};
+use iroh::{Endpoint, endpoint::Connection, protocol::ProtocolHandler};
 use tokio::sync::mpsc;
 use tracing::error;
 

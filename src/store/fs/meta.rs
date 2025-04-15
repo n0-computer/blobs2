@@ -23,8 +23,8 @@ use crate::{
             SyncDbMsg,
         },
         tags::{
-            self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTagsRequest, SetTagRequest,
-            TagInfo,
+            self, CreateTagRequest, DeleteRequest as TagsDeleteRequest, ListTagsRequest,
+            SetTagRequest, TagInfo,
         },
     },
     util::channel::{mpsc, oneshot},
@@ -36,13 +36,13 @@ use tables::{ReadOnlyTables, ReadableTables, Tables};
 use tracing::{debug, error, info_span, trace};
 
 use super::{
+    BaoFilePart,
     delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     options::BatchOptions,
     util::PeekableReceiver,
-    BaoFilePart,
 };
-use crate::store::{util::Tag, Hash, IROH_BLOCK_SIZE};
+use crate::store::{Hash, IROH_BLOCK_SIZE, util::Tag};
 
 /// Error type for message handler functions of the redb actor.
 ///
@@ -383,7 +383,7 @@ impl Actor {
         let db = match redb::Database::create(db_path) {
             Ok(db) => db,
             Err(DatabaseError::UpgradeRequired(1)) => {
-                return Err(anyhow::anyhow!("migration from v1 no longer supported"))
+                return Err(anyhow::anyhow!("migration from v1 no longer supported"));
             }
             Err(err) => return Err(err.into()),
         };

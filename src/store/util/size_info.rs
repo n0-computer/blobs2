@@ -4,7 +4,6 @@ use bao_tree::io::sync::WriteAt;
 
 use crate::IROH_BLOCK_SIZE;
 
-
 /// Keep track of the most precise size we know of.
 ///
 /// When in memory, we don't have to write the size for every chunk to a separate

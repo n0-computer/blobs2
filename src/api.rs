@@ -1,7 +1,7 @@
 //! The user facing API of the store.
 use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
-use irpc::rpc::{listen, Handler};
+use irpc::rpc::{Handler, listen};
 use proto::Request;
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
@@ -184,7 +184,6 @@ impl Deref for Store {
 }
 
 impl Store {
-
     /// The tags API.
     pub fn tags(&self) -> &Tags {
         Tags::ref_from_sender(&self.client)

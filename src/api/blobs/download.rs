@@ -334,25 +334,25 @@ use std::{
     num::NonZeroU64,
 };
 
-use bao_tree::{io::Leaf, ChunkNum, ChunkRanges};
-use iroh::{endpoint::Connection, Endpoint, NodeAddr};
-use irpc::channel::{spsc, SendError};
+use bao_tree::{ChunkNum, ChunkRanges, io::Leaf};
+use iroh::{Endpoint, NodeAddr, endpoint::Connection};
+use irpc::channel::{SendError, spsc};
 use tracing::trace;
 
 use super::Bitfield;
 use crate::{
-    api::{self, blobs::Blobs, Store},
+    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
+    api::{self, Store, blobs::Blobs},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},
     protocol::{GetRequest, RangeSpecSeq},
     util::channel::mpsc,
-    BlobFormat, Hash, HashAndFormat, IROH_BLOCK_SIZE,
 };
 
 /// Trait to lazily get a connection
 pub trait GetConnection {
     fn connection(&mut self)
-        -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
+    -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
 }
 
 /// If we already have a connection, the impl is trivial
@@ -563,7 +563,7 @@ mod tests {
 
     use crate::{
         protocol::{GetRequest, RangeSpecSeq},
-        store::fs::{tests::INTERESTING_SIZES, FsStore},
+        store::fs::{FsStore, tests::INTERESTING_SIZES},
         tests::{add_test_hash_seq, add_test_hash_seq_incomplete},
     };
 

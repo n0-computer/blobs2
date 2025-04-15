@@ -1,14 +1,16 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::Deref, path::Path
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    ops::Deref,
+    path::Path,
 };
 
 use blobs2::{
+    Hash,
     api::{
-        blobs::{Blobs, ImportProgress},
         Store,
+        blobs::{Blobs, ImportProgress},
     },
     store::fs::FsStore,
-    Hash,
 };
 use n0_future::StreamExt;
 use testresult::TestResult;
