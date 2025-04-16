@@ -29,6 +29,7 @@ use irpc::{
 };
 use n0_future::{Stream, StreamExt};
 use ref_cast::RefCast;
+use serde::Serialize;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
@@ -92,18 +93,7 @@ impl Blobs {
     pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
         let msg = BatchRequest;
         trace!("{msg:?}");
-        let (rx, tx) = match self.client.request().await? {
-            Request::Local(c) => {
-                let (tx, rx) = oneshot::channel();
-                let (out_tx, out_rx) = spsc::channel(32);
-                c.send((msg, tx, out_rx)).await?;
-                (rx, out_tx)
-            }
-            Request::Remote(r) => {
-                let (tx, rx) = r.write(msg).await?;
-                (rx.into(), tx.into())
-            }
-        };
+        let (tx, rx) = self.client.client_streaming(msg, 32).await?;
         let scope = rx.await?;
 
         Ok(Batch {
@@ -160,21 +150,7 @@ impl Blobs {
 
     fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddProgress {
         trace!("{options:?}");
-        let request = self.client.request();
-        AddProgress::new(self, async move {
-            let rx = match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((options, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(options).await?;
-                    rx.into()
-                }
-            };
-            Ok(rx)
-        })
+        AddProgress::new(self, self.client.server_streaming_owned(options, 32))
     }
 
     pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
@@ -189,19 +165,9 @@ impl Blobs {
 
     fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddProgress {
         trace!("{:?}", options);
-        let request = self.client.request();
+        let client = self.client.clone();
         AddProgress::new(self, async move {
-            Ok(match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((options, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(options).await?;
-                    rx.into()
-                }
-            })
+            client.server_streaming_owned(options, 32).await
         })
     }
 
@@ -235,39 +201,12 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        let request = self.client.request();
-        AddProgress::new(self, async move {
-            let rx = match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((inner, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(inner).await?;
-                    rx.into()
-                }
-            };
-            Ok(rx)
-        })
+        AddProgress::new(self, self.client.server_streaming_owned(inner, 32))
     }
 
     pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoProgress {
         trace!("{options:?}");
-        let request = self.client.request();
-        ExportBaoProgress::new(async move {
-            Ok(match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((options, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(options).await?;
-                    rx.into()
-                }
-            })
-        })
+        ExportBaoProgress::new(self.client.server_streaming_owned(options, 32))
     }
 
     pub fn export_bao(
@@ -325,39 +264,12 @@ impl Blobs {
                 Ok(rx)
             });
         }
-        let (tx, rx) = spsc::channel(32);
-        let request = self.client.request();
-        ObserveProgress::new(async move {
-            let rx = match request.await? {
-                Request::Local(c) => {
-                    c.send((options, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(options).await?;
-                    rx.into()
-                }
-            };
-            Ok(rx)
-        })
+        ObserveProgress::new(self.client.server_streaming_owned(options, 32))
     }
 
     pub fn export_with_opts(&self, options: ExportOptions) -> ExportProgress {
         trace!("{:?}", options);
-        let request = self.client.request();
-        ExportProgress::new(async move {
-            Ok(match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((options, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(options).await?;
-                    rx.into()
-                }
-            })
-        })
+        ExportProgress::new(self.client.server_streaming_owned(options, 32))
     }
 
     pub fn export(&self, hash: impl Into<Hash>, target: impl AsRef<Path>) -> ExportProgress {
@@ -479,20 +391,8 @@ impl Blobs {
 
     pub fn list(&self) -> BlobsListProgress {
         let msg = ListRequest;
-        let req = self.client.request();
-        BlobsListProgress::new(async move {
-            Ok(match req.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = spsc::channel(32);
-                    c.send((msg, tx)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (_, rx) = r.write(msg).await?;
-                    rx.into()
-                }
-            })
-        })
+        let client = self.client.clone();
+        BlobsListProgress::new(client.server_streaming_owned(msg, 32))
     }
 
     pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
@@ -1061,5 +961,45 @@ impl ExportBaoProgress {
                 co.yield_(item).await;
             }
         })
+    }
+}
+
+trait ClientExt<M, R, S> {
+    fn server_streaming_owned<Req, Res>(
+        &self,
+        msg: Req,
+        local_response_cap: usize,
+    ) -> impl Future<Output = Result<irpc::channel::spsc::Receiver<Res>, irpc::Error>> + 'static
+    where
+        S: irpc::Service,
+        M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
+        R: From<Req> + Serialize + 'static,
+        Req: irpc::Channels<
+                S,
+                Tx = irpc::channel::spsc::Sender<Res>,
+                Rx = irpc::channel::none::NoReceiver,
+            > + 'static,
+        Res: irpc::RpcMessage;
+}
+
+impl<M, R, S> ClientExt<M, R, S> for irpc::Client<M, R, S> {
+    fn server_streaming_owned<Req, Res>(
+        &self,
+        msg: Req,
+        local_response_cap: usize,
+    ) -> impl Future<Output = Result<irpc::channel::spsc::Receiver<Res>, irpc::Error>> + 'static
+    where
+        S: irpc::Service,
+        M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
+        R: From<Req> + Serialize + 'static,
+        Req: irpc::Channels<
+                S,
+                Tx = irpc::channel::spsc::Sender<Res>,
+                Rx = irpc::channel::none::NoReceiver,
+            > + 'static,
+        Res: irpc::RpcMessage,
+    {
+        let this = self.clone();
+        async move { this.server_streaming(msg, local_response_cap).await }
     }
 }

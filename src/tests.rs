@@ -135,7 +135,8 @@ async fn three_nodes_hash_seq_downloader_switch() -> TestResult<()> {
         } else {
             ChunkRanges::from(..ChunkNum(1))
         }
-    }).await?;
+    })
+    .await?;
     let content = add_test_hash_seq(&store2, sizes).await?;
 
     // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
@@ -147,8 +148,7 @@ async fn three_nodes_hash_seq_downloader_switch() -> TestResult<()> {
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
     // protect the downloaded data from being deleted
     let _tt3 = store3.tags().temp_tag(content).await?;
-    let request = DownloadRequest::new(content, [addr1.clone(), addr2.clone()])
-        .progress_sender(tx);
+    let request = DownloadRequest::new(content, [addr1.clone(), addr2.clone()]).progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
     let progress = drain(rx).await;
