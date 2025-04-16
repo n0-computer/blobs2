@@ -35,6 +35,9 @@ iroh-base = "0.34.0"
 reflink-copy = "0.1.24"
 irpc = { path = "../irpc", version = "0.2.0", features = ["rpc", "quinn_endpoint_setup", "message_spans"], default-features = false }
 irpc-derive = { version = "0.2.0", default-features = false }
+iroh-metrics = "0.32.0"
+hashlink = "0.10.0"
+futures-buffered = "0.2.11"
 
 [dev-dependencies]
 clap = { version = "4.5.31", features = ["derive"] }
