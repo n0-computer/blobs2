@@ -8,7 +8,7 @@ use n0_future::{StreamExt, pin};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{select, sync::mpsc};
-use tracing::info;
+use tracing::{error, info};
 use tracing_test::traced_test;
 
 use crate::{
@@ -82,29 +82,39 @@ async fn two_nodes_blobs_downloader_progress() -> TestResult<()> {
 
 #[tokio::test]
 #[traced_test]
-async fn two_nodes_blobs_downloader_partial() -> TestResult<()> {
-    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
-    let size = 1024 * 1024 * 8 + 1;
-    // add some partial data
-    let ranges = ChunkRanges::from(..ChunkNum(17));
-    let (hash, bao) = create_n0_bao(&test_data(size), &ranges)?;
-    let tt = store1.tags().temp_tag(hash).await?;
-    store1.import_bao_bytes(hash, ranges, bao).await?;
+async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
+    let testdir = tempfile::tempdir()?;
+    let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
+    let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
+    let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
     let addr1 = r1.endpoint().node_addr().await?;
+    let addr2 = r2.endpoint().node_addr().await?;
+    let size = 1024 * 1024 * 8 + 1;
+    let data = test_data(size);
+    // a has the data just partially
+    let ranges = ChunkRanges::from(..ChunkNum(17));
+    let (hash, bao) = create_n0_bao(&data, &ranges)?;
+    let tt1 = store1.tags().temp_tag(hash).await?;
+    store1.import_bao_bytes(hash, ranges, bao).await?;
+    // b has the data completely
+    let tt2 = store2.add_bytes(data).await?;
 
-    // tell ep2 about the addr of ep1, so we don't need to rely on node discovery
-    r2.endpoint().add_node_addr(addr1.clone())?;
+    // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
+    r3.endpoint().add_node_addr(addr1.clone())?;
+    r3.endpoint().add_node_addr(addr2.clone())?;
+    error!("SETUP DONE");
     // create progress channel - big enough to not block
     let (tx, rx) = mpsc::channel(1024 * 1024);
-    let d1 = Downloader::new(store2.clone(), r2.endpoint().clone());
+    let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
     // protect the downloaded data from being deleted
-    let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
-    let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]).progress_sender(tx);
+    let tt3 = store3.tags().temp_tag(hash).await?;
+    let request = DownloadRequest::new(HashAndFormat::raw(hash), [addr1.clone(), addr2.clone()])
+        .progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
     let progress = drain(rx).await;
     assert!(!progress.is_empty());
-    assert_eq!(store2.get_bytes(*tt.hash()).await?, test_data(size));
+    assert_eq!(store3.get_bytes(hash).await?, test_data(size));
     Ok(())
 }
 

@@ -27,7 +27,7 @@
 //!     .spawn()
 //!     .await;
 //!
-//! // we are now sharing the data globally, so be careful what you put in there
+//! // this data is now globally available using the ticket
 //! let ticket = blobs.ticket(tt).await?;
 //! println!("ticket: {}", ticket);
 //!

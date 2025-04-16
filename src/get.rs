@@ -31,7 +31,9 @@ use tracing::{debug, error};
 
 use crate::{Hash, protocol::RangeSpecSeq, store::IROH_BLOCK_SIZE};
 
+mod error;
 pub mod request;
+pub use error::{GetError, GetResult};
 
 type WrappedRecvStream = TokioStreamReader<RecvStream>;
 

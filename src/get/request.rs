@@ -21,7 +21,7 @@ use nested_enum_utils::enum_conversions;
 use rand::Rng;
 use tokio::sync::mpsc;
 
-use super::{Stats, fsm};
+use super::{GetError, GetResult, Stats, fsm};
 use crate::{
     Hash, HashAndFormat,
     hashseq::HashSeq,
@@ -37,7 +37,7 @@ pub struct GetBlobResult {
 }
 
 impl IntoFuture for GetBlobResult {
-    type Output = anyhow::Result<Bytes>;
+    type Output = GetResult<Bytes>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
@@ -46,16 +46,16 @@ impl IntoFuture for GetBlobResult {
 }
 
 impl GetBlobResult {
-    pub async fn bytes(self) -> anyhow::Result<Bytes> {
+    pub async fn bytes(self) -> GetResult<Bytes> {
         let (bytes, _) = self.bytes_and_stats().await?;
         Ok(bytes)
     }
 
-    pub async fn bytes_and_stats(mut self) -> anyhow::Result<(Bytes, Stats)> {
+    pub async fn bytes_and_stats(mut self) -> GetResult<(Bytes, Stats)> {
         let mut parts = Vec::new();
         let stats = loop {
             let Some(item) = self.next().await else {
-                return Err(anyhow::anyhow!("unexpected end"));
+                return Err(GetError::LocalFailure(anyhow::anyhow!("unexpected end")));
             };
             match item {
                 GetBlobItem::Item(item) => {
@@ -101,7 +101,7 @@ pub enum GetBlobItem {
     /// Request completed successfully
     Done(Stats),
     /// Request failed
-    Error(anyhow::Error),
+    Error(GetError),
 }
 
 pub fn get_blob(connection: Connection, hash: Hash) -> GetBlobResult {
@@ -119,7 +119,7 @@ async fn get_blob_impl(
     connection: &Connection,
     hash: &Hash,
     co: &Co<GetBlobItem>,
-) -> anyhow::Result<()> {
+) -> GetResult<()> {
     let request = GetRequest::single(*hash);
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -151,10 +151,7 @@ async fn get_blob_impl(
 ///
 /// This is just reading the size header and then immediately closing the connection.
 /// It can be used to check if a peer has any data at all.
-pub async fn get_unverified_size(
-    connection: &Connection,
-    hash: &Hash,
-) -> anyhow::Result<(u64, Stats)> {
+pub async fn get_unverified_size(connection: &Connection, hash: &Hash) -> GetResult<(u64, Stats)> {
     let request = GetRequest::new(
         *hash,
         RangeSpecSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
@@ -174,10 +171,7 @@ pub async fn get_unverified_size(
 ///
 /// This asks for the last chunk of the blob and validates the response.
 /// Note that this does not validate that the peer has all the data.
-pub async fn get_verified_size(
-    connection: &Connection,
-    hash: &Hash,
-) -> anyhow::Result<(u64, Stats)> {
+pub async fn get_verified_size(connection: &Connection, hash: &Hash) -> GetResult<(u64, Stats)> {
     tracing::trace!("Getting verified size of {}", hash.to_hex());
     let request = GetRequest::new(
         *hash,
@@ -225,7 +219,7 @@ pub async fn get_hash_seq_and_sizes(
     hash: &Hash,
     max_size: u64,
     _progress: Option<mpsc::Sender<u64>>,
-) -> anyhow::Result<(HashSeq, Arc<[u64]>)> {
+) -> GetResult<(HashSeq, Arc<[u64]>)> {
     let content = HashAndFormat::hash_seq(*hash);
     tracing::debug!("Getting hash seq and children sizes of {}", content);
     let request = GetRequest::new(
@@ -244,10 +238,10 @@ pub async fn get_hash_seq_and_sizes(
     let (at_blob_content, size) = at_start_root.next().await?;
     // check the size to avoid parsing a maliciously large hash seq
     if size > max_size {
-        anyhow::bail!("size too large");
+        return Err(GetError::BadRequest(anyhow::anyhow!("size too large")));
     }
     let (mut curr, hash_seq) = at_blob_content.concatenate_into_vec().await?;
-    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq))?;
+    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq)).map_err(|e| GetError::BadRequest(e))?;
     let mut sizes = Vec::with_capacity(hash_seq.len());
     let closing = loop {
         match curr.next() {
@@ -289,7 +283,7 @@ pub async fn get_chunk_probe(
     connection: &Connection,
     hash: &Hash,
     chunk: ChunkNum,
-) -> anyhow::Result<Stats> {
+) -> GetResult<Stats> {
     let ranges = ChunkRanges::from(chunk..chunk + 1);
     let ranges = RangeSpecSeq::from_ranges([ranges]);
     let request = GetRequest::new(*hash, ranges);

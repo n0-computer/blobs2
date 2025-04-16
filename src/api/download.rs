@@ -1,10 +1,13 @@
 //! Download API
 //!
 //! The entry point is the [`Download`] struct.
-use n0_future::StreamExt;
+use n0_future::{StreamExt, TryFutureExt};
 use ref_cast::RefCast;
 
-use crate::{api::ApiClient, get::Stats};
+use crate::{
+    api::ApiClient,
+    get::{GetError, GetResult, Stats, fsm::DecodeError},
+};
 
 /// API to compute request and to download from remote nodes.
 ///
@@ -301,7 +304,7 @@ impl Download {
         conn: Connection,
         request: GetRequest,
         progress: Option<spsc::Sender<u64>>,
-    ) -> anyhow::Result<Stats> {
+    ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
         let start = crate::get::fsm::start(conn, request);
@@ -325,7 +328,13 @@ impl Download {
         let at_closing = match next_child {
             Ok(at_start_child) => {
                 let mut next_child = Ok(at_start_child);
-                let hash_seq = HashSeq::try_from(store.get_bytes(root).await?)?;
+                let hash_seq = HashSeq::try_from(
+                    store
+                        .get_bytes(root)
+                        .await
+                        .map_err(|e| GetError::LocalFailure(e.into()))?,
+                )
+                .map_err(|e| GetError::BadRequest(e.into()))?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -354,6 +363,32 @@ impl Download {
     }
 }
 
+/// Failures for a get operation
+#[derive(Debug, thiserror::Error)]
+pub enum ExecuteError {
+    /// Network or IO operation failed.
+    #[error("Unable to open bidi stream")]
+    Connection(#[from] iroh::endpoint::ConnectionError),
+    #[error("Unable to read from the remote")]
+    Read(#[from] iroh::endpoint::ReadError),
+    #[error("Error sending the request")]
+    Send(#[from] crate::get::fsm::ConnectedNextError),
+    #[error("Unable to read size")]
+    Size(#[from] crate::get::fsm::AtBlobHeaderNextError),
+    #[error("Error while decoding the data")]
+    Decode(#[from] crate::get::fsm::DecodeError),
+    #[error("Internal error while reading the hash sequence")]
+    ExportBao(#[from] api::ExportBaoError),
+    #[error("Hash sequence has an invalid length")]
+    InvalidHashSeq(#[source] anyhow::Error),
+    #[error("Internal error importing the data")]
+    ImportBao(#[source] crate::api::RequestError),
+    #[error("Error sending download progress - receiver closed")]
+    SendDownloadProgress(#[from] irpc::channel::SendError),
+    #[error("Internal error importing the data")]
+    MpscSend(#[from] tokio::sync::mpsc::error::SendError<BaoContentItem>),
+}
+
 use std::{
     collections::{BTreeMap, HashSet},
     fmt::{self},
@@ -362,7 +397,10 @@ use std::{
     num::NonZeroU64,
 };
 
-use bao_tree::{ChunkNum, ChunkRanges, io::Leaf};
+use bao_tree::{
+    ChunkNum, ChunkRanges,
+    io::{BaoContentItem, Leaf},
+};
 use iroh::{Endpoint, NodeAddr, endpoint::Connection};
 use irpc::channel::{SendError, spsc};
 use tracing::trace;
@@ -460,30 +498,30 @@ async fn get_blob_ranges_impl(
     hash: Hash,
     store: &Store,
     progress: &mut DownloadProgress,
-) -> api::RequestResult<AtEndBlob> {
-    let (mut content, size) = header.next().await.map_err(api::Error::other)?;
+) -> GetResult<AtEndBlob> {
+    let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {
         return if hash == Hash::EMPTY {
-            let end = content.drain().await.map_err(api::Error::other)?;
+            let end = content.drain().await?;
             Ok(end)
         } else {
-            Err(api::Error::other("invalid size for hash").into())
+            Err(DecodeError::LeafHashMismatch(ChunkNum(0)).into())
         };
     };
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
     let (tx, rx) = mpsc::channel(buffer_size);
-    let complete = store.import_bao(hash, size, rx);
+    let complete = store
+        .import_bao(hash, size, rx)
+        .into_future()
+        .map_err(|e| GetError::LocalFailure(e.into()));
     let write = async move {
-        api::RequestResult::Ok(loop {
+        GetResult::Ok(loop {
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
-                    let item = res.map_err(api::Error::other)?;
-                    progress
-                        .send(next.stats().payload_bytes_read)
-                        .await
-                        .map_err(api::Error::other)?;
-                    tx.send(item).await.map_err(api::Error::other)?;
+                    let item = res?;
+                    progress.send(next.stats().payload_bytes_read).await?;
+                    tx.send(item).await?;
                     content = next;
                 }
                 BlobContentNext::Done(end) => {

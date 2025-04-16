@@ -8,20 +8,22 @@ use super::{
     DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, NeedsConn,
     progress::BroadcastProgressSender,
 };
-use crate::api::{Store, download::LocalInfo};
+use crate::{
+    api::{Store, download::LocalInfo},
+    get::GetError,
+};
 
-impl From<anyhow::Error> for FailureAction {
-    fn from(e: anyhow::Error) -> Self {
-        todo!()
-        // match e {
-        //     e @ GetError::NotFound(_) => FailureAction::AbortRequest(e.into()),
-        //     e @ GetError::RemoteReset(_) => FailureAction::RetryLater(e.into()),
-        //     e @ GetError::NoncompliantNode(_) => FailureAction::DropPeer(e.into()),
-        //     e @ GetError::Io(_) => FailureAction::RetryLater(e.into()),
-        //     e @ GetError::BadRequest(_) => FailureAction::AbortRequest(e.into()),
-        //     // TODO: what do we want to do on local failures?
-        //     e @ GetError::LocalFailure(_) => FailureAction::AbortRequest(e.into()),
-        // }
+impl From<GetError> for FailureAction {
+    fn from(e: GetError) -> Self {
+        match e {
+            e @ GetError::NotFound(_) => FailureAction::AbortRequest(e.into()),
+            e @ GetError::RemoteReset(_) => FailureAction::RetryLater(e.into()),
+            e @ GetError::NoncompliantNode(_) => FailureAction::DropPeer(e.into()),
+            e @ GetError::Io(_) => FailureAction::RetryLater(e.into()),
+            e @ GetError::BadRequest(_) => FailureAction::AbortRequest(e.into()),
+            // TODO: what do we want to do on local failures?
+            e @ GetError::LocalFailure(_) => FailureAction::AbortRequest(e.into()),
+        }
     }
 }
 
