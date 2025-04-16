@@ -46,9 +46,10 @@ use anyhow::anyhow;
 use hashlink::LinkedHashSet;
 use iroh::{Endpoint, NodeAddr, NodeId, endpoint};
 use iroh_metrics::inc;
+use irpc::channel::spsc;
 use n0_future::{Stream, stream::StreamExt};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot},
     task::JoinSet,
 };
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
@@ -238,7 +239,7 @@ impl DownloadRequest {
     }
 
     /// Pass a progress sender to receive progress updates.
-    pub fn progress_sender(mut self, sender: ProgressSubscriber) -> Self {
+    pub fn progress_sender(mut self, sender: mpsc::Sender<u64>) -> Self {
         self.progress = Some(sender);
         self
     }
@@ -334,8 +335,13 @@ pub struct Downloader {
 
 impl Downloader {
     /// Create a new Downloader with the default [`ConcurrencyLimits`] and [`RetryConfig`].
-    pub fn new(store: Store, endpoint: Endpoint) -> Self {
-        Self::with_config(store, endpoint, Default::default(), Default::default())
+    pub fn new(store: impl AsRef<Store>, endpoint: Endpoint) -> Self {
+        Self::with_config(
+            store.as_ref().clone(),
+            endpoint,
+            Default::default(),
+            Default::default(),
+        )
     }
 
     /// Create a new Downloader with custom [`ConcurrencyLimits`] and [`RetryConfig`].

@@ -5,7 +5,8 @@ use iroh::endpoint;
 use tracing::error;
 
 use super::{
-    DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, progress::BroadcastProgressSender,
+    DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, NeedsConn,
+    progress::BroadcastProgressSender,
 };
 use crate::api::{Store, download::LocalInfo};
 
@@ -34,16 +35,22 @@ pub(crate) struct IoGetter {
 #[derive(Debug)]
 pub struct GetStateNeedsConn {
     pub store: Store,
-    pub local: LocalInfo,
+    pub info: LocalInfo,
+    pub progress: BroadcastProgressSender,
 }
 
-impl super::NeedsConn<endpoint::Connection> for GetStateNeedsConn {
+impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
     fn proceed(self, conn: endpoint::Connection) -> super::GetProceedFut {
         let store = self.store.clone();
+        let local_bytes = self.info.local_bytes();
         Box::pin(async move {
             let res = store
                 .download()
-                .execute(conn, self.local.missing(), None)
+                .execute(
+                    conn,
+                    self.info.missing(),
+                    Some(self.progress.add_offset(local_bytes)),
+                )
                 .await;
             #[cfg(feature = "metrics")]
             track_metrics(&res);
@@ -62,7 +69,7 @@ impl Getter for IoGetter {
     fn get(
         &mut self,
         kind: DownloadKind,
-        progress_sender: BroadcastProgressSender,
+        progress: BroadcastProgressSender,
     ) -> GetStartFut<Self::NeedsConn> {
         let store = self.store.clone();
         Box::pin(async move {
@@ -75,7 +82,8 @@ impl Getter for IoGetter {
             } else {
                 GetOutput::NeedsConn(GetStateNeedsConn {
                     store: store.clone(),
-                    local,
+                    info: local,
+                    progress,
                 })
             })
         })

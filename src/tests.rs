@@ -1,18 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use bao_tree::ChunkRanges;
+use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use iroh::{Endpoint, protocol::Router};
-use irpc::channel::spsc;
+use irpc::{RpcMessage, channel::spsc};
 use n0_future::{StreamExt, pin};
 use tempfile::TempDir;
 use testresult::TestResult;
-use tokio::select;
+use tokio::{select, sync::mpsc};
 use tracing::info;
+use tracing_test::traced_test;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
     api::Store,
+    downloader::{DownloadRequest, Downloader},
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
@@ -24,30 +26,105 @@ use crate::{
 };
 
 #[tokio::test]
-async fn two_nodes_blobs() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let testdir = tempfile::tempdir()?;
-    let db1_path = testdir.path().join("db1");
-    let db2_path = testdir.path().join("db2");
-    let store1 = FsStore::load(&db1_path).await?;
-    let store2 = FsStore::load(&db2_path).await?;
+#[traced_test]
+async fn two_nodes_blobs_downloader_smoke() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let sizes = INTERESTING_SIZES;
     let mut tts = Vec::new();
     for size in sizes {
         tts.push(store1.add_bytes(test_data(size)).await?);
     }
-    let ep1 = Endpoint::builder().discovery_n0().bind().await?;
-    let ep2 = Endpoint::builder().bind().await?;
-    let blobs1 = Blobs::new(&store1, ep1.clone(), None);
-    let blobs2 = Blobs::new(&store2, ep2.clone(), None);
-    let r1 = Router::builder(ep1)
-        .accept(crate::ALPN, blobs1)
-        .spawn()
-        .await?;
-    let r2 = Router::builder(ep2)
-        .accept(crate::ALPN, blobs2)
-        .spawn()
-        .await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    // test that we can download directly, without a downloader
+    // let no_downloader_tt = store1.add_slice("test").await?;
+    // let conn = r2.endpoint().connect(addr1.clone(), crate::ALPN).await?;
+    // let stats = store2.download().fetch(conn, *no_downloader_tt.hash_and_format(), None).await?;
+    // println!("stats: {:?}", stats);
+    // return Ok(());
+
+    // tell ep2 about the addr of ep1, so we don't need to rely on node discovery
+    r2.endpoint().add_node_addr(addr1.clone())?;
+    let d1 = Downloader::new(store2.clone(), r2.endpoint().clone());
+    for (tt, size) in tts.iter().zip(sizes) {
+        // protect the downloaded data from being deleted
+        let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
+        let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]);
+        let handle = d1.queue(request).await;
+        handle.await?;
+        assert_eq!(store2.get_bytes(*tt.hash()).await?, test_data(size));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn two_nodes_blobs_downloader_progress() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let size = 1024 * 1024 * 8 + 1;
+    let tt = store1.add_bytes(test_data(size)).await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+
+    // tell ep2 about the addr of ep1, so we don't need to rely on node discovery
+    r2.endpoint().add_node_addr(addr1.clone())?;
+    // create progress channel - big enough to not block
+    let (tx, rx) = mpsc::channel(1024 * 1024);
+    let d1 = Downloader::new(store2.clone(), r2.endpoint().clone());
+    // protect the downloaded data from being deleted
+    let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
+    let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]).progress_sender(tx);
+    let handle = d1.queue(request).await;
+    handle.await?;
+    let progress = drain(rx).await;
+    assert!(!progress.is_empty());
+    assert_eq!(store2.get_bytes(*tt.hash()).await?, test_data(size));
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn two_nodes_blobs_downloader_partial() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let size = 1024 * 1024 * 8 + 1;
+    // add some partial data
+    let ranges = ChunkRanges::from(..ChunkNum(17));
+    let (hash, bao) = create_n0_bao(&test_data(size), &ranges)?;
+    let tt = store1.tags().temp_tag(hash).await?;
+    store1.import_bao_bytes(hash, ranges, bao).await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+
+    // tell ep2 about the addr of ep1, so we don't need to rely on node discovery
+    r2.endpoint().add_node_addr(addr1.clone())?;
+    // create progress channel - big enough to not block
+    let (tx, rx) = mpsc::channel(1024 * 1024);
+    let d1 = Downloader::new(store2.clone(), r2.endpoint().clone());
+    // protect the downloaded data from being deleted
+    let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
+    let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]).progress_sender(tx);
+    let handle = d1.queue(request).await;
+    handle.await?;
+    let progress = drain(rx).await;
+    assert!(!progress.is_empty());
+    assert_eq!(store2.get_bytes(*tt.hash()).await?, test_data(size));
+    Ok(())
+}
+
+async fn drain<T: RpcMessage>(mut rx: mpsc::Receiver<T>) -> Vec<T> {
+    let mut items = Vec::new();
+    while let Some(item) = rx.recv().await {
+        items.push(item);
+    }
+    items
+}
+
+#[tokio::test]
+#[traced_test]
+async fn two_nodes_blobs() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let sizes = INTERESTING_SIZES;
+    let mut tts = Vec::new();
+    for size in sizes {
+        tts.push(store1.add_bytes(test_data(size)).await?);
+    }
     let addr1 = r1.endpoint().node_addr().await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     for size in sizes {
@@ -117,6 +194,21 @@ async fn check_presence(store: &Store, sizes: &[usize]) -> TestResult<()> {
     Ok(())
 }
 
+async fn node_test_setup(db_path: PathBuf) -> TestResult<(Router, FsStore, PathBuf)> {
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
+    let ep = Endpoint::builder().bind().await?;
+    let blobs = Blobs::new(&store, ep.clone(), None);
+    let router = Router::builder(ep)
+        .accept(crate::ALPN, blobs)
+        .spawn()
+        .await?;
+    Ok((router, store, db_path))
+}
+
+/// Sets up two nodes with a router and a blob store each.
+///
+/// Note that this does not configure discovery, so nodes will only find each other
+/// with full node addresses, not just node ids!
 async fn two_node_test_setup() -> TestResult<(
     TempDir,
     (Router, FsStore, PathBuf),
@@ -125,21 +217,11 @@ async fn two_node_test_setup() -> TestResult<(
     let testdir = tempfile::tempdir().unwrap();
     let db1_path = testdir.path().join("db1");
     let db2_path = testdir.path().join("db2");
-    let store1 = FsStore::load(&db1_path).await.unwrap();
-    let store2 = FsStore::load(&db2_path).await.unwrap();
-    let ep1 = Endpoint::builder().discovery_n0().bind().await.unwrap();
-    let ep2 = Endpoint::builder().bind().await.unwrap();
-    let blobs1 = Blobs::new(&store1, ep1.clone(), None);
-    let blobs2 = Blobs::new(&store2, ep2.clone(), None);
-    let r1 = Router::builder(ep1)
-        .accept(crate::ALPN, blobs1)
-        .spawn()
-        .await?;
-    let r2 = Router::builder(ep2)
-        .accept(crate::ALPN, blobs2)
-        .spawn()
-        .await?;
-    Ok((testdir, (r1, store1, db1_path), (r2, store2, db2_path)))
+    Ok((
+        testdir,
+        node_test_setup(db1_path).await?,
+        node_test_setup(db2_path).await?,
+    ))
 }
 
 #[tokio::test]

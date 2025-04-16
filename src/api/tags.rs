@@ -12,7 +12,10 @@ pub use super::proto::{
     ListTagsRequest as ListOptions, RenameTagRequest as RenameOptions, SetTagRequest as SetOptions,
     TagInfo,
 };
-use super::{ApiClient, Tag};
+use super::{
+    ApiClient, Tag, TempTag,
+    proto::{CreateTempTagRequest, Scope},
+};
 use crate::{HashAndFormat, api::proto::ListTempTagsRequest};
 
 /// The API for interacting with tags and temp tags.
@@ -178,5 +181,14 @@ impl Tags {
             value: value.into(),
         })
         .await
+    }
+
+    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
+        let value = value.into();
+        let msg = CreateTempTagRequest {
+            scope: Scope::GLOBAL,
+            value,
+        };
+        self.client.rpc(msg).await
     }
 }

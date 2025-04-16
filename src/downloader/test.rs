@@ -7,9 +7,11 @@ use std::{
 use anyhow::anyhow;
 use iroh::SecretKey;
 use n0_future::{future::FutureExt, task::AbortOnDropHandle};
+use testresult::TestResult;
 use tracing_test::traced_test;
 
 use super::*;
+use crate::{net_protocol::Blobs, store::fs::FsStore};
 mod dialer;
 mod getter;
 
@@ -230,6 +232,7 @@ async fn max_concurrent_requests_per_peer() {
 // async fn concurrent_progress() {
 //     let dialer = dialer::TestingDialer::default();
 //     let getter = getter::TestingGetter::default();
+//     use futures::future::FutureExt;
 
 //     let (start_tx, start_rx) = oneshot::channel();
 //     let start_rx = start_rx.shared();
@@ -240,24 +243,16 @@ async fn max_concurrent_requests_per_peer() {
 //     getter.set_handler(Arc::new(move |hash, _peer, progress, _duration| {
 //         let start_rx = start_rx.clone();
 //         let done_rx = done_rx.clone();
-//         async move {
+//         Box::pin(async move {
 //             let hash = hash.hash();
 //             start_rx.await.unwrap();
-//             let id = progress.new_id();
 //             progress
-//                 .send(DownloadProgress::Found {
-//                     id,
-//                     child: BlobId::Root,
-//                     hash,
-//                     size: 100,
-//                 })
-//                 .await
-//                 .unwrap();
+//                 .send(1000)
+//                 .await;
 //             done_rx.await.unwrap();
-//             progress.send(DownloadProgress::Done { id }).await.unwrap();
+//             progress.send(10000).await;
 //             Ok(Stats::default())
-//         }
-//         .boxed()
+//         })
 //     }));
 //     let (downloader, _lp) =
 //         Downloader::spawn_for_test(dialer.clone(), getter.clone(), Default::default());
@@ -266,80 +261,78 @@ async fn max_concurrent_requests_per_peer() {
 //     let hash = Hash::new([0u8; 32]);
 //     let kind_1 = HashAndFormat::raw(hash);
 
-//     let (prog_a_tx, prog_a_rx) = async_channel::bounded(64);
-//     let prog_a_tx = AsyncChannelProgressSender::new(prog_a_tx);
+//     let (prog_a_tx, prog_a_rx) = mpsc::channel(64);
 //     let req = DownloadRequest::new(kind_1, vec![peer]).progress_sender(prog_a_tx);
 //     let handle_a = downloader.queue(req).await;
 
-//     let (prog_b_tx, prog_b_rx) = async_channel::bounded(64);
-//     let prog_b_tx = AsyncChannelProgressSender::new(prog_b_tx);
+//     let (prog_b_tx, prog_b_rx) = mpsc::channel(64);
 //     let req = DownloadRequest::new(kind_1, vec![peer]).progress_sender(prog_b_tx);
 //     let handle_b = downloader.queue(req).await;
 
-//     let mut state_a = TransferState::new(hash);
-//     let mut state_b = TransferState::new(hash);
-//     let mut state_c = TransferState::new(hash);
+//     // let mut state_a = TransferState::new(hash);
+//     // let mut state_b = TransferState::new(hash);
+//     // let mut state_c = TransferState::new(hash);
 
 //     let prog0_b = prog_b_rx.recv().await.unwrap();
-//     assert!(matches!(
-//         prog0_b,
-//         DownloadProgress::InitialState(state) if state.root.hash == hash && state.root.progress == BlobProgress::Pending,
-//     ));
+// //     assert!(matches!(
+// //         prog0_b,
+// //         DownloadProgress::InitialState(state) if state.root.hash == hash && state.root.progress == BlobProgress::Pending,
+// //     ));
 
 //     start_tx.send(()).unwrap();
 
 //     let prog1_a = prog_a_rx.recv().await.unwrap();
 //     let prog1_b = prog_b_rx.recv().await.unwrap();
-//     assert!(
-//         matches!(prog1_a, DownloadProgress::Found { hash: found_hash, size: 100, ..} if found_hash == hash)
-//     );
-//     assert!(
-//         matches!(prog1_b, DownloadProgress::Found { hash: found_hash, size: 100, ..} if found_hash == hash)
-//     );
+// //     assert!(
+// //         matches!(prog1_a, DownloadProgress::Found { hash: found_hash, size: 100, ..} if found_hash == hash)
+// //     );
+// //     assert!(
+// //         matches!(prog1_b, DownloadProgress::Found { hash: found_hash, size: 100, ..} if found_hash == hash)
+// //     );
 
-//     state_a.on_progress(prog1_a);
-//     state_b.on_progress(prog1_b);
-//     assert_eq!(state_a, state_b);
+// //     state_a.on_progress(prog1_a);
+// //     state_b.on_progress(prog1_b);
+// //     assert_eq!(state_a, state_b);
 
-//     let (prog_c_tx, prog_c_rx) = async_channel::bounded(64);
-//     let prog_c_tx = AsyncChannelProgressSender::new(prog_c_tx);
-//     let req = DownloadRequest::new(kind_1, vec![peer]).progress_sender(prog_c_tx);
-//     let handle_c = downloader.queue(req).await;
+// //     let (prog_c_tx, prog_c_rx) = async_channel::bounded(64);
+// //     let prog_c_tx = AsyncChannelProgressSender::new(prog_c_tx);
+// //     let req = DownloadRequest::new(kind_1, vec![peer]).progress_sender(prog_c_tx);
+// //     let handle_c = downloader.queue(req).await;
 
-//     let prog1_c = prog_c_rx.recv().await.unwrap();
-//     assert!(matches!(&prog1_c, DownloadProgress::InitialState(state) if state == &state_a));
-//     state_c.on_progress(prog1_c);
+// //     let prog1_c = prog_c_rx.recv().await.unwrap();
+// //     assert!(matches!(&prog1_c, DownloadProgress::InitialState(state) if state == &state_a));
+// //     state_c.on_progress(prog1_c);
 
-//     done_tx.send(()).unwrap();
+// //     done_tx.send(()).unwrap();
 
-//     let (res_a, res_b, res_c) = tokio::join!(handle_a, handle_b, handle_c);
-//     res_a.unwrap();
-//     res_b.unwrap();
-//     res_c.unwrap();
+// //     let (res_a, res_b, res_c) = tokio::join!(handle_a, handle_b, handle_c);
+// //     res_a.unwrap();
+// //     res_b.unwrap();
+// //     res_c.unwrap();
 
-//     let prog_a: Vec<_> = prog_a_rx.collect().await;
-//     let prog_b: Vec<_> = prog_b_rx.collect().await;
-//     let prog_c: Vec<_> = prog_c_rx.collect().await;
+// //     let prog_a: Vec<_> = prog_a_rx.collect().await;
+// //     let prog_b: Vec<_> = prog_b_rx.collect().await;
+// //     let prog_c: Vec<_> = prog_c_rx.collect().await;
 
-//     assert_eq!(prog_a.len(), 1);
-//     assert_eq!(prog_b.len(), 1);
-//     assert_eq!(prog_c.len(), 1);
+// //     assert_eq!(prog_a.len(), 1);
+// //     assert_eq!(prog_b.len(), 1);
+// //     assert_eq!(prog_c.len(), 1);
 
-//     assert!(matches!(prog_a[0], DownloadProgress::Done { .. }));
-//     assert!(matches!(prog_b[0], DownloadProgress::Done { .. }));
-//     assert!(matches!(prog_c[0], DownloadProgress::Done { .. }));
+// //     assert!(matches!(prog_a[0], DownloadProgress::Done { .. }));
+// //     assert!(matches!(prog_b[0], DownloadProgress::Done { .. }));
+// //     assert!(matches!(prog_c[0], DownloadProgress::Done { .. }));
 
-//     for p in prog_a {
-//         state_a.on_progress(p);
-//     }
-//     for p in prog_b {
-//         state_b.on_progress(p);
-//     }
-//     for p in prog_c {
-//         state_c.on_progress(p);
-//     }
-//     assert_eq!(state_a, state_b);
-//     assert_eq!(state_a, state_c);
+// //     for p in prog_a {
+// //         state_a.on_progress(p);
+// //     }
+// //     for p in prog_b {
+// //         state_b.on_progress(p);
+// //     }
+// //     for p in prog_c {
+// //         state_c.on_progress(p);
+// //     }
+// //     assert_eq!(state_a, state_b);
+// //     assert_eq!(state_a, state_c);
 // }
 
 #[tokio::test]

@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
-use irpc::channel::spsc;
+use tokio::sync::mpsc;
 
 use super::DownloadKind;
 
 /// The channel that can be used to subscribe to progress updates.
-pub type ProgressSubscriber = Arc<tokio::sync::Mutex<spsc::Sender<u64>>>;
+pub type ProgressSubscriber = mpsc::Sender<u64>;
 
 /// Track the progress of downloads.
 ///
@@ -49,7 +43,7 @@ impl ProgressTracker {
             subscribers: subscribers.into_iter().collect(),
             current: 0,
         };
-        let shared = Arc::new(Mutex::new(inner));
+        let shared = Arc::new(tokio::sync::Mutex::new(inner));
         self.running.insert(kind, Arc::clone(&shared));
         BroadcastProgressSender { shared }
     }
@@ -67,17 +61,16 @@ impl ProgressTracker {
             .get_mut(&kind)
             .ok_or_else(|| anyhow!("state for download {kind:?} not found"))?
             .lock()
-            .unwrap()
+            .await
             .subscribe(sender.clone());
-        let mut guard = sender.lock().await;
-        guard.send(initial_offset).await?;
+        sender.send(initial_offset).await?;
         Ok(())
     }
 
     /// Unsubscribe `sender` from `kind`.
-    pub fn unsubscribe(&mut self, kind: &DownloadKind, sender: &ProgressSubscriber) {
+    pub async fn unsubscribe(&mut self, kind: &DownloadKind, sender: &ProgressSubscriber) {
         if let Some(shared) = self.running.get_mut(kind) {
-            shared.lock().unwrap().unsubscribe(sender)
+            shared.lock().await.unsubscribe(sender)
         }
     }
 
@@ -87,7 +80,7 @@ impl ProgressTracker {
     }
 }
 
-type Shared = Arc<Mutex<Inner>>;
+type Shared = Arc<tokio::sync::Mutex<Inner>>;
 
 #[derive(Debug)]
 struct Inner {
@@ -103,13 +96,18 @@ impl Inner {
     }
 
     fn unsubscribe(&mut self, sender: &ProgressSubscriber) {
-        self.subscribers.retain(|s| !Arc::ptr_eq(s, sender));
+        self.subscribers.retain(|s| !s.same_channel(sender));
     }
 
-    async fn on_progress(&mut self, progress: u64) {
+    fn try_send(&mut self, progress: u64) {
+        self.subscribers
+            .retain(|sender| !sender.try_send(progress).is_err());
+    }
+
+    async fn send(&mut self, progress: u64) {
         let mut dropped = Vec::new();
         for (index, sender) in self.subscribers.iter_mut().enumerate() {
-            if sender.lock().await.try_send(progress).await.is_err() {
+            if sender.send(progress).await.is_err() {
                 dropped.push(index);
             }
         }
@@ -122,4 +120,54 @@ impl Inner {
 #[derive(Debug, Clone)]
 pub struct BroadcastProgressSender {
     shared: Shared,
+}
+
+// todo: we could get rid of this if we had with_map on the sender!
+#[derive(Debug)]
+struct OffsetProgressSender {
+    inner: BroadcastProgressSender,
+    offset: u64,
+}
+
+impl irpc::channel::spsc::DynSender<u64> for OffsetProgressSender {
+    fn send(
+        &mut self,
+        value: u64,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let mut guard = self.inner.shared.lock().await;
+            guard.send(value + self.offset).await;
+            Ok(())
+        })
+    }
+
+    fn try_send(
+        &mut self,
+        value: u64,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<bool>> + Send + '_>> {
+        Box::pin(async move {
+            let mut guard = self.inner.shared.lock().await;
+            guard.try_send(value + self.offset);
+            Ok(true)
+        })
+    }
+
+    fn is_rpc(&self) -> bool {
+        false
+    }
+}
+
+impl BroadcastProgressSender {
+    pub fn add_offset(self, offset: u64) -> irpc::channel::spsc::Sender<u64> {
+        irpc::channel::spsc::Sender::Boxed(Box::new(OffsetProgressSender {
+            inner: self,
+            offset,
+        }))
+    }
+
+    #[cfg(test)]
+    pub async fn send(&self, progress: u64) {
+        let mut guard = self.shared.lock().await;
+        guard.send(progress).await;
+    }
 }
