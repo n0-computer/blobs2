@@ -6,23 +6,26 @@ use futures_lite::FutureExt;
 use iroh::endpoint;
 use tracing::error;
 
-use crate::api::{download::LocalInfo, Store};
+use super::{
+    DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, NeedsConn,
+    progress::BroadcastProgressSender,
+};
+use crate::api::{Store, download::LocalInfo};
 
-use super::{progress::BroadcastProgressSender, DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, NeedsConn};
-
-// impl From<GetError> for FailureAction {
-//     fn from(e: GetError) -> Self {
-//         match e {
-//             e @ GetError::NotFound(_) => FailureAction::AbortRequest(e.into()),
-//             e @ GetError::RemoteReset(_) => FailureAction::RetryLater(e.into()),
-//             e @ GetError::NoncompliantNode(_) => FailureAction::DropPeer(e.into()),
-//             e @ GetError::Io(_) => FailureAction::RetryLater(e.into()),
-//             e @ GetError::BadRequest(_) => FailureAction::AbortRequest(e.into()),
-//             // TODO: what do we want to do on local failures?
-//             e @ GetError::LocalFailure(_) => FailureAction::AbortRequest(e.into()),
-//         }
-//     }
-// }
+impl From<anyhow::Error> for FailureAction {
+    fn from(e: anyhow::Error) -> Self {
+        todo!()
+        // match e {
+        //     e @ GetError::NotFound(_) => FailureAction::AbortRequest(e.into()),
+        //     e @ GetError::RemoteReset(_) => FailureAction::RetryLater(e.into()),
+        //     e @ GetError::NoncompliantNode(_) => FailureAction::DropPeer(e.into()),
+        //     e @ GetError::Io(_) => FailureAction::RetryLater(e.into()),
+        //     e @ GetError::BadRequest(_) => FailureAction::AbortRequest(e.into()),
+        //     // TODO: what do we want to do on local failures?
+        //     e @ GetError::LocalFailure(_) => FailureAction::AbortRequest(e.into()),
+        // }
+    }
+}
 
 /// [`Getter`] implementation that performs requests over [`Connection`]s.
 ///
@@ -40,17 +43,18 @@ pub struct GetStateNeedsConn {
 impl super::NeedsConn<endpoint::Connection> for GetStateNeedsConn {
     fn proceed(self, conn: endpoint::Connection) -> super::GetProceedFut {
         let store = self.store.clone();
-        async move {
-            let stats = store.download().fetch(conn, self.local.missing(), None).await;
-            let res = self.proceed(conn).await;
+        Box::pin(async move {
+            let res = store
+                .download()
+                .execute(conn, self.local.missing(), None)
+                .await;
             #[cfg(feature = "metrics")]
             track_metrics(&res);
             match res {
                 Ok(stats) => Ok(stats),
                 Err(err) => Err(err.into()),
             }
-        }
-        .boxed_local()
+        })
     }
 }
 
@@ -64,21 +68,20 @@ impl Getter for IoGetter {
         progress_sender: BroadcastProgressSender,
     ) -> GetStartFut<Self::NeedsConn> {
         let store = self.store.clone();
-        async move {
+        Box::pin(async move {
             let local = store.download().local(kind).await.map_err(|e| {
                 error!("failed to get local info: {}", e);
                 FailureAction::AbortRequest(e)
             })?;
             Ok(if local.is_complete() {
-                GetOutput::Complete(local)
+                GetOutput::Complete(Default::default())
             } else {
                 GetOutput::NeedsConn(GetStateNeedsConn {
                     store: store.clone(),
                     local,
                 })
             })
-        }
-        .boxed_local()
+        })
     }
 }
 

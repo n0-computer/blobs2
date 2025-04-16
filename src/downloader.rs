@@ -27,39 +27,34 @@
 
 use std::{
     collections::{
-        hash_map::{self, Entry},
         HashMap, HashSet,
+        hash_map::{self, Entry},
     },
     fmt,
     future::Future,
     num::NonZeroUsize,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     task::Poll,
     time::Duration,
 };
 
 use anyhow::anyhow;
-use futures_lite::{future::BoxedLocal, Stream, StreamExt};
 use hashlink::LinkedHashSet;
-use iroh::{endpoint, Endpoint, NodeAddr, NodeId};
+use iroh::{Endpoint, NodeAddr, NodeId, endpoint};
 use iroh_metrics::inc;
+use n0_future::{Stream, stream::StreamExt};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
 };
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
-use tracing::{debug, error, error_span, trace, warn, Instrument};
+use tracing::{Instrument, debug, error, error_span, trace, warn};
 
-use crate::{
-    get::Stats,
-    metrics::Metrics,
-    api::Store,
-    BlobFormat, Hash, HashAndFormat,
-};
+use crate::{BlobFormat, Hash, HashAndFormat, api::Store, get::Stats, metrics::Metrics};
 
 mod get;
 mod invariants;
@@ -105,9 +100,9 @@ pub enum FailureAction {
 }
 
 /// Future of a get request, for the checking stage.
-type GetStartFut<N> = BoxedLocal<Result<GetOutput<N>, FailureAction>>;
+type GetStartFut<N> = n0_future::future::Boxed<Result<GetOutput<N>, FailureAction>>;
 /// Future of a get request, for the downloading stage.
-type GetProceedFut = BoxedLocal<InternalDownloadResult>;
+type GetProceedFut = n0_future::future::Boxed<InternalDownloadResult>;
 
 /// Trait modelling performing a single request over a connection. This allows for IO-less testing.
 pub trait Getter {
@@ -335,8 +330,7 @@ pub struct Downloader {
 
 impl Downloader {
     /// Create a new Downloader with the default [`ConcurrencyLimits`] and [`RetryConfig`].
-    pub fn new(store: Store, endpoint: Endpoint) -> Self
-    {
+    pub fn new(store: Store, endpoint: Endpoint) -> Self {
         Self::with_config(store, endpoint, Default::default(), Default::default())
     }
 
@@ -346,8 +340,7 @@ impl Downloader {
         endpoint: Endpoint,
         concurrency_limits: ConcurrencyLimits,
         retry_config: RetryConfig,
-    ) -> Self
-    {
+    ) -> Self {
         let me = endpoint.node_id().fmt_short();
         let (msg_tx, msg_rx) = mpsc::channel(SERVICE_CHANNEL_CAPACITY);
         let dialer = Dialer::new(endpoint);
@@ -789,13 +782,8 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
             handlers.on_finish.send(Err(DownloadError::Cancelled)).ok();
 
             if let Some(sender) = handlers.on_progress {
+                // drops the sender!
                 self.progress_tracker.unsubscribe(&kind, &sender);
-                sender
-                    .send(DownloadProgress::Abort(serde_error::Error::new(
-                        &*anyhow::Error::from(DownloadError::Cancelled),
-                    )))
-                    .await
-                    .ok();
             }
         }
 
@@ -1207,7 +1195,9 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
                     true
                 }
                 ConnectedState::Busy { .. } => {
-                    warn!("expected removed node to be idle, but is busy (removal reason: {reason:?})");
+                    warn!(
+                        "expected removed node to be idle, but is busy (removal reason: {reason:?})"
+                    );
                     self.connected_nodes.insert(node, info);
                     false
                 }

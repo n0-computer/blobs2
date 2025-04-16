@@ -1,22 +1,18 @@
 use std::{
     collections::HashMap,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        Arc,
     },
 };
 
 use anyhow::anyhow;
-use parking_lot::Mutex;
+use irpc::channel::spsc;
 
 use super::DownloadKind;
-use crate::{
-    get::{db::DownloadProgress, progress::TransferState},
-    util::progress::{AsyncChannelProgressSender, IdGenerator, ProgressSendError, ProgressSender},
-};
 
 /// The channel that can be used to subscribe to progress updates.
-pub type ProgressSubscriber = AsyncChannelProgressSender<DownloadProgress>;
+pub type ProgressSubscriber = Arc<tokio::sync::Mutex<spsc::Sender<u64>>>;
 
 /// Track the progress of downloads.
 ///
@@ -32,8 +28,6 @@ pub type ProgressSubscriber = AsyncChannelProgressSender<DownloadProgress>;
 pub struct ProgressTracker {
     /// Map of shared state for each tracked download.
     running: HashMap<DownloadKind, Shared>,
-    /// Shared [`IdGenerator`] for all progress senders created by the tracker.
-    id_gen: Arc<AtomicU64>,
 }
 
 impl ProgressTracker {
@@ -53,12 +47,11 @@ impl ProgressTracker {
     ) -> BroadcastProgressSender {
         let inner = Inner {
             subscribers: subscribers.into_iter().collect(),
-            state: TransferState::new(kind.hash()),
+            current: 0,
         };
         let shared = Arc::new(Mutex::new(inner));
         self.running.insert(kind, Arc::clone(&shared));
-        let id_gen = Arc::clone(&self.id_gen);
-        BroadcastProgressSender { shared, id_gen }
+        BroadcastProgressSender { shared }
     }
 
     /// Subscribe to a tracked download.
@@ -69,20 +62,22 @@ impl ProgressTracker {
         kind: DownloadKind,
         sender: ProgressSubscriber,
     ) -> anyhow::Result<()> {
-        let initial_msg = self
+        let initial_offset = self
             .running
             .get_mut(&kind)
             .ok_or_else(|| anyhow!("state for download {kind:?} not found"))?
             .lock()
+            .unwrap()
             .subscribe(sender.clone());
-        sender.send(initial_msg).await?;
+        let mut guard = sender.lock().await;
+        guard.send(initial_offset).await?;
         Ok(())
     }
 
     /// Unsubscribe `sender` from `kind`.
     pub fn unsubscribe(&mut self, kind: &DownloadKind, sender: &ProgressSubscriber) {
         if let Some(shared) = self.running.get_mut(kind) {
-            shared.lock().unsubscribe(sender)
+            shared.lock().unwrap().unsubscribe(sender)
         }
     }
 
@@ -97,98 +92,34 @@ type Shared = Arc<Mutex<Inner>>;
 #[derive(Debug)]
 struct Inner {
     subscribers: Vec<ProgressSubscriber>,
-    state: TransferState,
+    // current offset of the download
+    current: u64,
 }
 
 impl Inner {
-    fn subscribe(&mut self, subscriber: ProgressSubscriber) -> DownloadProgress {
-        let msg = DownloadProgress::InitialState(self.state.clone());
+    fn subscribe(&mut self, subscriber: ProgressSubscriber) -> u64 {
         self.subscribers.push(subscriber);
-        msg
+        self.current
     }
 
     fn unsubscribe(&mut self, sender: &ProgressSubscriber) {
-        self.subscribers.retain(|s| !s.same_channel(sender));
+        self.subscribers.retain(|s| !Arc::ptr_eq(s, sender));
     }
 
-    fn on_progress(&mut self, progress: DownloadProgress) {
-        self.state.on_progress(progress);
+    async fn on_progress(&mut self, progress: u64) {
+        let mut dropped = Vec::new();
+        for (index, sender) in self.subscribers.iter_mut().enumerate() {
+            if sender.lock().await.try_send(progress).await.is_err() {
+                dropped.push(index);
+            }
+        }
+        for index in dropped.into_iter().rev() {
+            self.subscribers.remove(index);
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct BroadcastProgressSender {
     shared: Shared,
-    id_gen: Arc<AtomicU64>,
-}
-
-impl IdGenerator for BroadcastProgressSender {
-    fn new_id(&self) -> u64 {
-        self.id_gen.fetch_add(1, Ordering::SeqCst)
-    }
-}
-
-impl ProgressSender for BroadcastProgressSender {
-    type Msg = DownloadProgress;
-
-    async fn send(&self, msg: Self::Msg) -> Result<(), ProgressSendError> {
-        // making sure that the lock is not held across an await point.
-        let futs = {
-            let mut inner = self.shared.lock();
-            inner.on_progress(msg.clone());
-            let futs = inner
-                .subscribers
-                .iter_mut()
-                .map(|sender| {
-                    let sender = sender.clone();
-                    let msg = msg.clone();
-                    async move {
-                        match sender.send(msg).await {
-                            Ok(()) => None,
-                            Err(ProgressSendError::ReceiverDropped) => Some(sender),
-                        }
-                    }
-                })
-                .collect::<Vec<_>>();
-            drop(inner);
-            futs
-        };
-
-        let failed_senders = futures_buffered::join_all(futs).await;
-        // remove senders where the receiver is dropped
-        if failed_senders.iter().any(|s| s.is_some()) {
-            let mut inner = self.shared.lock();
-            for sender in failed_senders.into_iter().flatten() {
-                inner.unsubscribe(&sender);
-            }
-            drop(inner);
-        }
-        Ok(())
-    }
-
-    fn try_send(&self, msg: Self::Msg) -> Result<(), ProgressSendError> {
-        let mut inner = self.shared.lock();
-        inner.on_progress(msg.clone());
-        // remove senders where the receiver is dropped
-        inner
-            .subscribers
-            .retain_mut(|sender| match sender.try_send(msg.clone()) {
-                Err(ProgressSendError::ReceiverDropped) => false,
-                Ok(()) => true,
-            });
-        Ok(())
-    }
-
-    fn blocking_send(&self, msg: Self::Msg) -> Result<(), ProgressSendError> {
-        let mut inner = self.shared.lock();
-        inner.on_progress(msg.clone());
-        // remove senders where the receiver is dropped
-        inner
-            .subscribers
-            .retain_mut(|sender| match sender.blocking_send(msg.clone()) {
-                Err(ProgressSendError::ReceiverDropped) => false,
-                Ok(()) => true,
-            });
-        Ok(())
-    }
 }
