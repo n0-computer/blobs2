@@ -31,7 +31,7 @@ use crate::{
     Hash,
     api::{
         self, ApiClient,
-        blobs::{Bitfield, ExportProgress, ImportProgress},
+        blobs::{AddProgressItem, Bitfield, ExportProgressItem},
         proto::{
             self, Command, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ObserveMsg,
@@ -80,21 +80,21 @@ impl Actor {
                     .ok();
             }
             Command::ImportBytes(ImportBytesMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error(io::Error::other(
+                tx.send(AddProgressItem::Error(io::Error::other(
                     "import not supported",
                 )))
                 .await
                 .ok();
             }
             Command::ImportByteStream(ImportByteStreamMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error(io::Error::other(
+                tx.send(AddProgressItem::Error(io::Error::other(
                     "import not supported",
                 )))
                 .await
                 .ok();
             }
             Command::ImportPath(ImportPathMsg { mut tx, .. }) => {
-                tx.send(ImportProgress::Error(io::Error::other(
+                tx.send(AddProgressItem::Error(io::Error::other(
                     "import not supported",
                 )))
                 .await
@@ -208,14 +208,16 @@ impl ReadonlyMemStore {
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
         let local = irpc::LocalSender::from(sender);
-        Self { client: local.into() }
+        Self {
+            client: local.into(),
+        }
     }
 }
 
 async fn export_path_task(
     entry: Option<(Bytes, Bytes)>,
     target: PathBuf,
-    mut tx: spsc::Sender<ExportProgress>,
+    mut tx: spsc::Sender<ExportProgressItem>,
 ) {
     let Some(entry) = entry else {
         tx.send(api::Error::io(io::ErrorKind::NotFound, "hash not found").into())
@@ -224,7 +226,7 @@ async fn export_path_task(
         return;
     };
     match export_path_impl(entry, target, &mut tx).await {
-        Ok(()) => tx.send(ExportProgress::Done).await.ok(),
+        Ok(()) => tx.send(ExportProgressItem::Done).await.ok(),
         Err(cause) => tx.send(api::Error::from(cause).into()).await.ok(),
     };
 }
@@ -232,19 +234,19 @@ async fn export_path_task(
 async fn export_path_impl(
     (data, _): (Bytes, Bytes),
     target: PathBuf,
-    tx: &mut spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(&target)?;
     let size = data.len() as u64;
-    tx.send(ExportProgress::Size(size)).await?;
+    tx.send(ExportProgressItem::Size(size)).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
         data.as_ref().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress(offset))
+        tx.try_send(ExportProgressItem::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other("error"))?;
         yield_now().await;

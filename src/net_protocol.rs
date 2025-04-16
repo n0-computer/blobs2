@@ -1,35 +1,36 @@
 //! Adaptation of `iroh-blobs` as an [`iroh`] [`ProtocolHandler`].
-//! 
+//!
 //! This is the easiest way to share data from a [`crate::api::Store`] over iroh connections.
-//! 
+//!
 //! # Example
-//! 
+//!
 //! ```rust
 //! # async fn example() -> anyhow::Result<()> {
-//! use iroh::{protocol::Router, Endpoint};
 //! use blobs2::{net_protocol::Blobs, store};
+//! use iroh::{Endpoint, protocol::Router};
 //!
 //! // create a store, in memory
 //! let store = store::mem::MemStore::new();
-//! 
+//!
 //! // add some data
 //! let tt = store.add_slice(b"hello world").await?;
 //!
 //! // create an iroh endpoint
 //! let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-//! 
+//!
 //! // create a blobs protocol handler
 //! let blobs = Blobs::new(store.clone(), endpoint.clone(), None);
-//! 
+//!
 //! // create a router and add the blobs protocol handler
 //! let router = Router::builder(endpoint)
 //!     .accept(blobs2::ALPN, blobs.clone())
-//!     .spawn().await;
-//! 
+//!     .spawn()
+//!     .await;
+//!
 //! // we are now sharing the data globally, so be careful what you put in there
 //! let ticket = blobs.ticket(tt).await?;
 //! println!("ticket: {}", ticket);
-//! 
+//!
 //! // wait for control-c to exit
 //! tokio::signal::ctrl_c().await?;
 //! #   Ok(())
@@ -45,7 +46,10 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::{
-    api::Store, provider::{Event, EventSender as EventSender}, ticket::BlobTicket, HashAndFormat
+    HashAndFormat,
+    api::Store,
+    provider::{Event, EventSender},
+    ticket::BlobTicket,
 };
 
 #[derive(Debug)]
@@ -91,11 +95,7 @@ impl Blobs {
     pub async fn ticket(&self, content: impl Into<HashAndFormat>) -> anyhow::Result<BlobTicket> {
         let content = content.into();
         let addr = self.inner.endpoint.node_addr().await?;
-        let ticket = BlobTicket::new(
-            addr,
-            content.hash,
-            content.format,
-        );
+        let ticket = BlobTicket::new(addr, content.hash, content.format);
         Ok(ticket)
     }
 }

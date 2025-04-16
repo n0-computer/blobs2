@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use tags::Tags;
 
 pub mod blobs;
+pub mod download;
 pub mod proto;
 pub mod tags;
-pub mod download;
 pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) type ApiClient = irpc::Client<proto::Command, proto::Request, proto::StoreService>;

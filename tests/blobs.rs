@@ -8,7 +8,7 @@ use blobs2::{
     Hash,
     api::{
         Store,
-        blobs::{Blobs, ImportProgress},
+        blobs::{AddProgressItem, Blobs},
     },
     store::fs::FsStore,
 };
@@ -63,7 +63,7 @@ async fn blobs_smoke(path: &Path, blobs: &Blobs) -> TestResult<()> {
         let mut stream = blobs.add_path(temp1).stream().await?;
         let mut res = None;
         while let Some(item) = stream.next().await {
-            if let ImportProgress::Done(tt) = item {
+            if let AddProgressItem::Done(tt) = item {
                 res = Some(tt);
                 break;
             }

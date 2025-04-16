@@ -129,7 +129,7 @@ mod gc;
 use super::{HashAndFormat, util::observer::Observer};
 use crate::api::{
     self, Store,
-    blobs::{ExportMode, ExportProgress, ImportProgress},
+    blobs::{AddProgressItem, ExportMode, ExportProgressItem},
 };
 
 /// Create a 16 byte unique ID.
@@ -597,7 +597,7 @@ impl Actor {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
-                        .send(ImportProgress::Done(TempTag::leaking_empty(cmd.format)))
+                        .send(AddProgressItem::Done(TempTag::leaking_empty(cmd.format)))
                         .await
                         .ok();
                 } else {
@@ -745,9 +745,9 @@ async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContex
                 trace!("leaking temp tag {}", tt.hash_and_format());
                 tt.leak();
             }
-            ImportProgress::Done(tt)
+            AddProgressItem::Done(tt)
         }
-        Err(cause) => ImportProgress::Error(cause),
+        Err(cause) => AddProgressItem::Error(cause),
     };
     cmd.tx.send(res).await.ok();
 }
@@ -979,7 +979,7 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
 
 async fn export_path_impl(
     cmd: ExportPathRequest,
-    tx: &mut spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgressItem>,
     ctx: HashContext,
 ) -> api::Result<()> {
     let ExportPathRequest { mode, target, .. } = cmd;
@@ -1027,7 +1027,7 @@ async fn export_path_impl(
         MemOrFile::Mem(data) => data.len() as u64,
         MemOrFile::File((_, size)) => *size,
     };
-    tx.send(ExportProgress::Size(size))
+    tx.send(ExportProgressItem::Size(size))
         .await
         .map_err(api::Error::other)?;
     match data {
@@ -1066,7 +1066,7 @@ async fn export_path_impl(
             }
         },
     }
-    tx.send(ExportProgress::Done)
+    tx.send(ExportProgressItem::Done)
         .await
         .map_err(api::Error::other)?;
     Ok(())
@@ -1076,7 +1076,7 @@ async fn copy_with_progress(
     file: impl ReadAt,
     size: u64,
     target: &mut impl Write,
-    tx: &mut spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let mut offset = 0;
     let mut buf = vec![0u8; 1024 * 1024];
@@ -1085,7 +1085,7 @@ async fn copy_with_progress(
         let buf: &mut [u8] = &mut buf[..remaining];
         file.read_exact_at(offset, buf)?;
         target.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress(offset))
+        tx.try_send(ExportProgressItem::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;

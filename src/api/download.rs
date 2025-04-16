@@ -1,5 +1,5 @@
 //! Download API
-//! 
+//!
 //! The entry point is the [`Download`] struct.
 use n0_future::StreamExt;
 use ref_cast::RefCast;
@@ -367,6 +367,7 @@ use iroh::{Endpoint, NodeAddr, endpoint::Connection};
 use irpc::channel::{SendError, spsc};
 use tracing::trace;
 
+use super::blobs::Bitfield;
 use crate::{
     BlobFormat, Hash, HashAndFormat,
     api::{self, Store, blobs::Blobs},
@@ -376,8 +377,6 @@ use crate::{
     store::IROH_BLOCK_SIZE,
     util::channel::mpsc,
 };
-
-use super::blobs::Bitfield;
 
 /// Trait to lazily get a connection
 pub trait GetConnection {

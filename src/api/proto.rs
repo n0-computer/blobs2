@@ -98,13 +98,13 @@ pub enum Request {
     Observe(ObserveRequest),
     #[rpc(tx = oneshot::Sender<BlobStatus>)]
     BlobStatus(BlobStatusRequest),
-    #[rpc(tx = spsc::Sender<ImportProgress>)]
+    #[rpc(tx = spsc::Sender<AddProgressItem>)]
     ImportBytes(ImportBytesRequest),
-    #[rpc(tx = spsc::Sender<ImportProgress>)]
+    #[rpc(tx = spsc::Sender<AddProgressItem>)]
     ImportByteStream(ImportByteStreamRequest),
-    #[rpc(tx = spsc::Sender<ImportProgress>)]
+    #[rpc(tx = spsc::Sender<AddProgressItem>)]
     ImportPath(ImportPathRequest),
-    #[rpc(tx = spsc::Sender<ExportProgress>)]
+    #[rpc(tx = spsc::Sender<ExportProgressItem>)]
     ExportPath(ExportPathRequest),
     #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
     ListTags(ListTagsRequest),
@@ -459,7 +459,7 @@ pub struct ProcessExitRequest {
 ///
 /// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum ImportProgress {
+pub enum AddProgressItem {
     /// Progress copying the file into the data directory.
     ///
     /// On most modern systems, copying will be done with copy on write,
@@ -508,7 +508,7 @@ pub enum ImportProgress {
     Error(#[serde(with = "crate::util::serde::io_error_serde")] io::Error),
 }
 
-impl From<io::Error> for ImportProgress {
+impl From<io::Error> for AddProgressItem {
     fn from(e: io::Error) -> Self {
         Self::Error(e)
     }
@@ -523,7 +523,7 @@ impl From<io::Error> for ImportProgress {
 ///
 /// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum ExportProgress {
+pub enum ExportProgressItem {
     /// The size of the file being exported.
     ///
     /// This is a guaranteed progress event, so you can rely on getting exactly
@@ -555,7 +555,7 @@ pub enum ExportProgress {
     Error(super::Error),
 }
 
-impl From<super::Error> for ExportProgress {
+impl From<super::Error> for ExportProgressItem {
     fn from(e: super::Error) -> Self {
         Self::Error(e)
     }

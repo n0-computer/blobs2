@@ -36,7 +36,7 @@ use super::{TaskContext, meta::raw_outboard_size, options::Options};
 use crate::{
     BlobFormat, Hash,
     api::{
-        blobs::{ImportMode, ImportProgress},
+        blobs::{AddProgressItem, ImportMode},
         proto::{
             HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportBytesMsg,
             ImportBytesRequest, ImportPathMsg, ImportPathRequest, Scope, StoreService,
@@ -135,7 +135,7 @@ impl std::fmt::Debug for ImportEntry {
 }
 
 impl Channels<StoreService> for ImportEntry {
-    type Tx = spsc::Sender<ImportProgress>;
+    type Tx = spsc::Sender<AddProgressItem>;
     type Rx = NoReceiver;
 }
 
@@ -194,15 +194,15 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
 
 async fn import_bytes_tiny_impl(
     cmd: ImportBytesRequest,
-    tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<AddProgressItem>,
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
     // send the required progress events
     // ImportProgress::Done will be sent when finishing the import!
-    tx.send(ImportProgress::Size(size))
+    tx.send(AddProgressItem::Size(size))
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    tx.send(ImportProgress::CopyDone)
+    tx.send(AddProgressItem::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
     Ok(if raw_outboard_size(size) == 0 {
@@ -251,7 +251,7 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
 
 async fn import_byte_stream_impl(
     cmd: ImportByteStreamRequest,
-    tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<AddProgressItem>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let ImportByteStreamRequest {
@@ -261,10 +261,10 @@ async fn import_byte_stream_impl(
     } = cmd;
     let data = n0_future::stream::iter(data).map(io::Result::Ok);
     let import_source = get_import_source(data, tx, &options).await?;
-    tx.send(ImportProgress::Size(import_source.size()))
+    tx.send(AddProgressItem::Size(import_source.size()))
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    tx.send(ImportProgress::CopyDone)
+    tx.send(AddProgressItem::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
     compute_outboard(import_source, format, batch, options, tx).await
@@ -272,7 +272,7 @@ async fn import_byte_stream_impl(
 
 async fn get_import_source(
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
-    tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<AddProgressItem>,
     options: &Options,
 ) -> io::Result<ImportSource> {
     let mut stream = stream.fuse();
@@ -319,7 +319,7 @@ async fn get_import_source(
             data.extend_from_slice(&chunk);
         }
         // todo: don't send progress for every chunk if the chunks are small?
-        tx.try_send(ImportProgress::CopyProgress(size))
+        tx.try_send(AddProgressItem::CopyProgress(size))
             .await
             .map_err(|_e| io::Error::other("error"))?;
     }
@@ -328,7 +328,7 @@ async fn get_import_source(
             let chunk = chunk?;
             file.write_all(&chunk)?;
             size += chunk.len() as u64;
-            tx.send(ImportProgress::CopyProgress(size))
+            tx.send(AddProgressItem::CopyProgress(size))
                 .await
                 .map_err(|_e| io::Error::other("error"))?;
         }
@@ -340,7 +340,7 @@ async fn get_import_source(
 
 #[derive(ref_cast::RefCast)]
 #[repr(transparent)]
-struct OutboardProgress(spsc::Sender<ImportProgress>);
+struct OutboardProgress(spsc::Sender<AddProgressItem>);
 
 impl Progress for OutboardProgress {
     type Error = irpc::channel::SendError;
@@ -350,7 +350,7 @@ impl Progress for OutboardProgress {
         //     return Ok(());
         // }
         self.0
-            .try_send(ImportProgress::OutboardProgress(offset.to_bytes()))
+            .try_send(AddProgressItem::OutboardProgress(offset.to_bytes()))
             .await
     }
 }
@@ -360,7 +360,7 @@ async fn compute_outboard(
     format: BlobFormat,
     scope: Scope,
     options: Arc<Options>,
-    tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<AddProgressItem>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
@@ -424,7 +424,7 @@ pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
 
 async fn import_path_impl(
     cmd: ImportPathRequest,
-    tx: &mut spsc::Sender<ImportProgress>,
+    tx: &mut spsc::Sender<AddProgressItem>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let ImportPathRequest {
@@ -447,12 +447,12 @@ async fn import_path_impl(
     }
 
     let size = path.metadata()?.len();
-    tx.send(ImportProgress::Size(size))
+    tx.send(AddProgressItem::Size(size))
         .await
         .map_err(|_e| io::Error::other("error"))?;
     let import_source = if size <= options.inline.max_data_inlined {
         let data = std::fs::read(path)?;
-        tx.send(ImportProgress::CopyDone)
+        tx.send(AddProgressItem::CopyDone)
             .await
             .map_err(|_e| io::Error::other("error"))?;
         ImportSource::Memory(data.into())
@@ -473,7 +473,7 @@ async fn import_path_impl(
         }
         // copy from path to temp_path
         let file = OpenOptions::new().read(true).open(&temp_path)?;
-        tx.send(ImportProgress::CopyDone)
+        tx.send(AddProgressItem::CopyDone)
             .await
             .map_err(|_| io::Error::other("error"))?;
         ImportSource::TempFile(temp_path, file, size)
@@ -506,16 +506,16 @@ mod tests {
         Ok(res)
     }
 
-    fn assert_expected_progress(progress: &[ImportProgress]) {
+    fn assert_expected_progress(progress: &[AddProgressItem]) {
         assert!(
             progress
                 .iter()
-                .any(|x| matches!(&x, ImportProgress::Size { .. }))
+                .any(|x| matches!(&x, AddProgressItem::Size { .. }))
         );
         assert!(
             progress
                 .iter()
-                .any(|x| matches!(&x, ImportProgress::CopyDone))
+                .any(|x| matches!(&x, AddProgressItem::CopyDone))
         );
     }
 

@@ -1,5 +1,5 @@
 //! Utilities to generate or execute complex get requests without persisting to a store.
-//! 
+//!
 //! Any complex request can be executed with downloading to a store, using the
 //! [`crate::api::download::Download::execute`] method. But for some requests it
 //! is useful to just get the data without persisting it to a store.

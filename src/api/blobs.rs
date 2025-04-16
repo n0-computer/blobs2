@@ -21,7 +21,6 @@ use bao_tree::{
     },
 };
 use bytes::Bytes;
-use super::download::HashSeqChunk;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::{
@@ -29,11 +28,23 @@ use irpc::{
     channel::{oneshot, spsc},
 };
 use n0_future::{Stream, StreamExt};
+use ref_cast::RefCast;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
+// Public reexports from the proto module.
+//
+// Due to the fact that the proto module is hidden from docs by default,
+// these will appear in the docs as if they were declared here.
+pub use super::proto::{
+    AddProgressItem, Bitfield, BlobDeleteRequest as DeleteOptions, BlobStatus,
+    ExportBaoRequest as ExportBaoOptions, ExportMode, ExportPathRequest as ExportOptions,
+    ExportProgressItem, ImportBaoRequest as ImportBaoOptions, ImportMode,
+    ObserveRequest as ObserveOptions,
+};
 use super::{
     ApiClient, RequestResult, Tags,
+    download::HashSeqChunk,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
         ExportBaoRequest, ImportBaoRequest, ImportByteStreamRequest, ImportBytesRequest,
@@ -47,18 +58,6 @@ use crate::{
     provider::ProgressWriter,
     store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
     util::temp_tag::TempTag,
-};
-use ref_cast::RefCast;
-
-// Public reexports from the proto module.
-//
-// Due to the fact that the proto module is hidden from docs by default,
-// these will appear in the docs as if they were declared here.
-pub use super::proto::{
-    Bitfield, BlobDeleteRequest as DeleteOptions, BlobStatus, ExportBaoRequest as ExportBaoOptions,
-    ExportMode, ExportPathRequest as ExportOptions, ExportProgress,
-    ImportBaoRequest as ImportBaoOptions, ImportMode, ImportProgress,
-    ObserveRequest as ObserveOptions,
 };
 
 /// Options for adding bytes.
@@ -131,7 +130,7 @@ impl Blobs {
         .await
     }
 
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddResult {
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddProgress {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
@@ -140,7 +139,7 @@ impl Blobs {
         self.add_bytes_impl(options)
     }
 
-    pub fn add_bytes(&self, data: impl Into<bytes::Bytes>) -> AddResult {
+    pub fn add_bytes(&self, data: impl Into<bytes::Bytes>) -> AddProgress {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
@@ -149,7 +148,7 @@ impl Blobs {
         self.add_bytes_impl(options)
     }
 
-    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddResult {
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddProgress {
         let options = options.into();
         let request = ImportBytesRequest {
             data: options.data,
@@ -159,10 +158,10 @@ impl Blobs {
         self.add_bytes_impl(request)
     }
 
-    fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddResult {
+    fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddProgress {
         trace!("{options:?}");
         let request = self.client.request();
-        AddResult::new(self, async move {
+        AddProgress::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -178,7 +177,7 @@ impl Blobs {
         })
     }
 
-    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddResult {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
         let options = options.into();
         self.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
@@ -188,10 +187,10 @@ impl Blobs {
         })
     }
 
-    fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddResult {
+    fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddProgress {
         trace!("{:?}", options);
         let request = self.client.request();
-        AddResult::new(self, async move {
+        AddProgress::new(self, async move {
             Ok(match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -206,7 +205,7 @@ impl Blobs {
         })
     }
 
-    pub fn add_path(&self, path: impl AsRef<Path>) -> AddResult {
+    pub fn add_path(&self, path: impl AsRef<Path>) -> AddProgress {
         self.add_path_with_opts(AddPathOptions {
             path: path.as_ref().to_owned(),
             mode: ImportMode::Copy,
@@ -217,14 +216,14 @@ impl Blobs {
     pub async fn add_stream(
         &self,
         data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
-    ) -> AddResult {
+    ) -> AddProgress {
         self.add_stream_impl(Box::pin(data)).await
     }
 
     async fn add_stream_impl(
         &self,
         data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
-    ) -> AddResult {
+    ) -> AddProgress {
         let data = data
             .collect::<Vec<_>>()
             .await
@@ -237,7 +236,7 @@ impl Blobs {
             scope: Scope::default(),
         };
         let request = self.client.request();
-        AddResult::new(self, async move {
+        AddProgress::new(self, async move {
             let rx = match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -253,10 +252,10 @@ impl Blobs {
         })
     }
 
-    pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoResult {
+    pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoProgress {
         trace!("{options:?}");
         let request = self.client.request();
-        ExportBaoResult::new(async move {
+        ExportBaoProgress::new(async move {
             Ok(match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -275,7 +274,7 @@ impl Blobs {
         &self,
         hash: impl Into<Hash>,
         ranges: impl Into<ChunkRanges>,
-    ) -> ExportBaoResult {
+    ) -> ExportBaoProgress {
         self.export_bao_with_opts(ExportBaoRequest {
             hash: hash.into(),
             ranges: ranges.into(),
@@ -313,14 +312,14 @@ impl Blobs {
     }
 
     /// Observe the bitfield of the given hash.
-    pub fn observe(&self, hash: impl Into<Hash>) -> ObserveResult {
+    pub fn observe(&self, hash: impl Into<Hash>) -> ObserveProgress {
         self.observe_with_opts(ObserveOptions { hash: hash.into() })
     }
 
-    pub fn observe_with_opts(&self, options: ObserveOptions) -> ObserveResult {
+    pub fn observe_with_opts(&self, options: ObserveOptions) -> ObserveProgress {
         trace!("{:?}", options);
         if options.hash == Hash::EMPTY {
-            return ObserveResult::new(async move {
+            return ObserveProgress::new(async move {
                 let (mut tx, rx) = spsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
                 Ok(rx)
@@ -328,7 +327,7 @@ impl Blobs {
         }
         let (tx, rx) = spsc::channel(32);
         let request = self.client.request();
-        ObserveResult::new(async move {
+        ObserveProgress::new(async move {
             let rx = match request.await? {
                 Request::Local(c) => {
                     c.send((options, tx)).await?;
@@ -343,10 +342,10 @@ impl Blobs {
         })
     }
 
-    pub fn export_with_opts(&self, options: ExportOptions) -> ExportResult {
+    pub fn export_with_opts(&self, options: ExportOptions) -> ExportProgress {
         trace!("{:?}", options);
         let request = self.client.request();
-        ExportResult::new(async move {
+        ExportProgress::new(async move {
             Ok(match request.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -361,7 +360,7 @@ impl Blobs {
         })
     }
 
-    pub fn export(&self, hash: impl Into<Hash>, target: impl AsRef<Path>) -> ExportResult {
+    pub fn export(&self, hash: impl Into<Hash>, target: impl AsRef<Path>) -> ExportProgress {
         let options = ExportOptions {
             hash: hash.into(),
             mode: ExportMode::Copy,
@@ -478,10 +477,10 @@ impl Blobs {
         Ok(())
     }
 
-    pub fn list(&self) -> BlobsListResult {
+    pub fn list(&self) -> BlobsListProgress {
         let msg = ListRequest;
         let req = self.client.request();
-        BlobsListResult::new(async move {
+        BlobsListProgress::new(async move {
             Ok(match req.await? {
                 Request::Local(c) => {
                     let (tx, rx) = spsc::channel(32);
@@ -524,7 +523,7 @@ pub struct Batch<'a> {
 }
 
 impl<'a> Batch<'a> {
-    pub fn add_bytes(&self, data: impl Into<Bytes>) -> AddResult {
+    pub fn add_bytes(&self, data: impl Into<Bytes>) -> AddProgress {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
@@ -533,7 +532,7 @@ impl<'a> Batch<'a> {
         self.blobs.add_bytes_impl(options)
     }
 
-    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddResult {
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddProgress {
         let options = options.into();
         self.blobs.add_bytes_impl(ImportBytesRequest {
             data: options.data,
@@ -542,7 +541,7 @@ impl<'a> Batch<'a> {
         })
     }
 
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddResult {
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddProgress {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
@@ -551,7 +550,7 @@ impl<'a> Batch<'a> {
         self.blobs.add_bytes_impl(options)
     }
 
-    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddResult {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
         let options = options.into();
         self.blobs.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
@@ -584,17 +583,17 @@ pub struct AddPathOptions {
 /// Internally this is a stream of [`ImportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
 /// methods to work with the result.
-/// 
+///
 /// It also implements [`IntoFuture`], so you can await it to get the [`TempTag`] that
 /// contains the hash of the added content and also protects the content.
 ///
 /// If you want access to the stream, you can use the [`AddResult::stream`] method.
-pub struct AddResult<'a> {
+pub struct AddProgress<'a> {
     blobs: &'a Blobs,
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ImportProgress>>>,
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<AddProgressItem>>>,
 }
 
-impl<'a> IntoFuture for AddResult<'a> {
+impl<'a> IntoFuture for AddProgress<'a> {
     type Output = RequestResult<TempTag>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
@@ -604,10 +603,10 @@ impl<'a> IntoFuture for AddResult<'a> {
     }
 }
 
-impl<'a> AddResult<'a> {
+impl<'a> AddProgress<'a> {
     fn new(
         blobs: &'a Blobs,
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ImportProgress>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<AddProgressItem>>> + Send + 'static,
     ) -> Self {
         Self {
             blobs,
@@ -619,8 +618,8 @@ impl<'a> AddResult<'a> {
         let mut rx = self.inner.await?;
         loop {
             match rx.recv().await {
-                Ok(Some(ImportProgress::Done(tt))) => break Ok(tt),
-                Ok(Some(ImportProgress::Error(cause))) => {
+                Ok(Some(AddProgressItem::Done(tt))) => break Ok(tt),
+                Ok(Some(AddProgressItem::Error(cause))) => {
                     trace!("got explicit error: {:?}", cause);
                     break Err(super::Error::other(cause).into());
                 }
@@ -654,7 +653,7 @@ impl<'a> AddResult<'a> {
         Ok(TagInfo { name, hash, format })
     }
 
-    pub async fn stream(self) -> RequestResult<impl Stream<Item = ImportProgress>> {
+    pub async fn stream(self) -> RequestResult<impl Stream<Item = AddProgressItem>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -666,16 +665,16 @@ impl<'a> AddResult<'a> {
 
 /// An observe result. Awaiting this will return the current state.
 ///
-/// Calling [`ObserveResult::stream`] will return a stream of updates, where
+/// Calling [`ObserveProgress::stream`] will return a stream of updates, where
 /// the first item is the current state and subsequent items are updates.
 ///
-/// Calling [`ObserveResult::aggregated`] will return a stream of states,
+/// Calling [`ObserveProgress::aggregated`] will return a stream of states,
 /// where each state is the current state at the time of the update.
-pub struct ObserveResult {
+pub struct ObserveProgress {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<Bitfield>>>,
 }
 
-impl IntoFuture for ObserveResult {
+impl IntoFuture for ObserveProgress {
     type Output = RequestResult<Bitfield>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
@@ -691,7 +690,7 @@ impl IntoFuture for ObserveResult {
     }
 }
 
-impl ObserveResult {
+impl ObserveProgress {
     fn new(
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<Bitfield>>> + Send + 'static,
     ) -> Self {
@@ -724,16 +723,16 @@ impl ObserveResult {
 /// Internally this is a stream of [`ExportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
 /// methods to work with the result.
-/// 
-/// To get the underlying stream, use the [`ExportResult::stream`] method.
+///
+/// To get the underlying stream, use the [`ExportProgress::stream`] method.
 ///
 /// It also implements [`IntoFuture`], so you can await it to get the size of the
 /// exported blob.
-pub struct ExportResult {
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ExportProgress>>>,
+pub struct ExportProgress {
+    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ExportProgressItem>>>,
 }
 
-impl IntoFuture for ExportResult {
+impl IntoFuture for ExportProgress {
     type Output = RequestResult<u64>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
@@ -743,21 +742,21 @@ impl IntoFuture for ExportResult {
     }
 }
 
-impl ExportResult {
+impl ExportProgress {
     fn new(
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportProgress>>> + Send + 'static,
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportProgressItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
         }
     }
 
-    pub async fn stream(self) -> impl Stream<Item = ExportProgress> {
+    pub async fn stream(self) -> impl Stream<Item = ExportProgressItem> {
         Gen::new(|co| async move {
             let mut rx = match self.inner.await {
                 Ok(rx) => rx,
                 Err(e) => {
-                    co.yield_(ExportProgress::Error(e.into())).await;
+                    co.yield_(ExportProgressItem::Error(e.into())).await;
                     return;
                 }
             };
@@ -772,9 +771,9 @@ impl ExportResult {
         let mut size = None;
         loop {
             match rx.recv().await? {
-                Some(ExportProgress::Done) => break,
-                Some(ExportProgress::Size(s)) => size = Some(s),
-                Some(ExportProgress::Error(cause)) => return Err(cause.into()),
+                Some(ExportProgressItem::Done) => break,
+                Some(ExportProgressItem::Size(s)) => size = Some(s),
+                Some(ExportProgressItem::Error(cause)) => return Err(cause.into()),
                 _ => {}
             }
         }
@@ -813,11 +812,11 @@ impl IntoFuture for ImportBaoResult {
 }
 
 /// Lazy result of a blobs list operation.
-pub struct BlobsListResult {
+pub struct BlobsListProgress {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
 }
 
-impl BlobsListResult {
+impl BlobsListProgress {
     fn new(
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<super::Result<Hash>>>>
         + Send
@@ -854,11 +853,11 @@ impl BlobsListResult {
 /// process the stream.
 ///
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
-pub struct ExportBaoResult {
+pub struct ExportBaoProgress {
     inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
 }
 
-impl ExportBaoResult {
+impl ExportBaoProgress {
     fn new(
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {

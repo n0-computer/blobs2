@@ -15,8 +15,7 @@ use crate::{BlobFormat, Hash, HashAndFormat, api::proto::Scope};
 /// If format is collection, this will protect the collection and all blobs in it
 #[derive(Debug, Serialize, Deserialize)]
 #[must_use = "TempTag is a temporary tag that should be used to protect content while the process is running. \
-       If you want to keep the content alive, use TempTag::leak()"
-]
+       If you want to keep the content alive, use TempTag::leak()"]
 pub struct TempTag {
     /// The hash and format we are pinning
     inner: HashAndFormat,

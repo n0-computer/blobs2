@@ -43,7 +43,7 @@ use crate::{
     Hash,
     api::{
         self, ApiClient,
-        blobs::{Bitfield, ExportProgress, ImportProgress},
+        blobs::{AddProgressItem, Bitfield, ExportProgressItem},
         proto::{
             BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, DeleteTagsMsg,
             DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
@@ -334,7 +334,7 @@ impl Actor {
             },
             None,
         );
-        import_data.tx.send(ImportProgress::Done(tt)).await.ok();
+        import_data.tx.send(AddProgressItem::Done(tt)).await.ok();
     }
 
     fn log_unit_task(&self, res: Result<(), JoinError>) {
@@ -450,23 +450,23 @@ async fn export_bao_task(
 
 async fn import_bytes(
     data: Bytes,
-    mut tx: spsc::Sender<ImportProgress>,
+    mut tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
-    tx.send(ImportProgress::Size(data.len() as u64)).await?;
-    tx.send(ImportProgress::CopyDone).await?;
+    tx.send(AddProgressItem::Size(data.len() as u64)).await?;
+    tx.send(AddProgressItem::CopyDone).await?;
     let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
     Ok(ImportEntry { data, outboard, tx })
 }
 
 async fn import_byte_stream(
     mut data: BoxedByteStream,
-    mut tx: spsc::Sender<ImportProgress>,
+    mut tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     while let Some(item) = data.next().await {
         let item = item?;
         res.extend_from_slice(&item);
-        tx.try_send(ImportProgress::CopyProgress(res.len() as u64))
+        tx.try_send(AddProgressItem::CopyProgress(res.len() as u64))
             .await?;
     }
     import_bytes(res.into(), tx).await
@@ -488,7 +488,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
             break;
         }
         res.extend_from_slice(&buf[..size]);
-        tx.send(ImportProgress::CopyProgress(res.len() as u64))
+        tx.send(AddProgressItem::CopyProgress(res.len() as u64))
             .await?;
     }
     import_bytes(res.into(), tx).await
@@ -497,7 +497,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
 async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg) {
     let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
-        tx.send(ExportProgress::Error(api::Error::io(
+        tx.send(ExportProgressItem::Error(api::Error::io(
             io::ErrorKind::NotFound,
             "hash not found",
         )))
@@ -506,28 +506,28 @@ async fn export_path_task(entry: Option<Arc<RwLock<Entry>>>, cmd: ExportPathMsg)
         return;
     };
     match export_path_impl(entry, inner, &mut tx).await {
-        Ok(()) => tx.send(ExportProgress::Done).await.ok(),
-        Err(e) => tx.send(ExportProgress::Error(e.into())).await.ok(),
+        Ok(()) => tx.send(ExportProgressItem::Done).await.ok(),
+        Err(e) => tx.send(ExportProgressItem::Error(e.into())).await.ok(),
     };
 }
 
 async fn export_path_impl(
     entry: Arc<RwLock<Entry>>,
     cmd: ExportPathRequest,
-    tx: &mut spsc::Sender<ExportProgress>,
+    tx: &mut spsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let ExportPathRequest { target, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
     let mut file = std::fs::File::create(target)?;
     let size = entry.read().unwrap().size();
-    tx.send(ExportProgress::Size(size)).await?;
+    tx.send(ExportProgressItem::Size(size)).await?;
     let mut buf = [0u8; 1024 * 64];
     for offset in (0..size).step_by(1024 * 64) {
         let len = std::cmp::min(size - offset, 1024 * 64) as usize;
         let buf = &mut buf[..len];
         entry.read().unwrap().data().read_exact_at(offset, buf)?;
         file.write_all(buf)?;
-        tx.try_send(ExportProgress::CopyProgress(offset))
+        tx.try_send(ExportProgressItem::CopyProgress(offset))
             .await
             .map_err(|_e| io::Error::other(""))?;
         yield_now().await;
@@ -538,7 +538,7 @@ async fn export_path_impl(
 struct ImportEntry {
     data: Bytes,
     outboard: PreOrderMemOutboard,
-    tx: spsc::Sender<ImportProgress>,
+    tx: spsc::Sender<AddProgressItem>,
 }
 
 struct ExportOutboard {

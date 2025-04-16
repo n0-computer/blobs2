@@ -226,10 +226,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
             RangeSpec::EMPTY
         ])
     );
-    store2
-        .download()
-        .execute(conn.clone(), sizes, None)
-        .await?;
+    store2.download().execute(conn.clone(), sizes, None).await?;
 
     let local = store2.download().local(root).await?;
     // let missing_chunks = missing.chunks();
