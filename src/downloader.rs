@@ -46,10 +46,9 @@ use anyhow::anyhow;
 use hashlink::LinkedHashSet;
 use iroh::{Endpoint, NodeAddr, NodeId, endpoint};
 use iroh_metrics::inc;
-use irpc::channel::spsc;
 use n0_future::{Stream, stream::StreamExt};
 use tokio::{
-    sync::{Mutex, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinSet,
 };
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
@@ -793,7 +792,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
 
             if let Some(sender) = handlers.on_progress {
                 // drops the sender!
-                self.progress_tracker.unsubscribe(&kind, &sender);
+                self.progress_tracker.unsubscribe(&kind, &sender).await;
             }
         }
 

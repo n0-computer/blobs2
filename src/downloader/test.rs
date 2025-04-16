@@ -7,11 +7,9 @@ use std::{
 use anyhow::anyhow;
 use iroh::SecretKey;
 use n0_future::{future::FutureExt, task::AbortOnDropHandle};
-use testresult::TestResult;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::{net_protocol::Blobs, store::fs::FsStore};
 mod dialer;
 mod getter;
 

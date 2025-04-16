@@ -2,7 +2,7 @@
 
 use std::sync::RwLock;
 
-use n0_future::future::{Boxed as BoxFuture, FutureExt};
+use n0_future::future::Boxed as BoxFuture;
 
 use super::*;
 use crate::downloader;
