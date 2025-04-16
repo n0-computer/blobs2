@@ -1,14 +1,11 @@
 //! [`Getter`] implementation that performs requests over [`Connection`]s.
 //!
 //! [`Connection`]: iroh::endpoint::Connection
-
-use futures_lite::FutureExt;
 use iroh::endpoint;
 use tracing::error;
 
 use super::{
-    DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, NeedsConn,
-    progress::BroadcastProgressSender,
+    DownloadKind, FailureAction, GetOutput, GetStartFut, Getter, progress::BroadcastProgressSender,
 };
 use crate::api::{Store, download::LocalInfo};
 

@@ -59,7 +59,11 @@ use crate::{BlobFormat, Hash, HashAndFormat, api::Store, get::Stats, metrics::Me
 mod get;
 mod invariants;
 mod progress;
-// mod test;
+mod test;
+
+/// Requirements for a connection
+pub trait DownloaderConnection: Clone + Send + 'static {}
+impl<T> DownloaderConnection for T where T: Clone + Send + 'static {}
 
 use self::progress::{BroadcastProgressSender, ProgressSubscriber, ProgressTracker};
 
@@ -75,7 +79,7 @@ pub struct IntentId(pub u64);
 /// Trait modeling a dialer. This allows for IO-less testing.
 trait DialerT: Stream<Item = (NodeId, anyhow::Result<Self::Connection>)> + Unpin {
     /// Type of connections returned by the Dialer.
-    type Connection: Clone + 'static;
+    type Connection: DownloaderConnection;
     /// Dial a node.
     fn queue_dial(&mut self, node_id: NodeId);
     /// Get the number of dialing nodes.
@@ -107,7 +111,7 @@ type GetProceedFut = n0_future::future::Boxed<InternalDownloadResult>;
 /// Trait modelling performing a single request over a connection. This allows for IO-less testing.
 pub trait Getter {
     /// Type of connections the Getter requires to perform a download.
-    type Connection: 'static;
+    type Connection: DownloaderConnection;
     /// Type of the intermediary state returned from [`Self::get`] if a connection is needed.
     type NeedsConn: NeedsConn<Self::Connection>;
     /// Returns a future that checks the local store if the request is already complete, returning
@@ -120,7 +124,7 @@ pub trait Getter {
 }
 
 /// Trait modelling the intermediary state when a connection is needed to proceed.
-pub trait NeedsConn<C>: std::fmt::Debug + 'static {
+pub trait NeedsConn<C: DownloaderConnection>: std::fmt::Debug + Send + 'static {
     /// Proceeds the download with the given connection.
     fn proceed(self, conn: C) -> GetProceedFut;
 }
@@ -466,7 +470,7 @@ struct RetryState {
 
 /// State of the connection to this node.
 #[derive(derive_more::Debug)]
-struct ConnectionInfo<Conn> {
+struct ConnectionInfo<Conn: DownloaderConnection> {
     /// Connection to this node.
     #[debug(skip)]
     conn: Conn,
@@ -474,7 +478,7 @@ struct ConnectionInfo<Conn> {
     state: ConnectedState,
 }
 
-impl<Conn> ConnectionInfo<Conn> {
+impl<Conn: DownloaderConnection> ConnectionInfo<Conn> {
     /// Create a new idle node.
     fn new_idle(connection: Conn, drop_key: delay_queue::Key) -> Self {
         ConnectionInfo {
@@ -513,7 +517,7 @@ enum ConnectedState {
 }
 
 #[derive(Debug)]
-enum NodeState<'a, Conn> {
+enum NodeState<'a, Conn: DownloaderConnection> {
     Connected(&'a ConnectionInfo<Conn>),
     Dialing,
     WaitForRetry,
@@ -1184,7 +1188,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
             }
         };
         self.active_requests.insert(kind, state);
-        self.in_progress_downloads.spawn_local(fut);
+        self.in_progress_downloads.spawn(fut);
     }
 
     fn disconnect_idle_node(&mut self, node: NodeId, reason: &'static str) -> bool {

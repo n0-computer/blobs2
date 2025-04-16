@@ -11,8 +11,7 @@ use blobs2::{
     },
     store::fs::FsStore,
 };
-use futures_lite::StreamExt;
-use n0_future::Stream;
+use n0_future::{Stream, StreamExt};
 use testresult::TestResult;
 
 async fn to_vec<T>(stream: impl Stream<Item = api::Result<T>>) -> api::Result<Vec<T>> {

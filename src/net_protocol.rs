@@ -40,8 +40,8 @@
 use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
-use futures_lite::future::Boxed as BoxedFuture;
 use iroh::{Endpoint, endpoint::Connection, protocol::ProtocolHandler};
+use n0_future::future::Boxed as BoxedFuture;
 use tokio::sync::mpsc;
 use tracing::error;
 

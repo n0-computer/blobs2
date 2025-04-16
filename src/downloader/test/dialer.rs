@@ -1,8 +1,9 @@
 //! Implementation of [`super::Dialer`] used for testing.
 
-use std::task::{Context, Poll};
-
-use parking_lot::RwLock;
+use std::{
+    sync::RwLock,
+    task::{Context, Poll},
+};
 
 use super::*;
 
@@ -42,7 +43,7 @@ impl DialerT for TestingDialer {
     type Connection = NodeId;
 
     fn queue_dial(&mut self, node_id: NodeId) {
-        let mut inner = self.0.write();
+        let mut inner = self.0.write().unwrap();
         inner.dial_history.push(node_id);
         // for now assume every dial works
         let dial_duration = inner.dial_duration;
@@ -52,15 +53,15 @@ impl DialerT for TestingDialer {
     }
 
     fn pending_count(&self) -> usize {
-        self.0.read().dialing.len()
+        self.0.read().unwrap().dialing.len()
     }
 
     fn is_pending(&self, node: NodeId) -> bool {
-        self.0.read().dialing.contains(&node)
+        self.0.read().unwrap().dialing.contains(&node)
     }
 
     fn node_id(&self) -> NodeId {
-        self.0.read().node_id
+        self.0.read().unwrap().node_id
     }
 }
 
@@ -68,7 +69,7 @@ impl Stream for TestingDialer {
     type Item = (NodeId, anyhow::Result<NodeId>);
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut inner = self.0.write();
+        let mut inner = self.0.write().unwrap();
         match inner.dial_futs.poll_expired(cx) {
             Poll::Ready(Some(expired)) => {
                 let node = expired.into_inner();
@@ -87,14 +88,14 @@ impl Stream for TestingDialer {
 impl TestingDialer {
     #[track_caller]
     pub(super) fn assert_history(&self, history: &[NodeId]) {
-        assert_eq!(self.0.read().dial_history, history)
+        assert_eq!(self.0.read().unwrap().dial_history, history)
     }
 
     pub(super) fn set_dial_outcome(
         &self,
         dial_outcome: impl Fn(NodeId) -> bool + Send + Sync + 'static,
     ) {
-        let mut inner = self.0.write();
+        let mut inner = self.0.write().unwrap();
         inner.dial_outcome = Box::new(dial_outcome);
     }
 }

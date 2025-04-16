@@ -148,7 +148,7 @@ impl Actor {
                 self.import_tasks.spawn(import_bytes(data, tx));
             }
             Command::ImportByteStream(ImportByteStreamMsg { inner, tx, .. }) => {
-                let stream = Box::pin(futures_lite::stream::iter(inner.data).map(io::Result::Ok));
+                let stream = Box::pin(n0_future::stream::iter(inner.data).map(io::Result::Ok));
                 self.import_tasks.spawn(import_byte_stream(stream, tx));
             }
             Command::ImportPath(cmd) => {

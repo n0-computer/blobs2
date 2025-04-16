@@ -31,7 +31,7 @@ impl Tags {
         let options = ListTempTagsRequest;
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
-        Ok(futures_lite::stream::iter(res))
+        Ok(n0_future::stream::iter(res))
     }
 
     /// List all tags with options.
@@ -44,7 +44,7 @@ impl Tags {
     ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
-        Ok(futures_lite::stream::iter(res))
+        Ok(n0_future::stream::iter(res))
     }
 
     /// Get the value of a single tag
