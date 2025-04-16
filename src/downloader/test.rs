@@ -5,22 +5,11 @@ use std::{
 };
 
 use anyhow::anyhow;
-use futures_util::future::FutureExt;
+use n0_future::future::FutureExt;
 use iroh::SecretKey;
 use tracing_test::traced_test;
 
 use super::*;
-use crate::{
-    get::{
-        db::BlobId,
-        progress::{BlobProgress, TransferState},
-    },
-    util::{
-        local_pool::LocalPool,
-        progress::{AsyncChannelProgressSender, IdGenerator},
-    },
-};
-
 mod dialer;
 mod getter;
 

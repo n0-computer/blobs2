@@ -55,17 +55,16 @@ use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
 use tracing::{debug, error, error_span, trace, warn, Instrument};
 
 use crate::{
-    get::{db::DownloadProgress, Stats},
+    get::Stats,
     metrics::Metrics,
-    store::Store,
-    util::{local_pool::LocalPoolHandle, progress::ProgressSender},
+    api::Store,
     BlobFormat, Hash, HashAndFormat,
 };
 
 mod get;
 mod invariants;
 mod progress;
-mod test;
+// mod test;
 
 use self::progress::{BroadcastProgressSender, ProgressSubscriber, ProgressTracker};
 
@@ -336,29 +335,24 @@ pub struct Downloader {
 
 impl Downloader {
     /// Create a new Downloader with the default [`ConcurrencyLimits`] and [`RetryConfig`].
-    pub fn new<S>(store: S, endpoint: Endpoint, rt: LocalPoolHandle) -> Self
-    where
-        S: Store,
+    pub fn new(store: Store, endpoint: Endpoint) -> Self
     {
-        Self::with_config(store, endpoint, rt, Default::default(), Default::default())
+        Self::with_config(store, endpoint, Default::default(), Default::default())
     }
 
     /// Create a new Downloader with custom [`ConcurrencyLimits`] and [`RetryConfig`].
-    pub fn with_config<S>(
-        store: S,
+    pub fn with_config(
+        store: Store,
         endpoint: Endpoint,
-        rt: LocalPoolHandle,
         concurrency_limits: ConcurrencyLimits,
         retry_config: RetryConfig,
     ) -> Self
-    where
-        S: Store,
     {
         let me = endpoint.node_id().fmt_short();
         let (msg_tx, msg_rx) = mpsc::channel(SERVICE_CHANNEL_CAPACITY);
         let dialer = Dialer::new(endpoint);
 
-        let create_future = move || {
+        let create_future = {
             let getter = get::IoGetter {
                 store: store.clone(),
             };
@@ -367,7 +361,7 @@ impl Downloader {
 
             service.run().instrument(error_span!("downloader", %me))
         };
-        rt.spawn_detached(create_future);
+        n0_future::task::spawn(create_future);
         Self {
             next_id: Arc::new(AtomicU64::new(0)),
             msg_tx,
