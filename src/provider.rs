@@ -274,6 +274,7 @@ impl StreamContext {
     ///
     /// We want to make accepting push requests very explicit, since this allows
     /// remote nodes to add arbitrary data to our store.
+    #[must_use = "permit should be checked by the caller"]
     pub async fn authorize_push_request(&self, hash: &Hash, ranges: &RangeSpecSeq) -> bool {
         let mut wait_for_permit = None;
         // send the request, including the permit channel
@@ -574,6 +575,8 @@ impl EventSender {
         })
         .await;
         if let Some(wait_for_permit) = wait_for_permit {
+            // if we have events configured, and they drop the channel, we consider that as a no!
+            // todo: this will be confusing and needs to be properly documented.
             wait_for_permit.await.unwrap_or(false)
         } else {
             true
