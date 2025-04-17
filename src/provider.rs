@@ -288,6 +288,8 @@ async fn handle_stream(
 
     match request {
         Request::Get(request) => handle_get(store, request, writer).await,
+        _ => anyhow::bail!("unsupported request: {request:?}"),
+        // Request::Push(request) => handle_push(store, request, writer).await,
     }
 }
 

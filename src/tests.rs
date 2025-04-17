@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;

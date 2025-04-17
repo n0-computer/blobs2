@@ -973,12 +973,15 @@ trait ClientExt<M, R, S> {
     where
         S: irpc::Service,
         M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
-        R: From<Req> + Serialize + 'static,
+        R: From<Req> + Serialize + Send + Sync + Unpin + 'static,
         Req: irpc::Channels<
                 S,
                 Tx = irpc::channel::spsc::Sender<Res>,
                 Rx = irpc::channel::none::NoReceiver,
-            > + 'static,
+            > + Send
+            + Sync
+            + Unpin
+            + 'static,
         Res: irpc::RpcMessage;
 }
 
@@ -991,12 +994,15 @@ impl<M, R, S> ClientExt<M, R, S> for irpc::Client<M, R, S> {
     where
         S: irpc::Service,
         M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
-        R: From<Req> + Serialize + 'static,
+        R: From<Req> + Serialize + Send + Sync + Unpin + 'static,
         Req: irpc::Channels<
                 S,
                 Tx = irpc::channel::spsc::Sender<Res>,
                 Rx = irpc::channel::none::NoReceiver,
-            > + 'static,
+            > + Send
+            + Sync
+            + Unpin
+            + 'static,
         Res: irpc::RpcMessage,
     {
         let this = self.clone();

@@ -5,11 +5,15 @@
 //!
 //! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
-use std::fmt::{self, Debug};
+use std::{
+    fmt::{self, Debug},
+    io,
+};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
+use tokio::io::AsyncRead;
 
 /// A chunk range specification as a sequence of chunk offsets.
 ///
@@ -56,6 +60,27 @@ impl RangeSpec {
             }
         }
         Self(res)
+    }
+
+    /// Read a [`RangeSpec`] from an async reader in postcard format.
+    ///
+    /// Unfortunately postcard does not have a built-in way to read from async streams.
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        use irpc::util::AsyncReadVarintExt;
+        let len = reader
+            .read_varint_u64()
+            .await?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "failed to read length"))?;
+        let len = usize::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid length"))?;
+        let mut res = SmallVec::new();
+        for _ in 0..len {
+            let span = reader.read_varint_u64().await?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "failed to read span")
+            })?;
+            res.push(span);
+        }
+        Ok(Self(res))
     }
 
     /// A [`RangeSpec`] selecting nothing from the blob.
@@ -201,6 +226,25 @@ impl RangeSpecSeq {
     /// [`RangeSpecSeq::iter`], will return an empty range forever.
     pub const fn empty() -> Self {
         Self(SmallVec::new_const())
+    }
+
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        use irpc::util::AsyncReadVarintExt;
+        let mut res = SmallVec::new();
+        let len = reader
+            .read_varint_u64()
+            .await?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "failed to read length"))?;
+        let len = usize::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid length"))?;
+        for _ in 0..len {
+            let repeat = reader.read_varint_u64().await?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "failed to read repeat")
+            })?;
+            let spec = RangeSpec::read_async(&mut reader).await?;
+            res.push((repeat, spec));
+        }
+        Ok(Self(res))
     }
 
     /// If this range seq describes a range for a single item, returns the offset
@@ -473,6 +517,7 @@ mod tests {
     use std::ops::Range;
 
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
+    use n0_future::future::block_on;
     use proptest::prelude::*;
 
     use super::*;
@@ -654,6 +699,7 @@ mod tests {
     }
 
     proptest! {
+
         #[test]
         fn range_spec_roundtrip(ranges in ranges(0..1000)) {
             let spec = RangeSpec::new(&ranges);
@@ -668,11 +714,28 @@ mod tests {
             prop_assert_eq!(expected, actual);
         }
 
+        /// Test that the roundtrip from RangeSpec to postcard (sync) and back (manual async) works.
+        #[test]
+        fn range_spec_postcard_async_roundtrip(ranges in ranges(0..1000)) {
+            let spec = RangeSpec::new(&ranges);
+            let bytes = postcard::to_stdvec(&spec).unwrap();
+            let spec2 = block_on(RangeSpec::read_async(&mut &bytes[..])).unwrap();
+            prop_assert_eq!(spec, spec2);
+        }
+
         #[test]
         fn range_spec_seq_bytes_roundtrip(ranges in proptest::collection::vec(ranges(0..100), 0..10)) {
             let expected = ranges.clone();
             let actual = range_spec_seq_bytes_roundtrip_impl(&ranges);
             prop_assert_eq!(expected, actual);
+        }
+
+        #[test]
+        fn range_spec_seq_postcard_async_roundtrip(ranges in proptest::collection::vec(ranges(0..100), 0..10)) {
+            let spec = RangeSpecSeq::from_ranges(ranges);
+            let bytes = postcard::to_stdvec(&spec).unwrap();
+            let spec2 = block_on(RangeSpecSeq::read_async(&mut &bytes[..])).unwrap();
+            prop_assert_eq!(spec, spec2);
         }
     }
 }

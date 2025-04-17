@@ -354,6 +354,25 @@ pub const ALPN: &[u8] = b"/iroh-bytes/4";
 pub enum Request {
     /// A get request for a blob or collection
     Get(GetRequest),
+    Slot1,
+    Slot2,
+    Slot3,
+    Slot4,
+    Slot5,
+    Slot6,
+    Slot7,
+    // The inverse of a get request - push data to the provider
+    //
+    // Note that providers will in many cases reject this request, e.g. if
+    // they don't have write access to the store or don't want to ingest
+    // unknonwn data.
+    // Push(PushRequest),
+}
+
+/// This must contain the request types in the same order as the full requests
+pub enum RequestType {
+    Get,
+    Push,
 }
 
 /// A request
@@ -366,6 +385,11 @@ pub struct GetRequest {
     /// The first element is the parent, all subsequent elements are children.
     pub ranges: RangeSpecSeq,
 }
+
+/// A push request contains a description of what to push, but will be followed
+/// by the data to push.
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
+pub struct PushRequest(GetRequest);
 
 impl GetRequest {
     /// Request a blob or collection with specified ranges

@@ -246,7 +246,9 @@ pub mod fsm {
                 let wrapped = Request::Get(request);
                 let request_bytes =
                     postcard::to_stdvec(&wrapped).map_err(ConnectedNextError::PostcardSer)?;
-                let Request::Get(x) = wrapped;
+                let Request::Get(x) = wrapped else {
+                    unreachable!();
+                };
                 request = x;
 
                 if request_bytes.len() > MAX_MESSAGE_SIZE {
