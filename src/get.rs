@@ -78,7 +78,9 @@ pub mod fsm {
     use iroh_io::{AsyncSliceWriter, AsyncStreamReader, TokioStreamReader};
 
     use super::*;
-    use crate::protocol::{GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request};
+    use crate::protocol::{
+        GetManyRequest, GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request,
+    };
 
     self_cell::self_cell! {
         struct RangesIterInner {
@@ -91,6 +93,42 @@ pub mod fsm {
     /// The entry point of the get response machine
     pub fn start(connection: Connection, request: GetRequest) -> AtInitial {
         AtInitial::new(connection, request)
+    }
+
+    /// Start with a get many request. Todo: turn this into distinct states.
+    pub async fn start_get_many(
+        connection: Connection,
+        request: GetManyRequest,
+    ) -> std::result::Result<Result<AtStartChild, AtClosing>, GetError> {
+        let start = Instant::now();
+        let (mut writer, reader) = connection.open_bi().await?;
+        let request = Request::GetMany(request);
+        let request_bytes =
+            postcard::to_stdvec(&request).map_err(|e| GetError::BadRequest(e.into()))?;
+        writer.write_all(&request_bytes).await?;
+        writer.finish()?;
+        let Request::GetMany(request) = request else {
+            unreachable!();
+        };
+        let reader = TokioStreamReader::new(reader);
+        let mut ranges_iter = RangesIter::new(request.ranges.clone());
+        let first_item = ranges_iter.next();
+        let misc = Box::new(Misc {
+            start,
+            bytes_written: request_bytes.len() as u64,
+            payload_bytes_read: 0,
+            other_bytes_read: 0,
+            ranges_iter,
+        });
+        Ok(match first_item {
+            Some((child_offset, child_ranges)) => Ok(AtStartChild {
+                ranges: child_ranges,
+                reader,
+                misc,
+                offset: child_offset,
+            }),
+            None => Err(AtClosing::new(misc, reader, true)),
+        })
     }
 
     /// Owned iterator for the ranges in a request
@@ -291,7 +329,7 @@ pub mod fsm {
                             reader,
                             ranges,
                             misc,
-                            child_offset: offset - 1,
+                            offset,
                         }
                         .into()
                     }
@@ -316,7 +354,7 @@ pub mod fsm {
         ranges: ChunkRanges,
         reader: TokioStreamReader<RecvStream>,
         misc: Box<Misc>,
-        child_offset: u64,
+        offset: u64,
     }
 
     impl AtStartChild {
@@ -325,8 +363,8 @@ pub mod fsm {
         /// This must be used to determine the hash needed to call next.
         /// If this is larger than the number of children in the collection,
         /// you can call finish to stop reading the response.
-        pub fn child_offset(&self) -> u64 {
-            self.child_offset
+        pub fn offset(&self) -> u64 {
+            self.offset
         }
 
         /// The ranges we have requested for the child
@@ -804,7 +842,7 @@ pub mod fsm {
             if let Some((offset, ranges)) = self.misc.ranges_iter.next() {
                 AtStartChild {
                     reader: self.stream,
-                    child_offset: offset - 1,
+                    offset,
                     ranges,
                     misc: self.misc,
                 }

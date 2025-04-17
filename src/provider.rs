@@ -28,8 +28,9 @@ use tracing::{Instrument, debug, debug_span, error, warn};
 use crate::{
     Hash,
     api::{self, Store},
+    get::request,
     hashseq::HashSeq,
-    protocol::{GetRequest, PushRequest, RangeSpecSeq, Request, RequestType},
+    protocol::{GetManyRequest, GetRequest, PushRequest, RangeSpecSeq, Request, RequestType},
 };
 
 /// Provider progress events, to keep track of what the provider is doing.
@@ -55,6 +56,17 @@ pub enum Event {
         request_id: u64,
         /// The root hash of the request.
         hash: Hash,
+        /// The exact query ranges of the request.
+        ranges: RangeSpecSeq,
+    },
+    /// A new get request was received from the provider.
+    GetManyRequestReceived {
+        /// The connection id. Multiple requests can be sent over the same connection.
+        connection_id: u64,
+        /// The request id. There is a new id for each request.
+        request_id: u64,
+        /// The root hash of the request.
+        hashes: Vec<Hash>,
         /// The exact query ranges of the request.
         ranges: RangeSpecSeq,
     },
@@ -134,21 +146,17 @@ pub struct TransferStats {
 
 /// Read the request from the getter.
 ///
-/// Will fail if there is an error while reading, if the reader
-/// contains more data than the Request, or if no valid request is sent.
+/// Will fail if there is an error while reading, or if no valid request is sent.
 ///
 /// This will read exactly the number of bytes needed for the request, and
 /// leave the rest of the stream for the caller to read.
+///
+/// It is up to the caller do decide if there should be more data.
 pub async fn read_request(reader: &mut ProgressReader) -> Result<Request> {
-    let request_type = reader.read_u8().await?;
-    let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))?;
-    Ok(match request_type {
-        RequestType::Get => GetRequest::read_async(reader).await?.into(),
-        RequestType::Push => PushRequest::read_async(reader).await?.into(),
-        _ => {
-            anyhow::bail!("unsupported request type: {request_type:?}");
-        }
-    })
+    let mut counting = CountingReader::new(&mut reader.inner);
+    let res = Request::read_async(&mut counting).await?;
+    reader.bytes_read += counting.read();
+    Ok(res)
 }
 
 #[derive(Debug)]
@@ -250,6 +258,21 @@ impl StreamContext {
                 connection_id: self.connection_id,
                 request_id: self.request_id,
                 hash: *hash,
+                ranges: ranges.clone(),
+            })
+            .await;
+    }
+
+    /// Send a get request received event.
+    ///
+    /// This sends all the required information to make sense of subsequent events such as
+    /// [`Event::TransferStarted`] and [`Event::TransferProgress`].
+    pub async fn send_get_many_request_received(&self, hashes: &[Hash], ranges: &RangeSpecSeq) {
+        self.progress
+            .send(|| Event::GetManyRequestReceived {
+                connection_id: self.connection_id,
+                request_id: self.request_id,
+                hashes: hashes.to_vec(),
                 ranges: ranges.clone(),
             })
             .await;
@@ -384,6 +407,7 @@ async fn handle_stream(
     let request = match read_request(&mut reader).await {
         Ok(request) => request,
         Err(e) => {
+            // todo: increase invalid requests metric counter
             return Err(e);
         }
     };
@@ -395,6 +419,13 @@ async fn handle_stream(
             // move the context so we don't lose the bytes read
             writer.context = reader.context;
             handle_get(store, request, writer).await
+        }
+        Request::GetMany(request) => {
+            // we expect no more bytes after the request, so if there are more bytes, it is an invalid request.
+            reader.inner.read_to_end(0).await?;
+            // move the context so we don't lose the bytes read
+            writer.context = reader.context;
+            handle_get_many(store, request, writer).await
         }
         Request::Push(request) => {
             writer.inner.finish()?;
@@ -446,6 +477,34 @@ pub async fn handle_get(
         }
     }
 
+    Ok(())
+}
+
+/// Handle a single get request.
+///
+/// Requires a database, the request, and a writer.
+pub async fn handle_get_many(
+    store: Store,
+    request: GetManyRequest,
+    writer: &mut ProgressWriter,
+) -> Result<()> {
+    debug!("get_many received request");
+    writer
+        .send_get_many_request_received(&request.hashes, &request.ranges)
+        .await;
+    let request_ranges = request.ranges.iter_infinite();
+    for (child, (hash, ranges)) in request.hashes.iter().zip(request_ranges).enumerate() {
+        if !ranges.is_empty() {
+            send_blob(
+                &store,
+                child as u64,
+                *hash,
+                ranges.to_chunk_ranges(),
+                writer,
+            )
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -619,7 +678,22 @@ impl DerefMut for ProgressReader {
     }
 }
 
-impl AsyncRead for ProgressReader {
+pub struct CountingReader<R> {
+    inner: R,
+    read: u64,
+}
+
+impl<R> CountingReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self { inner, read: 0 }
+    }
+
+    pub fn read(&self) -> u64 {
+        self.read
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -628,7 +702,7 @@ impl AsyncRead for ProgressReader {
         let this = self.get_mut();
         let result = Pin::new(&mut this.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = result {
-            this.bytes_read += buf.filled().len() as u64;
+            this.read += buf.filled().len() as u64;
         }
         result
     }

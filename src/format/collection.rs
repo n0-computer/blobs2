@@ -155,7 +155,7 @@ impl Collection {
         let end = loop {
             match curr {
                 fsm::EndBlobNext::MoreChildren(more) => {
-                    let child_offset = more.child_offset();
+                    let child_offset = more.offset() - 1;
                     let Some(hash) = links.get(usize::try_from(child_offset)?) else {
                         break more.finish();
                     };

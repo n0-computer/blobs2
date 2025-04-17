@@ -7,7 +7,7 @@ use ref_cast::RefCast;
 use crate::{
     api::ApiClient,
     get::{GetError, GetResult, Stats, fsm::DecodeError, request},
-    protocol::{PushRequest, Request},
+    protocol::{GetManyRequest, PushRequest, Request},
     provider::{EventSender, ProgressWriter, StreamContext},
 };
 
@@ -401,7 +401,56 @@ impl Download {
                         Ok(at_start_child) => at_start_child,
                         Err(at_closing) => break at_closing,
                     };
-                    let offset = at_start_child.child_offset();
+                    let offset = at_start_child.offset() - 1;
+                    let Some(hash) = hash_seq.get(offset as usize) else {
+                        break at_start_child.finish();
+                    };
+                    trace!("getting child {offset} {}", hash.fmt_short());
+                    let header = at_start_child.next(hash);
+                    let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
+                    next_child = match end.next() {
+                        EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
+                        EndBlobNext::Closing(at_closing) => Err(at_closing),
+                    }
+                }
+            }
+            Err(at_closing) => at_closing,
+        };
+        // read the rest, if any
+        let stats = at_closing.next().await?;
+        trace!(?stats, "get hash seq done");
+        Ok(stats)
+    }
+
+    /// Execute a get request *without* taking the locally available ranges into account.
+    ///
+    /// You can provide a progress channel to get updates on the download progress. This progress
+    /// is the aggregated number of downloaded payload bytes in the request.
+    ///
+    /// This will download the data again even if the data is locally present.
+    ///
+    /// This will return the stats of the download.
+    pub async fn execute_get_many(
+        &self,
+        conn: Connection,
+        request: GetManyRequest,
+        progress: Option<spsc::Sender<u64>>,
+    ) -> GetResult<Stats> {
+        let store = self.store();
+        let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
+        let next_child = crate::get::fsm::start_get_many(conn, request).await?;
+        let mut progress = DownloadProgress::new(progress);
+        // read all children.
+        let at_closing = match next_child {
+            Ok(at_start_child) => {
+                let mut next_child = Ok(at_start_child);
+                loop {
+                    let at_start_child = match next_child {
+                        Ok(at_start_child) => at_start_child,
+                        Err(at_closing) => break at_closing,
+                    };
+                    let offset = at_start_child.offset();
+                    println!("offset {offset}");
                     let Some(hash) = hash_seq.get(offset as usize) else {
                         break at_start_child.finish();
                     };

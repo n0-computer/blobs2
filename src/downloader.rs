@@ -213,7 +213,7 @@ impl Default for RetryConfig {
 #[derive(Debug, Clone)]
 pub struct DownloadRequest {
     kind: DownloadKind,
-    nodes: Vec<NodeAddr>,
+    nodes: Vec<NodeId>,
     progress: Option<ProgressSubscriber>,
 }
 
@@ -228,7 +228,7 @@ impl DownloadRequest {
     /// that the data is still available when the download is complete.
     pub fn new(
         resource: impl Into<DownloadKind>,
-        nodes: impl IntoIterator<Item = impl Into<NodeAddr>>,
+        nodes: impl IntoIterator<Item = impl Into<NodeId>>,
     ) -> Self {
         Self {
             kind: resource.into(),
@@ -682,7 +682,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
             nodes,
             progress,
         } = request;
-        debug!(%kind, nodes=?nodes.iter().map(|n| n.node_id.fmt_short()).collect::<Vec<_>>(), "queue intent");
+        debug!(%kind, nodes=?nodes.iter().map(|n| n.fmt_short()).collect::<Vec<_>>(), "queue intent");
 
         // store the download intent
         let intent_handlers = IntentHandlers {
@@ -694,7 +694,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
         // (skip the node id of our own node - we should never attempt to download from ourselves)
         let node_ids = nodes
             .iter()
-            .map(|n| n.node_id)
+            .cloned()
             .filter(|node_id| *node_id != self.dialer.node_id());
         let updated = self.providers.add_hash_with_nodes(kind.hash(), node_ids);
 

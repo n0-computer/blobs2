@@ -21,7 +21,7 @@ use crate::{
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
-    protocol::{GetRequest, PushRequest, RangeSpec, RangeSpecSeq},
+    protocol::{GetManyRequest, GetRequest, PushRequest, RangeSpec, RangeSpecSeq},
     provider::Event,
     store::fs::{
         FsStore,
@@ -52,7 +52,7 @@ async fn two_nodes_blobs_downloader_smoke() -> TestResult<()> {
     for (tt, size) in tts.iter().zip(sizes) {
         // protect the downloaded data from being deleted
         let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
-        let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]);
+        let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.node_id]);
         let handle = d1.queue(request).await;
         handle.await?;
         assert_eq!(store2.get_bytes(*tt.hash()).await?, test_data(size));
@@ -75,7 +75,7 @@ async fn two_nodes_blobs_downloader_progress() -> TestResult<()> {
     let d1 = Downloader::new(store2.clone(), r2.endpoint().clone());
     // protect the downloaded data from being deleted
     let _tt2 = store2.tags().temp_tag(*tt.hash()).await?;
-    let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.clone()]).progress_sender(tx);
+    let request = DownloadRequest::new(*tt.hash_and_format(), [addr1.node_id]).progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
     let progress = drain(rx).await;
@@ -112,7 +112,7 @@ async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
     // protect the downloaded data from being deleted
     let _tt3 = store3.tags().temp_tag(hash).await?;
-    let request = DownloadRequest::new(HashAndFormat::raw(hash), [addr1.clone(), addr2.clone()])
+    let request = DownloadRequest::new(HashAndFormat::raw(hash), [addr1.node_id, addr2.node_id])
         .progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
@@ -152,7 +152,7 @@ async fn three_nodes_hash_seq_downloader_switch() -> TestResult<()> {
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
     // protect the downloaded data from being deleted
     let _tt3 = store3.tags().temp_tag(content).await?;
-    let request = DownloadRequest::new(content, [addr1.clone(), addr2.clone()]).progress_sender(tx);
+    let request = DownloadRequest::new(content, [addr1.node_id, addr2.node_id]).progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
     let progress = drain(rx).await;
@@ -187,6 +187,32 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
         store2.download().fetch(conn.clone(), hash, None).await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
+    }
+    tokio::try_join!(r1.shutdown(), r2.shutdown())?;
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn two_nodes_get_many() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let sizes = INTERESTING_SIZES;
+    let mut tts = Vec::new();
+    for size in sizes {
+        tts.push(store1.add_bytes(test_data(size)).await?);
+    }
+    let hashes = tts.iter().map(|tt| *tt.hash()).collect::<Vec<_>>();
+    let addr1 = r1.endpoint().node_addr().await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    store2
+        .download()
+        .execute_get_many(conn, GetManyRequest::new(hashes, RangeSpecSeq::all()), None)
+        .await?;
+    for size in sizes {
+        let expected = test_data(size);
+        let hash = Hash::new(&expected);
+        let actual = store2.get_bytes(hash).await?;
+        assert_eq!(actual, expected);
     }
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())

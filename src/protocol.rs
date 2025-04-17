@@ -372,6 +372,9 @@ pub enum Request {
     /// unknonwn data.
     Push(PushRequest),
     /// Get multiple blobs in a single request, from a single provider
+    ///
+    /// This is identical to a [`GetRequest`] for a [`HashSeq`], but the provider
+    /// does not need to have the hash seq.
     GetMany(GetManyRequest),
 }
 
@@ -390,8 +393,32 @@ pub enum RequestType {
     GetMany,
 }
 
+impl Request {
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Request> {
+        let request_type = reader.read_u8().await?;
+        let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))
+            .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to deserialize request type",
+            )
+        })?;
+        Ok(match request_type {
+            RequestType::Get => GetRequest::read_async(reader).await?.into(),
+            RequestType::Push => PushRequest::read_async(reader).await?.into(),
+            RequestType::GetMany => GetManyRequest::read_async(reader).await?.into(),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "failed to deserialize request type",
+                ));
+            }
+        })
+    }
+}
+
 /// A get request
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
 pub struct GetRequest {
     /// blake3 hash
     pub hash: Hash,
