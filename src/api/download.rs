@@ -6,7 +6,9 @@ use ref_cast::RefCast;
 
 use crate::{
     api::ApiClient,
-    get::{GetError, GetResult, Stats, fsm::DecodeError},
+    get::{GetError, GetResult, Stats, fsm::DecodeError, request},
+    protocol::{PushRequest, Request},
+    provider::{EventSender, ProgressWriter, StreamContext},
 };
 
 /// API to compute request and to download from remote nodes.
@@ -291,6 +293,64 @@ impl Download {
         Ok(stats)
     }
 
+    /// Push the given blob or hash sequence to a remote node.
+    ///
+    /// Note that many nodes will reject push requests. Also, this is an experimental feature for now.
+    pub async fn execute_push(
+        &self,
+        conn: Connection,
+        request: PushRequest,
+        progress: Option<spsc::Sender<u64>>,
+    ) -> anyhow::Result<Stats> {
+        let hash = request.hash;
+        debug!(%hash, "pushing");
+        let mut _progress = DownloadProgress::new(progress);
+        let (send, mut recv) = conn.open_bi().await?;
+        let mut writer = ProgressWriter {
+            inner: send,
+            context: StreamContext {
+                connection_id: conn.stable_id() as u64,
+                request_id: recv.id().into(),
+                payload_bytes_sent: 0,
+                other_bytes_sent: 0,
+                bytes_read: 0,
+                progress: EventSender::new(None),
+            },
+        };
+        // we are not going to need this!
+        recv.stop(0u32.into())?;
+        // write the request. Unlike for reading, we can just serialize it sync using postcard.
+        let request = write_push_request(request, &mut writer).await?;
+        let mut request_ranges = request.ranges.iter_infinite();
+        let root = request.hash;
+        let root_ranges = request_ranges.next().expect("infinite iterator");
+        if !root_ranges.is_empty() {
+            self.store()
+                .export_bao(root, root_ranges.to_chunk_ranges())
+                .write_quinn_with_progress(&mut writer, &root, 0)
+                .await?;
+        }
+        if request.ranges.as_single().is_some() {
+            // we are done
+            writer.inner.finish()?;
+            return Ok(Default::default());
+        }
+        let hash_seq = self.store().get_bytes(root).await?;
+        let hash_seq = HashSeq::try_from(hash_seq)?;
+        for (child, (child_hash, child_ranges)) in
+            hash_seq.into_iter().zip(request_ranges).enumerate()
+        {
+            if !child_ranges.is_empty() {
+                self.store()
+                    .export_bao(child_hash, child_ranges.to_chunk_ranges())
+                    .write_quinn_with_progress(&mut writer, &child_hash, (child + 1) as u64)
+                    .await?;
+            }
+        }
+        writer.inner.finish()?;
+        Ok(Default::default())
+    }
+
     /// Execute a get request *without* taking the locally available ranges into account.
     ///
     /// You can provide a progress channel to get updates on the download progress. This progress
@@ -403,7 +463,7 @@ use bao_tree::{
 };
 use iroh::{Endpoint, NodeAddr, endpoint::Connection};
 use irpc::channel::{SendError, spsc};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use super::blobs::Bitfield;
 use crate::{
@@ -623,6 +683,19 @@ impl LazyHashSeq {
     }
 }
 
+async fn write_push_request(
+    requst: PushRequest,
+    stream: &mut ProgressWriter,
+) -> anyhow::Result<PushRequest> {
+    let request = Request::Push(requst);
+    let request_bytes = postcard::to_allocvec(&request)?;
+    stream.inner.write_all(&request_bytes).await?;
+    stream.context.payload_bytes_sent += request_bytes.len() as u64;
+    let Request::Push(request) = request else {
+        unreachable!()
+    };
+    Ok(request)
+}
 #[cfg(test)]
 mod tests {
     use bao_tree::{ChunkNum, ChunkRanges};

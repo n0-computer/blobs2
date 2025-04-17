@@ -1,13 +1,16 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
-use iroh::{Endpoint, protocol::Router};
+use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
-use n0_future::{StreamExt, pin};
+use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
 use tempfile::TempDir;
 use testresult::TestResult;
-use tokio::{select, sync::mpsc};
+use tokio::{
+    select,
+    sync::{mpsc, watch},
+};
 use tracing::{error, info};
 use tracing_test::traced_test;
 
@@ -18,7 +21,8 @@ use crate::{
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
-    protocol::{GetRequest, RangeSpec, RangeSpecSeq},
+    protocol::{GetRequest, PushRequest, RangeSpec, RangeSpecSeq},
+    provider::Event,
     store::fs::{
         FsStore,
         tests::{INTERESTING_SIZES, create_n0_bao, test_data},
@@ -168,7 +172,7 @@ async fn drain<T: RpcMessage>(mut rx: mpsc::Receiver<T>) -> Vec<T> {
 
 #[tokio::test]
 #[traced_test]
-async fn two_nodes_blobs() -> TestResult<()> {
+async fn two_nodes_get_blobs() -> TestResult<()> {
     let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let sizes = INTERESTING_SIZES;
     let mut tts = Vec::new();
@@ -181,6 +185,73 @@ async fn two_nodes_blobs() -> TestResult<()> {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
         store2.download().fetch(conn.clone(), hash, None).await?;
+        let actual = store2.get_bytes(hash).await?;
+        assert_eq!(actual, test_data(size));
+    }
+    tokio::try_join!(r1.shutdown(), r2.shutdown())?;
+    Ok(())
+}
+
+fn event_handler(
+    allowed_nodes: impl IntoIterator<Item = NodeId>,
+) -> (
+    mpsc::Sender<Event>,
+    watch::Receiver<usize>,
+    AbortOnDropHandle<()>,
+) {
+    let (count_tx, count_rx) = tokio::sync::watch::channel(0usize);
+    let (events_tx, mut events_rx) = mpsc::channel::<Event>(16);
+    let allowed_nodes = allowed_nodes.into_iter().collect::<HashSet<_>>();
+    let task = AbortOnDropHandle::new(tokio::task::spawn(async move {
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                Event::ClientConnected {
+                    node_id, permitted, ..
+                } => {
+                    permitted.send(allowed_nodes.contains(&node_id)).await.ok();
+                }
+                Event::PushRequestReceived { permitted, .. } => {
+                    permitted.send(true).await.ok();
+                }
+                Event::TransferCompleted { .. } => {
+                    count_tx.send_modify(|count| *count += 1);
+                }
+                _ => {}
+            }
+        }
+    }));
+    (events_tx, count_rx, task)
+}
+
+#[tokio::test]
+#[traced_test]
+async fn two_nodes_push_blobs() -> TestResult<()> {
+    let testdir = tempfile::tempdir()?;
+    let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
+    let (events_tx, mut count_rx, _task) = event_handler([r1.endpoint().node_id()]);
+    let (r2, store2, _) =
+        node_test_setup_with_events(testdir.path().join("b"), Some(events_tx)).await?;
+    let sizes = INTERESTING_SIZES;
+    let mut tts = Vec::new();
+    for size in sizes {
+        tts.push(store1.add_bytes(test_data(size)).await?);
+    }
+    let addr2 = r2.endpoint().node_addr().await?;
+    let conn = r1.endpoint().connect(addr2, crate::ALPN).await?;
+    for size in sizes {
+        let hash = Hash::new(test_data(size));
+        // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
+        store1
+            .download()
+            .execute_push(
+                conn.clone(),
+                PushRequest::new(hash, RangeSpecSeq::root()),
+                None,
+            )
+            .await?;
+        count_rx.changed().await?;
+        let actual = store2.get_bytes(hash).await?;
+        assert_eq!(actual, test_data(size));
     }
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
@@ -245,9 +316,16 @@ async fn check_presence(store: &Store, sizes: &[usize]) -> TestResult<()> {
 }
 
 async fn node_test_setup(db_path: PathBuf) -> TestResult<(Router, FsStore, PathBuf)> {
+    node_test_setup_with_events(db_path, None).await
+}
+
+async fn node_test_setup_with_events(
+    db_path: PathBuf,
+    events: Option<mpsc::Sender<Event>>,
+) -> TestResult<(Router, FsStore, PathBuf)> {
     let store = crate::store::fs::FsStore::load(&db_path).await?;
     let ep = Endpoint::builder().bind().await?;
-    let blobs = Blobs::new(&store, ep.clone(), None);
+    let blobs = Blobs::new(&store, ep.clone(), events);
     let router = Router::builder(ep)
         .accept(crate::ALPN, blobs)
         .spawn()

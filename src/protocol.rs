@@ -337,6 +337,7 @@
 use bao_tree::{ChunkNum, ChunkRanges};
 use derive_more::From;
 use iroh::endpoint::VarInt;
+use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
@@ -361,21 +362,29 @@ pub enum Request {
     Slot5,
     Slot6,
     Slot7,
-    // The inverse of a get request - push data to the provider
-    //
-    // Note that providers will in many cases reject this request, e.g. if
-    // they don't have write access to the store or don't want to ingest
-    // unknonwn data.
-    // Push(PushRequest),
+    /// The inverse of a get request - push data to the provider
+    ///
+    /// Note that providers will in many cases reject this request, e.g. if
+    /// they don't have write access to the store or don't want to ingest
+    /// unknonwn data.
+    Push(PushRequest),
 }
 
 /// This must contain the request types in the same order as the full requests
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Copy, MaxSize)]
 pub enum RequestType {
     Get,
+    Slot1,
+    Slot2,
+    Slot3,
+    Slot4,
+    Slot5,
+    Slot6,
+    Slot7,
     Push,
 }
 
-/// A request
+/// A get request
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
 pub struct GetRequest {
     /// blake3 hash
@@ -388,8 +397,14 @@ pub struct GetRequest {
 
 /// A push request contains a description of what to push, but will be followed
 /// by the data to push.
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, derive_more::Deref)]
 pub struct PushRequest(GetRequest);
+
+impl PushRequest {
+    pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
+        Self(GetRequest::new(hash, ranges))
+    }
+}
 
 impl GetRequest {
     /// Request a blob or collection with specified ranges
@@ -505,8 +520,9 @@ impl TryFrom<VarInt> for Closed {
 #[cfg(test)]
 mod tests {
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
+    use postcard::experimental::max_size::MaxSize;
 
-    use super::{GetRequest, Request};
+    use super::{GetRequest, Request, RequestType};
 
     #[test]
     fn request_wire_format() {
@@ -534,5 +550,10 @@ mod tests {
             let bytes = postcard::to_stdvec(&case).unwrap();
             assert_eq_hex!(bytes, expected);
         }
+    }
+
+    #[test]
+    fn request_type_size() {
+        assert_eq!(RequestType::POSTCARD_MAX_SIZE, 1);
     }
 }

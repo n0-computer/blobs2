@@ -3,7 +3,14 @@
 //! Note that while using this API directly is fine, the standard way
 //! to provide data is to just register a [`crate::net_protocol`] protocol
 //! handler with an [`iroh::Endpoint`](iroh::protocol::Router).
-use std::{fmt::Debug, time::Duration};
+use std::{
+    fmt::Debug,
+    io,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    task::Poll,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use bao_tree::ChunkRanges;
@@ -11,14 +18,18 @@ use iroh::{
     NodeId,
     endpoint::{self, RecvStream, SendStream},
 };
-use tokio::sync::mpsc;
+use irpc::channel::oneshot;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    sync::mpsc,
+};
 use tracing::{Instrument, debug, debug_span, error, warn};
 
 use crate::{
     Hash,
     api::{self, Store},
     hashseq::HashSeq,
-    protocol::{GetRequest, RangeSpecSeq, Request},
+    protocol::{GetRequest, PushRequest, RangeSpecSeq, Request, RequestType},
 };
 
 /// Provider progress events, to keep track of what the provider is doing.
@@ -29,7 +40,11 @@ use crate::{
 #[derive(Debug)]
 pub enum Event {
     /// A new client connected to the provider.
-    ClientConnected { connection_id: u64, node_id: NodeId },
+    ClientConnected {
+        connection_id: u64,
+        node_id: NodeId,
+        permitted: oneshot::Sender<bool>,
+    },
     /// Connection closed.
     ConnectionClosed { connection_id: u64 },
     /// A new get request was received from the provider.
@@ -42,6 +57,19 @@ pub enum Event {
         hash: Hash,
         /// The exact query ranges of the request.
         ranges: RangeSpecSeq,
+    },
+    /// A new get request was received from the provider.
+    PushRequestReceived {
+        /// The connection id. Multiple requests can be sent over the same connection.
+        connection_id: u64,
+        /// The request id. There is a new id for each request.
+        request_id: u64,
+        /// The root hash of the request.
+        hash: Hash,
+        /// The exact query ranges of the request.
+        ranges: RangeSpecSeq,
+        /// Complete this to permit the request.
+        permitted: oneshot::Sender<bool>,
     },
     /// Transfer for the nth blob started.
     TransferStarted {
@@ -109,13 +137,46 @@ pub struct TransferStats {
 /// Will fail if there is an error while reading, if the reader
 /// contains more data than the Request, or if no valid request is sent.
 ///
-/// When successful, the buffer is empty after this function call.
-pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
-    let payload = reader
-        .read_to_end(crate::protocol::MAX_MESSAGE_SIZE)
-        .await?;
-    let request: Request = postcard::from_bytes(&payload)?;
-    Ok((request, payload.len()))
+/// This will read exactly the number of bytes needed for the request, and
+/// leave the rest of the stream for the caller to read.
+pub async fn read_request(reader: &mut ProgressReader) -> Result<Request> {
+    let request_type = reader.read_u8().await?;
+    let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))?;
+    Ok(match request_type {
+        RequestType::Get => {
+            let mut hash = [0; 32];
+            reader.read_exact(&mut hash).await?;
+            let hash = Hash::from(hash);
+            let ranges = RangeSpecSeq::read_async(reader).await?;
+            GetRequest::new(hash, ranges).into()
+        }
+        RequestType::Push => {
+            let mut hash = [0; 32];
+            reader.read_exact(&mut hash).await?;
+            let hash = Hash::from(hash);
+            let ranges = RangeSpecSeq::read_async(reader).await?;
+            PushRequest::new(hash, ranges).into()
+        }
+        _ => {
+            anyhow::bail!("unsupported request type: {request_type:?}");
+        }
+    })
+}
+
+#[derive(Debug)]
+pub struct StreamContext {
+    /// The connection ID from the connection
+    pub connection_id: u64,
+    /// The request ID from the recv stream
+    pub request_id: u64,
+    /// The number of bytes written that are part of the payload
+    pub payload_bytes_sent: u64,
+    /// The number of bytes written that are not part of the payload
+    pub other_bytes_sent: u64,
+    /// The number of bytes read from the stream
+    pub bytes_read: u64,
+    /// The progress sender to send events to
+    pub progress: EventSender,
 }
 
 /// Wrapper for a [`quinn::SendStream`] with additional per request information.
@@ -123,21 +184,24 @@ pub async fn read_request(mut reader: RecvStream) -> Result<(Request, usize)> {
 pub struct ProgressWriter {
     /// The quinn::SendStream to write to
     pub inner: SendStream,
-    /// The connection ID from the connection
-    connection_id: u64,
-    /// The request ID from the recv stream
-    request_id: u64,
-    /// The number of bytes written that are part of the payload
-    payload_bytes_sent: u64,
-    /// The number of bytes written that are not part of the payload
-    other_bytes_sent: u64,
-    /// The number of bytes read from the stream
-    bytes_read: u64,
-    /// The progress sender to send events to
-    progress: EventSender,
+    pub(crate) context: StreamContext,
 }
 
-impl ProgressWriter {
+impl Deref for ProgressWriter {
+    type Target = StreamContext;
+
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
+impl DerefMut for ProgressWriter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.context
+    }
+}
+
+impl StreamContext {
     /// Increase the write count due to a non-payload write.
     pub fn log_other_write(&mut self, len: usize) {
         self.other_bytes_sent += len as u64;
@@ -188,7 +252,11 @@ impl ProgressWriter {
         });
     }
 
-    pub async fn send_request_received(&self, hash: &Hash, ranges: &RangeSpecSeq) {
+    /// Send a get request received event.
+    ///
+    /// This sends all the required information to make sense of subsequent events such as
+    /// [`Event::TransferStarted`] and [`Event::TransferProgress`].
+    pub async fn send_get_request_received(&self, hash: &Hash, ranges: &RangeSpecSeq) {
         self.progress
             .send(|| Event::GetRequestReceived {
                 connection_id: self.connection_id,
@@ -199,6 +267,40 @@ impl ProgressWriter {
             .await;
     }
 
+    /// Authorize a push request.
+    ///
+    /// This will send a request to the event sender, and wait for a response if a
+    /// progress sender is enabled. If not, it will always fail.
+    ///
+    /// We want to make accepting push requests very explicit, since this allows
+    /// remote nodes to add arbitrary data to our store.
+    pub async fn authorize_push_request(&self, hash: &Hash, ranges: &RangeSpecSeq) -> bool {
+        let mut wait_for_permit = None;
+        // send the request, including the permit channel
+        self.progress
+            .send(|| {
+                let (tx, rx) = oneshot::channel();
+                wait_for_permit = Some(rx);
+                Event::PushRequestReceived {
+                    connection_id: self.connection_id,
+                    request_id: self.request_id,
+                    hash: *hash,
+                    ranges: ranges.clone(),
+                    permitted: tx,
+                }
+            })
+            .await;
+        // wait for the permit, if necessary
+        if let Some(wait_for_permit) = wait_for_permit {
+            // if somebody does not handle the request, they will drop the channel,
+            // and this will fail immediately.
+            wait_for_permit.await.unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Send a transfer started event.
     pub async fn send_transfer_started(&self, index: u64, hash: &Hash, size: u64) {
         self.progress
             .send(|| Event::TransferStarted {
@@ -225,12 +327,13 @@ pub async fn handle_connection(
             warn!("failed to get node id");
             return;
         };
-        progress
-            .send(Event::ClientConnected {
-                connection_id,
-                node_id,
-            })
-            .await;
+        if !progress
+            .authorize_client_connection(connection_id, node_id)
+            .await
+        {
+            debug!("client not authorized to connect");
+            return;
+        }
         while let Ok((writer, reader)) = connection.accept_bi().await {
             // The stream ID index is used to identify this request.  Requests only arrive in
             // bi-directional RecvStreams initiated by the client, so this uniquely identifies them.
@@ -239,12 +342,14 @@ pub async fn handle_connection(
             let store = store.clone();
             let mut writer = ProgressWriter {
                 inner: writer,
-                connection_id,
-                request_id,
-                progress: progress.clone(),
-                payload_bytes_sent: 0,
-                other_bytes_sent: 0,
-                bytes_read: 0,
+                context: StreamContext {
+                    connection_id,
+                    request_id,
+                    payload_bytes_sent: 0,
+                    other_bytes_sent: 0,
+                    bytes_read: 0,
+                    progress: progress.clone(),
+                },
             };
             tokio::spawn(
                 async move {
@@ -276,18 +381,36 @@ async fn handle_stream(
 ) -> Result<()> {
     // 1. Decode the request.
     debug!("reading request");
-    let request = match read_request(reader).await {
-        Ok((request, size)) => {
-            writer.bytes_read += size as u64;
-            request
-        }
+    let mut reader = ProgressReader {
+        inner: reader,
+        context: StreamContext {
+            connection_id: writer.connection_id,
+            request_id: writer.request_id,
+            payload_bytes_sent: 0,
+            other_bytes_sent: 0,
+            bytes_read: 0,
+            progress: writer.progress.clone(),
+        },
+    };
+    let request = match read_request(&mut reader).await {
+        Ok(request) => request,
         Err(e) => {
             return Err(e);
         }
     };
 
     match request {
-        Request::Get(request) => handle_get(store, request, writer).await,
+        Request::Get(request) => {
+            // we expect no more bytes after the request, so if there are more bytes, it is an invalid request.
+            reader.inner.read_to_end(0).await?;
+            // move the context so we don't lose the bytes read
+            writer.context = reader.context;
+            handle_get(store, request, writer).await
+        }
+        Request::Push(request) => {
+            writer.inner.finish()?;
+            handle_push(store, request, reader).await
+        }
         _ => anyhow::bail!("unsupported request: {request:?}"),
         // Request::Push(request) => handle_push(store, request, writer).await,
     }
@@ -295,16 +418,18 @@ async fn handle_stream(
 
 /// Handle a single get request.
 ///
-/// Requires the request, a database, and a writer.
+/// Requires a database, the request, and a writer.
 pub async fn handle_get(
     store: Store,
     request: GetRequest,
     writer: &mut ProgressWriter,
 ) -> Result<()> {
     let hash = request.hash;
-    debug!(%hash, "received request");
+    debug!(%hash, "get received request");
 
-    writer.send_request_received(&hash, &request.ranges).await;
+    writer
+        .send_get_request_received(&hash, &request.ranges)
+        .await;
     let mut hash_seq = None;
     for (offset, ranges) in request.ranges.iter_non_empty_infinite() {
         if offset == 0 {
@@ -332,6 +457,50 @@ pub async fn handle_get(
         }
     }
 
+    Ok(())
+}
+
+/// Handle a single push request.
+///
+/// Requires a database, the request, and a reader.
+pub async fn handle_push(
+    store: Store,
+    request: PushRequest,
+    mut reader: ProgressReader,
+) -> Result<()> {
+    let hash = request.hash;
+    debug!(%hash, "push received request");
+    if !reader.authorize_push_request(&hash, &request.ranges).await {
+        debug!("push request not authorized");
+        return Ok(());
+    };
+    let mut request_ranges = request.ranges.iter_infinite();
+    let root_ranges = request_ranges.next().expect("infinite iterator");
+    if !root_ranges.is_empty() {
+        // todo: send progress from import_bao_quinn or rename to import_bao_quinn_with_progress
+        store
+            .import_bao_quinn(hash, root_ranges.to_chunk_ranges(), &mut reader.inner)
+            .await?;
+    }
+    if request.ranges.as_single().is_some() {
+        debug!("push request complete");
+        return Ok(());
+    }
+    // todo: we assume here that the hash sequence is complete. For some requests this might not be the case. We would need `LazyHashSeq` for that, but it is buggy as of now!
+    let hash_seq = store.get_bytes(hash).await?;
+    let hash_seq = HashSeq::try_from(hash_seq)?;
+    for (child_hash, child_ranges) in hash_seq.into_iter().zip(request_ranges) {
+        if child_ranges.is_empty() {
+            continue;
+        }
+        store
+            .import_bao_quinn(
+                child_hash,
+                child_ranges.to_chunk_ranges(),
+                &mut reader.inner,
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -388,10 +557,33 @@ impl EventSender {
         }
     }
 
+    /// Send a client connected event, if the progress sender is enabled.
+    ///
+    /// This will permit the client to connect if the sender is disabled.
+    #[must_use = "permit should be checked by the caller"]
+    pub async fn authorize_client_connection(&self, connection_id: u64, node_id: NodeId) -> bool {
+        let mut wait_for_permit = None;
+        self.send(|| {
+            let (tx, rx) = oneshot::channel();
+            wait_for_permit = Some(rx);
+            Event::ClientConnected {
+                connection_id,
+                node_id,
+                permitted: tx,
+            }
+        })
+        .await;
+        if let Some(wait_for_permit) = wait_for_permit {
+            wait_for_permit.await.unwrap_or(false)
+        } else {
+            true
+        }
+    }
+
     /// Send an ephemeral event, if the progress sender is enabled.
     ///
     /// The event will only be created if the sender is enabled.
-    pub fn try_send(&self, event: impl LazyEvent) {
+    fn try_send(&self, event: impl LazyEvent) {
         match &self.0 {
             EventSenderInner::Enabled(sender) => {
                 let value = event.call();
@@ -404,7 +596,7 @@ impl EventSender {
     /// Send a mandatory event, if the progress sender is enabled.
     ///
     /// The event only be created if the sender is enabled.
-    pub async fn send(&self, event: impl LazyEvent) {
+    async fn send(&self, event: impl LazyEvent) {
         match &self.0 {
             EventSenderInner::Enabled(sender) => {
                 let value = event.call();
@@ -414,5 +606,39 @@ impl EventSender {
             }
             EventSenderInner::Disabled => {}
         }
+    }
+}
+
+pub struct ProgressReader {
+    inner: RecvStream,
+    context: StreamContext,
+}
+
+impl Deref for ProgressReader {
+    type Target = StreamContext;
+
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
+impl DerefMut for ProgressReader {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.context
+    }
+}
+
+impl AsyncRead for ProgressReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = result {
+            this.bytes_read += buf.filled().len() as u64;
+        }
+        result
     }
 }
