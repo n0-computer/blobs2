@@ -1418,6 +1418,7 @@ impl ProviderMap {
 struct Queue {
     main: LinkedHashSet<DownloadKind>,
     parked: HashSet<DownloadKind>,
+    kind_by_hash: HashMap<Hash, HashSet<DownloadKind>>,
 }
 
 impl Queue {
@@ -1436,19 +1437,9 @@ impl Queue {
         self.main.iter().chain(self.parked.iter())
     }
 
-    /// Returns `true` if either the main queue or the parked set contain a download.
-    pub fn contains(&self, kind: &DownloadKind) -> bool {
-        self.main.contains(kind) || self.parked.contains(kind)
-    }
-
     /// Returns `true` if either the main queue or the parked set contain a download for a hash.
     pub fn contains_hash(&self, hash: Hash) -> bool {
-        let as_raw = HashAndFormat::raw(hash).into();
-        let as_hash_seq = HashAndFormat::hash_seq(hash).into();
-        self.contains(&as_raw) || self.contains(&as_hash_seq)
-        // let main_contains_hash = self.main.iter().any(|kind| kind.hash() == hash);
-        // let parked_contains_hash = self.parked.iter().any(|kind| kind.hash() == hash);
-        // main_contains_hash || parked_contains_hash
+        self.kind_by_hash.contains_key(&hash)
     }
 
     /// Returns `true` if a download is in the parked set.
@@ -1459,6 +1450,7 @@ impl Queue {
     /// Insert an element at the back of the main queue.
     pub fn insert(&mut self, kind: DownloadKind) {
         if !self.main.contains(&kind) {
+            self.add_kind_by_hash(kind.clone());
             self.main.insert(kind);
         }
     }
@@ -1466,6 +1458,7 @@ impl Queue {
     /// Insert an element at the front of the main queue.
     pub fn insert_front(&mut self, kind: DownloadKind) {
         if !self.main.contains(&kind) {
+            self.add_kind_by_hash(kind.clone());
             self.main.insert(kind.clone());
         }
         self.main.to_front(&kind);
@@ -1473,12 +1466,14 @@ impl Queue {
 
     /// Dequeue the first download of the main queue.
     pub fn pop_front(&mut self) -> Option<DownloadKind> {
-        self.main.pop_front()
+        let res = self.main.pop_front()?;
+        self.remove_kind_by_hash(&res);
+        Some(res)
     }
 
     /// Move the front item of the main queue into the parked set.
     pub fn park_front(&mut self) {
-        if let Some(item) = self.pop_front() {
+        if let Some(item) = self.main.pop_front() {
             self.parked.insert(item);
         }
     }
@@ -1497,14 +1492,43 @@ impl Queue {
         let as_hash_seq = HashAndFormat::hash_seq(hash).into();
         self.unpark(&as_raw);
         self.unpark(&as_hash_seq);
-        // if let Some(found) = self.parked.iter().find(|x| x.hash() == hash).cloned() {
-        //     self.unpark(&found);
+        // let Some(kinds) = self.kind_by_hash.get(&hash) else {
+        //     return;
+        // };
+        // for kind in kinds {
+        //     // unpark inlined due to borrow checker
+        //     if self.parked.remove(kind) {
+        //         self.main.insert(kind.clone());
+        //         self.main.to_front(kind);
+        //     }
         // }
     }
 
     /// Remove a download from both the main queue and the parked set.
     pub fn remove(&mut self, kind: &DownloadKind) -> bool {
-        self.main.remove(kind) || self.parked.remove(kind)
+        let removed = self.main.remove(kind) || self.parked.remove(kind);
+        if removed {
+            self.remove_kind_by_hash(kind);
+        }
+        removed
+    }
+
+    /// Remove the kind by map entry, if present.
+    ///
+    /// If not this is a no-op.
+    fn remove_kind_by_hash(&mut self, kind: &DownloadKind) {
+        if let Entry::Occupied(mut entry) = self.kind_by_hash.entry(kind.hash()) {
+            if entry.get_mut().remove(kind) {
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
+    fn add_kind_by_hash(&mut self, kind: DownloadKind) {
+        let entry = self.kind_by_hash.entry(kind.hash()).or_default();
+        entry.insert(kind);
     }
 }
 
