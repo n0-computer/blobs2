@@ -65,7 +65,7 @@ async fn smoke_test() {
     // send a request and make sure the peer is requested the corresponding download
     let peer = SecretKey::generate(rand::thread_rng()).public();
     let kind: DownloadKind = HashAndFormat::raw(Hash::new([0u8; 32])).into();
-    let req = DownloadRequest::new(kind, vec![peer]);
+    let req = DownloadRequest::new(kind.clone(), vec![peer]);
     let handle = downloader.queue(req).await;
     // wait for the download result to be reported
     handle.await.expect("should report success");
@@ -92,7 +92,7 @@ async fn deduplication() {
     let kind: DownloadKind = HashAndFormat::raw(Hash::new([0u8; 32])).into();
     let mut handles = Vec::with_capacity(10);
     for _ in 0..10 {
-        let req = DownloadRequest::new(kind, vec![peer]);
+        let req = DownloadRequest::new(kind.clone(), vec![peer]);
         let h = downloader.queue(req).await;
         handles.push(h);
     }
@@ -123,7 +123,7 @@ async fn cancellation() {
 
     let peer = SecretKey::generate(rand::thread_rng()).public();
     let kind_1: DownloadKind = HashAndFormat::raw(Hash::new([0u8; 32])).into();
-    let req = DownloadRequest::new(kind_1, vec![peer]);
+    let req = DownloadRequest::new(kind_1.clone(), vec![peer]);
     let handle_a = downloader.queue(req.clone()).await;
     let handle_b = downloader.queue(req).await;
     downloader.cancel(handle_a).await;
@@ -167,7 +167,7 @@ async fn max_concurrent_requests_total() {
     let mut expected_history = Vec::with_capacity(5);
     for i in 0..5 {
         let kind: DownloadKind = HashAndFormat::raw(Hash::new([i; 32])).into();
-        let req = DownloadRequest::new(kind, vec![peer]);
+        let req = DownloadRequest::new(kind.clone(), vec![peer]);
         let h = downloader.queue(req).await;
         expected_history.push((kind, peer));
         handles.push(h);

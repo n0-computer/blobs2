@@ -57,7 +57,7 @@ impl downloader::NeedsConn<NodeId> for GetStateNeedsConn {
     fn proceed(self, peer: NodeId) -> super::GetProceedFut {
         let GetStateNeedsConn(getter, kind, progress_sender) = self;
         let mut inner = getter.0.write().unwrap();
-        inner.request_history.push((kind, peer));
+        inner.request_history.push((kind.clone(), peer));
         let request_duration = inner.request_duration;
         let handler = inner.request_handler.clone();
         Box::pin(async move {

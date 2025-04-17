@@ -54,7 +54,13 @@ use tokio::{
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
 use tracing::{Instrument, debug, error, error_span, trace, warn};
 
-use crate::{BlobFormat, Hash, HashAndFormat, api::Store, get::Stats, metrics::Metrics};
+use crate::{
+    BlobFormat, Hash, HashAndFormat,
+    api::Store,
+    get::Stats,
+    metrics::Metrics,
+    protocol::{GetRequest, RangeSpecSeq},
+};
 
 mod get;
 mod invariants;
@@ -244,30 +250,38 @@ impl DownloadRequest {
     }
 }
 
-/// The kind of resource to download.
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy, derive_more::From, derive_more::Into)]
-pub struct DownloadKind(HashAndFormat);
+/// The key used to identify a download request.
+///
+/// Requests with the same key will be grouped together.
+#[derive(Debug, Eq, PartialEq, Hash, Clone, derive_more::From, derive_more::Into)]
+pub struct DownloadKind(Arc<HashAndFormat>);
+
+impl From<DownloadKind> for HashAndFormat {
+    fn from(value: DownloadKind) -> Self {
+        *value.0
+    }
+}
+
+impl From<HashAndFormat> for DownloadKind {
+    fn from(value: HashAndFormat) -> Self {
+        Self(Arc::new(value))
+    }
+}
 
 impl DownloadKind {
     /// Get the hash of this download
-    pub const fn hash(&self) -> Hash {
+    pub fn hash(&self) -> Hash {
         self.0.hash
     }
 
-    /// Get the format of this download
-    pub const fn format(&self) -> BlobFormat {
+    pub fn format(&self) -> BlobFormat {
         self.0.format
-    }
-
-    /// Get the [`HashAndFormat`] pair of this download
-    pub const fn hash_and_format(&self) -> HashAndFormat {
-        self.0
     }
 }
 
 impl fmt::Display for DownloadKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{:?}", self.0.hash.fmt_short(), self.0.format)
+        write!(f, "{}:{:?}", self.0.hash.fmt_short(), self.format())
     }
 }
 
@@ -372,7 +386,7 @@ impl Downloader {
 
     /// Queue a download.
     pub async fn queue(&self, request: DownloadRequest) -> DownloadHandle {
-        let kind = request.kind;
+        let kind = request.kind.clone();
         let intent_id = IntentId(self.next_id.fetch_add(1, Ordering::SeqCst));
         let (sender, receiver) = oneshot::channel();
         let handle = DownloadHandle {
@@ -699,13 +713,13 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
         let updated = self.providers.add_hash_with_nodes(kind.hash(), node_ids);
 
         // queue the transfer (if not running) or attach to transfer progress (if already running)
-        match self.requests.entry(kind) {
+        match self.requests.entry(kind.clone()) {
             hash_map::Entry::Occupied(mut entry) => {
                 if let Some(on_progress) = &intent_handlers.on_progress {
                     // this is async because it sends the current state over the progress channel
                     if let Err(err) = self
                         .progress_tracker
-                        .subscribe(kind, on_progress.clone())
+                        .subscribe(kind.clone(), on_progress.clone())
                         .await
                     {
                         debug!(?err, %kind, "failed to subscribe progress sender to transfer");
@@ -715,7 +729,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
             }
             hash_map::Entry::Vacant(entry) => {
                 let progress_sender = self.progress_tracker.track(
-                    kind,
+                    kind.clone(),
                     intent_handlers
                         .on_progress
                         .clone()
@@ -723,7 +737,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
                         .collect::<Vec<_>>(),
                 );
 
-                let get_state = match self.getter.get(kind, progress_sender.clone()).await {
+                let get_state = match self.getter.get(kind.clone(), progress_sender.clone()).await {
                     Err(err) => {
                         // This prints a "FailureAction" which is somewhat weird, but that's all we get here.
                         tracing::error!(?err, "failed queuing new download");
@@ -762,7 +776,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
                     progress_sender,
                     get_state: Some(get_state),
                 });
-                self.queue.insert(kind);
+                self.queue.insert(kind.clone());
             }
         }
 
@@ -781,7 +795,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
     ///
     /// The method is async because it will send a final abort event on the progress sender.
     async fn handle_cancel_download(&mut self, intent_id: IntentId, kind: DownloadKind) {
-        let Entry::Occupied(mut occupied_entry) = self.requests.entry(kind) else {
+        let Entry::Occupied(mut occupied_entry) = self.requests.entry(kind.clone()) else {
             warn!(%kind, %intent_id, "cancel download called for unknown download");
             return;
         };
@@ -798,7 +812,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
 
         if request_info.intents.is_empty() {
             occupied_entry.remove();
-            if let Entry::Occupied(occupied_entry) = self.active_requests.entry(kind) {
+            if let Entry::Occupied(occupied_entry) = self.active_requests.entry(kind.clone()) {
                 occupied_entry.remove().cancellation.cancel();
             } else {
                 self.queue.remove(&kind);
@@ -897,10 +911,10 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
 
         if finalize {
             let result = result.map_err(|_| DownloadError::DownloadFailed);
-            self.finalize_download(kind, request_info.intents, result);
+            self.finalize_download(kind.clone(), request_info.intents, result);
         } else {
             // reinsert the download at the front of the queue to try from the next node
-            self.requests.insert(kind, request_info);
+            self.requests.insert(kind.clone(), request_info);
             self.queue.insert_front(kind);
         }
     }
@@ -1156,8 +1170,9 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
         // we can only resume it once.
         let get_state = match request_info.get_state.take() {
             Some(state) => Either::Left(async move { Ok(GetOutput::NeedsConn(state)) }),
-            None => Either::Right(self.getter.get(kind, progress)),
+            None => Either::Right(self.getter.get(kind.clone(), progress)),
         };
+        let kind2 = kind.clone();
         let fut = async move {
             // NOTE: it's an open question if we should do timeouts at this point. Considerations from @Frando:
             // > at this stage we do not know the size of the download, so the timeout would have
@@ -1178,7 +1193,7 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
             };
             trace!("transfer finished");
 
-            (kind, res)
+            (kind2, res)
         }
         .instrument(error_span!("transfer", %kind, node=%node.fmt_short()));
         node_info.state = match &node_info.state {
@@ -1431,6 +1446,9 @@ impl Queue {
         let as_raw = HashAndFormat::raw(hash).into();
         let as_hash_seq = HashAndFormat::hash_seq(hash).into();
         self.contains(&as_raw) || self.contains(&as_hash_seq)
+        // let main_contains_hash = self.main.iter().any(|kind| kind.hash() == hash);
+        // let parked_contains_hash = self.parked.iter().any(|kind| kind.hash() == hash);
+        // main_contains_hash || parked_contains_hash
     }
 
     /// Returns `true` if a download is in the parked set.
@@ -1448,7 +1466,7 @@ impl Queue {
     /// Insert an element at the front of the main queue.
     pub fn insert_front(&mut self, kind: DownloadKind) {
         if !self.main.contains(&kind) {
-            self.main.insert(kind);
+            self.main.insert(kind.clone());
         }
         self.main.to_front(&kind);
     }
@@ -1468,7 +1486,7 @@ impl Queue {
     /// Move a download from the parked set to the front of the main queue.
     pub fn unpark(&mut self, kind: &DownloadKind) {
         if self.parked.remove(kind) {
-            self.main.insert(*kind);
+            self.main.insert(kind.clone());
             self.main.to_front(kind);
         }
     }
@@ -1479,6 +1497,9 @@ impl Queue {
         let as_hash_seq = HashAndFormat::hash_seq(hash).into();
         self.unpark(&as_raw);
         self.unpark(&as_hash_seq);
+        // if let Some(found) = self.parked.iter().find(|x| x.hash() == hash).cloned() {
+        //     self.unpark(&found);
+        // }
     }
 
     /// Remove a download from both the main queue and the parked set.
