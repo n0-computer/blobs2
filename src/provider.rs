@@ -143,20 +143,8 @@ pub async fn read_request(reader: &mut ProgressReader) -> Result<Request> {
     let request_type = reader.read_u8().await?;
     let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))?;
     Ok(match request_type {
-        RequestType::Get => {
-            let mut hash = [0; 32];
-            reader.read_exact(&mut hash).await?;
-            let hash = Hash::from(hash);
-            let ranges = RangeSpecSeq::read_async(reader).await?;
-            GetRequest::new(hash, ranges).into()
-        }
-        RequestType::Push => {
-            let mut hash = [0; 32];
-            reader.read_exact(&mut hash).await?;
-            let hash = Hash::from(hash);
-            let ranges = RangeSpecSeq::read_async(reader).await?;
-            PushRequest::new(hash, ranges).into()
-        }
+        RequestType::Get => GetRequest::read_async(reader).await?.into(),
+        RequestType::Push => PushRequest::read_async(reader).await?.into(),
         _ => {
             anyhow::bail!("unsupported request type: {request_type:?}");
         }

@@ -334,6 +334,8 @@
 //!
 //! In case nodes are permanently exchanging data, it is probably valuable to
 //! keep a connection open and reuse it for multiple requests.
+use std::io;
+
 use bao_tree::{ChunkNum, ChunkRanges};
 use derive_more::From;
 use iroh::endpoint::VarInt;
@@ -341,6 +343,7 @@ use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::Hash;
 
@@ -368,6 +371,8 @@ pub enum Request {
     /// they don't have write access to the store or don't want to ingest
     /// unknonwn data.
     Push(PushRequest),
+    /// Get multiple blobs in a single request, from a single provider
+    GetMany(GetManyRequest),
 }
 
 /// This must contain the request types in the same order as the full requests
@@ -382,6 +387,7 @@ pub enum RequestType {
     Slot6,
     Slot7,
     Push,
+    GetMany,
 }
 
 /// A get request
@@ -395,21 +401,18 @@ pub struct GetRequest {
     pub ranges: RangeSpecSeq,
 }
 
-/// A push request contains a description of what to push, but will be followed
-/// by the data to push.
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, derive_more::Deref)]
-pub struct PushRequest(GetRequest);
-
-impl PushRequest {
-    pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
-        Self(GetRequest::new(hash, ranges))
-    }
-}
-
 impl GetRequest {
     /// Request a blob or collection with specified ranges
     pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
         Self { hash, ranges }
+    }
+
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        let mut hash = [0; 32];
+        reader.read_exact(&mut hash).await?;
+        let hash = Hash::from(hash);
+        let ranges = RangeSpecSeq::read_async(reader).await?;
+        Ok(Self { hash, ranges })
     }
 
     /// Request a collection and all its children
@@ -449,6 +452,61 @@ impl GetRequest {
                 ChunkRanges::from(ChunkNum(u64::MAX)..),
             ]),
         }
+    }
+}
+
+/// A push request contains a description of what to push, but will be followed
+/// by the data to push.
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, derive_more::Deref)]
+pub struct PushRequest(GetRequest);
+
+impl PushRequest {
+    pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
+        Self(GetRequest::new(hash, ranges))
+    }
+
+    pub async fn read_async(reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        let inner = GetRequest::read_async(reader).await?;
+        Ok(Self(inner))
+    }
+}
+
+/// A GetMany request is a request to get multiple blobs via a single request.
+///
+/// It is identical to a [`GetRequest`] for a HashSeq, but the HashSeq is provided
+/// by the requester.
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone)]
+pub struct GetManyRequest {
+    /// The hashes of the blobs to get
+    pub hashes: Vec<Hash>,
+    /// The ranges of data to request
+    ///
+    /// There is no range request for the parent, since we just sent the hashes
+    /// and therefore have the parent already.
+    pub ranges: RangeSpecSeq,
+}
+
+impl GetManyRequest {
+    pub fn new(hashes: Vec<Hash>, ranges: RangeSpecSeq) -> Self {
+        Self { hashes, ranges }
+    }
+
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        use irpc::util::AsyncReadVarintExt;
+        let size = reader.read_varint_u64().await?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Failed to read size of GetManyRequest",
+            )
+        })?;
+        let mut hashes = Vec::new();
+        for _ in 0..size {
+            let mut hash = [0; 32];
+            reader.read_exact(&mut hash).await?;
+            hashes.push(Hash::from(hash));
+        }
+        let ranges = RangeSpecSeq::read_async(&mut reader).await?;
+        Ok(Self { hashes, ranges })
     }
 }
 
