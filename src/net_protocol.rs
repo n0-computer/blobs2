@@ -9,8 +9,8 @@
 //! use blobs2::{net_protocol::Blobs, store};
 //! use iroh::{Endpoint, protocol::Router};
 //!
-//! // create a store, in memory
-//! let store = store::mem::MemStore::new();
+//! // create a store
+//! let store = store::fs::FsStore::load("blobs").await?;
 //!
 //! // add some data
 //! let tt = store.add_slice(b"hello world").await?;

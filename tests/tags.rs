@@ -129,13 +129,13 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "fixme"]
-async fn tags_smoke_mem() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let store = blobs2::store::mem::MemStore::new();
-    tags_smoke(store.tags()).await
-}
+// #[tokio::test]
+// #[ignore = "fixme"]
+// async fn tags_smoke_mem() -> TestResult<()> {
+//     tracing_subscriber::fmt::try_init().ok();
+//     let store = blobs2::store::mem::MemStore::new();
+//     tags_smoke(store.tags()).await
+// }
 
 #[tokio::test]
 async fn tags_smoke_fs() -> TestResult<()> {

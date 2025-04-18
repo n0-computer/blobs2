@@ -5,12 +5,11 @@ use bao_tree::{
     io::{BaoContentItem, sync::WriteAt},
 };
 
-use super::{
-    SparseMemFile,
-    observer::{BitfieldObserver, ObservableBitfield, UpdateResult},
-    size_info::SizeInfo,
+use super::{SparseMemFile, size_info::SizeInfo};
+use crate::{
+    api::{blobs::Bitfield, proto::bitfield::UpdateResult},
+    store::IROH_BLOCK_SIZE,
 };
-use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.
@@ -19,29 +18,16 @@ pub struct PartialMemStorage {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
-    pub(crate) bitfield: ObservableBitfield,
+    pub(crate) bitfield: Bitfield,
 }
 
 impl PartialMemStorage {
-    pub fn subscribe(&self) -> BitfieldObserver {
-        self.bitfield.subscribe()
-    }
-
-    pub fn update(&mut self, update: Bitfield) {
-        self.bitfield.update(update);
-    }
-
     pub fn current_size(&self) -> u64 {
-        self.bitfield.with_state(|x| x.size())
+        self.bitfield.size()
     }
 
-    pub fn write_batch(
-        &mut self,
-        size: NonZeroU64,
-        batch: &[BaoContentItem],
-        ranges: &ChunkRanges,
-    ) -> io::Result<UpdateResult> {
-        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
+    pub fn write_batch(&mut self, size: u64, batch: &[BaoContentItem]) -> io::Result<()> {
+        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
         for item in batch {
             match item {
                 BaoContentItem::Parent(parent) => {
@@ -57,13 +43,11 @@ impl PartialMemStorage {
                     }
                 }
                 BaoContentItem::Leaf(leaf) => {
-                    self.size.write(leaf.offset, size.get());
+                    self.size.write(leaf.offset, size);
                     self.data.write_all_at(leaf.offset, leaf.data.as_ref())?;
                 }
             }
         }
-        Ok(self
-            .bitfield
-            .update(Bitfield::new(ranges.clone(), size.get())))
+        Ok(())
     }
 }

@@ -98,7 +98,7 @@ use crate::{
     api::{
         ApiClient,
         proto::{
-            self, BatchMsg, BatchResponse, Command, CreateTempTagMsg, ExportBaoMsg,
+            self, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg, ExportBaoMsg,
             ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
             ImportBaoRequest, ObserveMsg, Scope, bitfield::is_validated,
         },
@@ -890,7 +890,8 @@ async fn import_bao_impl(
     while let Some(item) = rx.recv().await? {
         // if the batch is not empty, the last item is a leaf and the current item is a parent, write the batch
         if !batch.is_empty() && batch[batch.len() - 1].is_leaf() && item.is_parent() {
-            handle.write_batch(size, &batch, &ranges, &ctx.ctx).await?;
+            let bitfield = Bitfield::new_unchecked(ranges, size.into());
+            handle.write_batch(&batch, &bitfield, &ctx.ctx).await?;
             batch.clear();
             ranges = ChunkRanges::empty();
         }
@@ -905,7 +906,8 @@ async fn import_bao_impl(
         batch.push(item);
     }
     if !batch.is_empty() {
-        handle.write_batch(size, &batch, &ranges, &ctx.ctx).await?;
+        let bitfield = Bitfield::new_unchecked(ranges, size.into());
+        handle.write_batch(&batch, &bitfield, &ctx.ctx).await?;
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, num::NonZeroU64};
 
-use bao_tree::{ChunkNum, ChunkRanges};
+use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
 use range_collections::range_set::RangeSetRange;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
@@ -29,7 +29,7 @@ pub struct Bitfield {
     /// The ranges that were added
     pub ranges: ChunkRanges,
     /// Possible update to the size information. can this be just a u64?
-    size: u64,
+    pub(crate) size: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -70,6 +70,10 @@ impl<'de> Deserialize<'de> for Bitfield {
 }
 
 impl Bitfield {
+    pub(crate) fn new_unchecked(ranges: ChunkRanges, size: u64) -> Self {
+        Self { ranges, size }
+    }
+
     pub fn new(mut ranges: ChunkRanges, size: u64) -> Self {
         // for zero size, we have to trust the caller
         if let Some(size) = NonZeroU64::new(size) {
@@ -153,6 +157,27 @@ impl Bitfield {
             validated_size: self.validated_size(),
         }
     }
+
+    /// Update the bitfield with a new value, and gives detailed information about the change.
+    ///
+    /// returns a tuple of (changed, Some((old, new))). If the bitfield changed at all, the flag
+    /// is true. If there was a significant change, the old and new states are returned.
+    pub fn update(&mut self, update: &Bitfield) -> UpdateResult {
+        let s0 = self.state();
+        // todo: this is very inefficient because of all the clones
+        let bitfield1 = self.clone().combine(update.clone());
+        if bitfield1 != *self {
+            let s1 = bitfield1.state();
+            *self = bitfield1;
+            if s0 != s1 {
+                UpdateResult::MajorChange(s0, s1)
+            } else {
+                UpdateResult::MinorChange(s1)
+            }
+        } else {
+            UpdateResult::NoChange(s0)
+        }
+    }
 }
 
 fn choose_size(a: &Bitfield, b: &Bitfield) -> u64 {
@@ -193,6 +218,42 @@ impl CombineInPlace for Bitfield {
 
     fn is_neutral(&self) -> bool {
         self.ranges.is_empty() && self.size == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateResult {
+    NoChange(BitfieldState),
+    MinorChange(BitfieldState),
+    MajorChange(BitfieldState, BitfieldState),
+}
+
+impl UpdateResult {
+    pub fn new(&self) -> &BitfieldState {
+        match self {
+            UpdateResult::NoChange(new) => &new,
+            UpdateResult::MinorChange(new) => &new,
+            UpdateResult::MajorChange(_, new) => &new,
+        }
+    }
+
+    /// True if this change went from non-validated to validated
+    pub fn was_validated(&self) -> bool {
+        match self {
+            UpdateResult::NoChange(_) => false,
+            UpdateResult::MinorChange(_) => false,
+            UpdateResult::MajorChange(old, new) => {
+                new.validated_size.is_some() && old.validated_size.is_none()
+            }
+        }
+    }
+
+    pub fn changed(&self) -> bool {
+        match self {
+            UpdateResult::NoChange(_) => false,
+            UpdateResult::MinorChange(_) => true,
+            UpdateResult::MajorChange(_, _) => true,
+        }
     }
 }
 

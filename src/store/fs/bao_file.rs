@@ -19,6 +19,7 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
+use irpc::channel::spsc;
 use tokio::sync::watch;
 use tracing::{Span, info, trace, warn};
 
@@ -29,17 +30,18 @@ use super::{
     options::{Options, PathOptions},
 };
 use crate::{
-    api::{blobs::Bitfield, proto::bitfield::BitfieldState},
+    api::{
+        blobs::Bitfield,
+        proto::bitfield::{BitfieldState, UpdateResult},
+    },
     store::{
         Hash, IROH_BLOCK_SIZE,
         fs::{TaskContext, meta::raw_outboard_size},
         util::{
-            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, ValueOrPoisioned,
-            observer::{BitfieldObserver, ObservableBitfield, UpdateResult},
+            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
             read_checksummed_and_truncate, write_checksummed,
         },
     },
-    util::channel::mpsc,
 };
 
 /// Storage for complete blobs. There is no longer any uncertainty about the
@@ -69,10 +71,6 @@ impl fmt::Debug for CompleteStorage {
 }
 
 impl CompleteStorage {
-    pub fn subscribe(&self) -> BitfieldObserver {
-        BitfieldObserver::once(Bitfield::complete(self.data.size()))
-    }
-
     /// The size of the data file.
     pub fn size(&self) -> u64 {
         match &self.data {
@@ -137,17 +135,16 @@ pub struct PartialFileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
-    bitfield: ObservableBitfield,
+    bitfield: Bitfield,
 }
 
 impl PartialFileStorage {
     fn sync_all(&self, bitfield_path: &Path) -> io::Result<()> {
-        //self.data.sync_all().ok();
-        //self.outboard.sync_all().ok();
-        //self.sizes.sync_all().ok();
-        self.bitfield
-            .with_state(|state| write_checksummed(bitfield_path, state))
-            .ok();
+        self.data.sync_all()?;
+        self.outboard.sync_all()?;
+        self.sizes.sync_all()?;
+        // only write the bitfield if the syncs were successful
+        write_checksummed(bitfield_path, &self.bitfield)?;
         Ok(())
     }
 
@@ -183,7 +180,6 @@ impl PartialFileStorage {
                 Bitfield::new(ranges, size)
             }
         };
-        let bitfield = ObservableBitfield::new(bitfield);
         Ok(Self {
             data,
             outboard,
@@ -233,21 +229,12 @@ impl PartialFileStorage {
         ))
     }
 
-    fn subscribe(&self) -> BitfieldObserver {
-        self.bitfield.subscribe()
-    }
-
     fn current_size(&self) -> io::Result<u64> {
         read_size(&self.sizes)
     }
 
-    fn write_batch(
-        &mut self,
-        size: NonZeroU64,
-        batch: &[BaoContentItem],
-        ranges: &ChunkRanges,
-    ) -> io::Result<UpdateResult> {
-        let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
+    fn write_batch(&mut self, size: u64, batch: &[BaoContentItem]) -> io::Result<()> {
+        let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
         for item in batch {
             match item {
                 BaoContentItem::Parent(parent) => {
@@ -275,9 +262,7 @@ impl PartialFileStorage {
                 }
             }
         }
-        Ok(self
-            .bitfield
-            .update(Bitfield::new(ranges.clone(), size.get())))
+        Ok(())
     }
 }
 
@@ -313,6 +298,8 @@ pub(crate) enum BaoFileStorage {
     ///
     /// Writing to this is a no-op, since it is already complete.
     Complete(CompleteStorage),
+    /// We will get into that state if there is an io error in the middle of an operation
+    Poisoned,
 }
 
 impl fmt::Debug for BaoFileStorage {
@@ -321,6 +308,7 @@ impl fmt::Debug for BaoFileStorage {
             BaoFileStorage::PartialMem(x) => x.fmt(f),
             BaoFileStorage::Partial(x) => x.fmt(f),
             BaoFileStorage::Complete(x) => x.fmt(f),
+            BaoFileStorage::Poisoned => f.debug_struct("Poisoned").finish(),
         }
     }
 }
@@ -385,11 +373,21 @@ impl PartialMemStorage {
 }
 
 impl BaoFileStorage {
+    pub fn bitfield(&self) -> Bitfield {
+        match self {
+            BaoFileStorage::Complete(x) => Bitfield::complete(x.data.size()),
+            BaoFileStorage::PartialMem(x) => x.bitfield.clone(),
+            BaoFileStorage::Partial(x) => x.bitfield.clone(),
+            BaoFileStorage::Poisoned => {
+                panic!("poisoned storage should not be used")
+            }
+        }
+    }
+
     fn write_batch(
         self,
-        size: NonZeroU64,
         batch: &[BaoContentItem],
-        ranges: &ChunkRanges,
+        bitfield: &Bitfield,
         ctx: &TaskContext,
         hash: &Hash,
     ) -> io::Result<(Self, Option<EntryState<bytes::Bytes>>)> {
@@ -397,7 +395,8 @@ impl BaoFileStorage {
             BaoFileStorage::PartialMem(mut ms) => {
                 // check if we need to switch to file mode, otherwise write to memory
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
-                    let changes = ms.write_batch(size, batch, ranges)?;
+                    ms.write_batch(bitfield.size(), batch)?;
+                    let changes = ms.bitfield.update(bitfield);
                     let new = changes.new();
                     if new.complete {
                         let (cs, update) = ms.into_complete(hash, ctx)?;
@@ -417,7 +416,8 @@ impl BaoFileStorage {
                     //
                     // opt: we should check if we become complete to avoid going from mem to partial to complete
                     let mut fs = ms.persist(ctx, hash)?;
-                    let changes = fs.write_batch(size, batch, ranges)?;
+                    fs.write_batch(bitfield.size(), batch)?;
+                    let changes = fs.bitfield.update(bitfield);
                     let new = changes.new();
                     if new.complete {
                         let (cs, update) = fs.into_complete(new, ctx)?;
@@ -431,7 +431,8 @@ impl BaoFileStorage {
                 }
             }
             BaoFileStorage::Partial(mut fs) => {
-                let changes = fs.write_batch(size, batch, ranges)?;
+                fs.write_batch(bitfield.size(), batch)?;
+                let changes = fs.bitfield.update(bitfield);
                 let new = changes.new();
                 if new.complete {
                     let (cs, update) = fs.into_complete(new, ctx)?;
@@ -453,15 +454,11 @@ impl BaoFileStorage {
                 // unless there is a bug, this would just write the exact same data
                 (self, None)
             }
+            BaoFileStorage::Poisoned => {
+                // we are poisoned, so just ignore the write
+                (self, None)
+            }
         })
-    }
-
-    fn subscribe(&self) -> BitfieldObserver {
-        match self {
-            BaoFileStorage::Complete(c) => c.subscribe(),
-            BaoFileStorage::Partial(i) => i.subscribe(),
-            BaoFileStorage::PartialMem(i) => i.subscribe(),
-        }
     }
 
     /// Create a new mutable mem storage.
@@ -481,17 +478,15 @@ impl BaoFileStorage {
                 file.sizes.sync_all()?;
                 Ok(())
             }
+            Self::Poisoned => {
+                // we are poisoned, so just ignore the sync
+                Ok(())
+            }
         }
     }
 
-    /// True if the storage is in memory.
-    #[allow(dead_code)]
-    fn is_mem(&self) -> bool {
-        match self {
-            Self::PartialMem(_) => true,
-            Self::Partial(_) => false,
-            Self::Complete(c) => c.data.is_mem() && c.outboard.is_mem(),
-        }
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, BaoFileStorage::Poisoned)
     }
 }
 
@@ -513,7 +508,7 @@ impl BaoFileHandleWeak {
 
 /// The inner part of a bao file handle.
 pub struct BaoFileHandleInner {
-    pub(crate) storage: watch::Sender<Option<BaoFileStorage>>,
+    pub(crate) storage: watch::Sender<BaoFileStorage>,
     hash: Hash,
     options: Option<Arc<Options>>,
 }
@@ -521,7 +516,7 @@ pub struct BaoFileHandleInner {
 impl fmt::Debug for BaoFileHandleInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let guard = self.storage.borrow();
-        let storage = ValueOrPoisioned(guard.deref().as_ref());
+        let storage = guard.deref();
         f.debug_struct("BaoFileHandleInner")
             .field("hash", &DD(self.hash))
             .field("storage", &storage)
@@ -535,15 +530,22 @@ pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 impl Drop for BaoFileHandleInner {
     fn drop(&mut self) {
-        if let Some(BaoFileStorage::Partial(fs)) = self.storage.borrow().deref() {
+        if let BaoFileStorage::Partial(fs) = self.storage.borrow().deref() {
             let options = self.options.as_ref().unwrap();
             let path = options.path.bitfield_path(&self.hash);
-            info!(
+            trace!(
                 "writing bitfield for hash {} to {}",
-                self.hash.to_hex(),
+                self.hash,
                 path.display()
             );
-            fs.sync_all(&path).ok();
+            if let Err(cause) = fs.sync_all(&path) {
+                warn!(
+                    "failed to write bitfield for {} at {}: {:?}",
+                    self.hash,
+                    path.display(),
+                    cause
+                );
+            }
         }
     }
 }
@@ -556,10 +558,12 @@ impl ReadBytesAt for DataReader {
     fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
         let guard = self.0.storage.borrow();
         match guard.deref() {
-            Some(BaoFileStorage::PartialMem(x)) => x.data.read_bytes_at(offset, size),
-            Some(BaoFileStorage::Partial(x)) => x.data.read_bytes_at(offset, size),
-            Some(BaoFileStorage::Complete(x)) => x.data.read_bytes_at(offset, size),
-            None => Err(io::Error::other("handle poisoned")),
+            BaoFileStorage::PartialMem(x) => x.data.read_bytes_at(offset, size),
+            BaoFileStorage::Partial(x) => x.data.read_bytes_at(offset, size),
+            BaoFileStorage::Complete(x) => x.data.read_bytes_at(offset, size),
+            BaoFileStorage::Poisoned => {
+                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+            }
         }
     }
 }
@@ -572,10 +576,12 @@ impl ReadAt for OutboardReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let guard = self.0.storage.borrow();
         match guard.deref() {
-            Some(BaoFileStorage::Complete(x)) => x.outboard.read_at(offset, buf),
-            Some(BaoFileStorage::PartialMem(x)) => x.outboard.read_at(offset, buf),
-            Some(BaoFileStorage::Partial(x)) => x.outboard.read_at(offset, buf),
-            None => Err(io::Error::other("handle poisoned")),
+            BaoFileStorage::Complete(x) => x.outboard.read_at(offset, buf),
+            BaoFileStorage::PartialMem(x) => x.outboard.read_at(offset, buf),
+            BaoFileStorage::Partial(x) => x.outboard.read_at(offset, buf),
+            BaoFileStorage::Poisoned => {
+                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+            }
         }
     }
 }
@@ -591,7 +597,7 @@ impl BaoFileHandle {
     pub fn new_partial_mem(hash: Hash, options: Arc<Options>) -> Self {
         let storage = BaoFileStorage::partial_mem();
         Self(Arc::new(BaoFileHandleInner {
-            storage: watch::Sender::new(Some(storage)),
+            storage: watch::Sender::new(storage),
             hash,
             options: Some(options),
         }))
@@ -601,7 +607,7 @@ impl BaoFileHandle {
     pub fn new_partial_file(hash: Hash, options: Arc<Options>) -> io::Result<Self> {
         let storage = PartialFileStorage::load(&hash, &options.path)?.into();
         Ok(Self(Arc::new(BaoFileHandleInner {
-            storage: watch::Sender::new(Some(storage)),
+            storage: watch::Sender::new(storage),
             hash,
             options: Some(options),
         })))
@@ -615,7 +621,7 @@ impl BaoFileHandle {
     ) -> Self {
         let storage = CompleteStorage { data, outboard }.into();
         Self(Arc::new(BaoFileHandleInner {
-            storage: watch::Sender::new(Some(storage)),
+            storage: watch::Sender::new(storage),
             hash,
             options: None,
         }))
@@ -629,14 +635,14 @@ impl BaoFileHandle {
     ) {
         self.storage.send_if_modified(|guard| {
             let res = match guard {
-                Some(BaoFileStorage::Complete(_)) => None,
-                Some(BaoFileStorage::PartialMem(entry)) => Some(&mut entry.bitfield),
-                Some(BaoFileStorage::Partial(entry)) => Some(&mut entry.bitfield),
-                None => None,
+                BaoFileStorage::Complete(_) => None,
+                BaoFileStorage::PartialMem(entry) => Some(&mut entry.bitfield),
+                BaoFileStorage::Partial(entry) => Some(&mut entry.bitfield),
+                BaoFileStorage::Poisoned => None,
             };
             if let Some(bitfield) = res {
-                bitfield.update(Bitfield::complete(data.size()));
-                *guard = Some(BaoFileStorage::Complete(CompleteStorage { data, outboard }));
+                bitfield.update(&Bitfield::complete(data.size()));
+                *guard = BaoFileStorage::Complete(CompleteStorage { data, outboard });
                 true
             } else {
                 true
@@ -644,17 +650,13 @@ impl BaoFileHandle {
         });
     }
 
-    pub fn subscribe(&self) -> BitfieldObserver {
-        let guard = self.storage.borrow();
-        guard.as_ref().unwrap().subscribe()
+    pub fn subscribe(&self) -> BaoFileStorageSubscriber {
+        BaoFileStorageSubscriber::new(self.0.storage.subscribe())
     }
 
     /// True if the file is complete.
     pub fn is_complete(&self) -> bool {
-        matches!(
-            self.storage.borrow().deref(),
-            Some(BaoFileStorage::Complete(_))
-        )
+        matches!(self.storage.borrow().deref(), BaoFileStorage::Complete(_))
     }
 
     /// An AsyncSliceReader for the data file.
@@ -676,10 +678,12 @@ impl BaoFileHandle {
     /// The most precise known total size of the data file.
     pub fn current_size(&self) -> io::Result<u64> {
         match self.storage.borrow().deref() {
-            Some(BaoFileStorage::Complete(mem)) => Ok(mem.size()),
-            Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.current_size()),
-            Some(BaoFileStorage::Partial(file)) => file.current_size(),
-            None => Err(io::Error::other("handle poisoned")),
+            BaoFileStorage::Complete(mem) => Ok(mem.size()),
+            BaoFileStorage::PartialMem(mem) => Ok(mem.current_size()),
+            BaoFileStorage::Partial(file) => file.current_size(),
+            BaoFileStorage::Poisoned => {
+                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+            }
         }
     }
 
@@ -708,29 +712,20 @@ impl BaoFileHandle {
     /// Write a batch and notify the db
     pub(super) async fn write_batch(
         &self,
-        size: NonZeroU64,
         batch: &[BaoContentItem],
-        ranges: &ChunkRanges,
+        bitfield: &Bitfield,
         ctx: &TaskContext,
     ) -> io::Result<()> {
-        trace!(
-            "write_batch size={} ranges={:?} batch={}",
-            size,
-            ranges,
-            batch.len()
-        );
+        trace!("write_batch bitfield={:?} batch={}", bitfield, batch.len());
         let mut res = Ok(None);
-        self.storage.send_if_modified(|guard| {
-            let Some(state) = guard.take() else {
-                res = Err(io::Error::other("handle poisoned"));
-                return false
-            };
-            let Ok((state1, update)) = state.write_batch(size, batch, ranges, ctx, &self.hash) else {
+        self.storage.send_if_modified(|state| {
+            let Ok((state1, update)) = state.take().write_batch(batch, bitfield, ctx, &self.hash)
+            else {
                 res = Err(io::Error::other("write batch failed"));
-                return false
+                return false;
             };
             res = Ok(update);
-            *guard = Some(state1);
+            *state = state1;
             true
         });
         if let Some(update) = res? {
@@ -786,5 +781,28 @@ impl PartialMemStorage {
     #[allow(dead_code)]
     pub fn into_parts(self) -> (SparseMemFile, SparseMemFile, SizeInfo) {
         (self.data, self.outboard, self.size)
+    }
+}
+
+pub struct BaoFileStorageSubscriber {
+    receiver: watch::Receiver<BaoFileStorage>,
+}
+
+impl BaoFileStorageSubscriber {
+    pub fn new(receiver: watch::Receiver<BaoFileStorage>) -> Self {
+        Self { receiver }
+    }
+
+    /// Forward observed *values* to the given sender
+    ///
+    /// Returns an error if sending fails, ok if the last sender is dropped
+    pub async fn forward(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+        let value = self.receiver.borrow().bitfield();
+        tx.send(value).await?;
+        loop {
+            self.receiver.changed().await?;
+            let value = self.receiver.borrow().bitfield();
+            tx.send(value).await?;
+        }
     }
 }
