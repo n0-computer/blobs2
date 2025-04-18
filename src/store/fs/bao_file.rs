@@ -19,6 +19,7 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
+use tokio::sync::watch;
 use tracing::{Span, info, trace, warn};
 
 use super::{
@@ -512,14 +513,14 @@ impl BaoFileHandleWeak {
 
 /// The inner part of a bao file handle.
 pub struct BaoFileHandleInner {
-    pub(crate) storage: RwLock<Option<BaoFileStorage>>,
+    pub(crate) storage: watch::Sender<Option<BaoFileStorage>>,
     hash: Hash,
     options: Option<Arc<Options>>,
 }
 
 impl fmt::Debug for BaoFileHandleInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let guard = self.storage.read().unwrap();
+        let guard = self.storage.borrow();
         let storage = ValueOrPoisioned(guard.deref().as_ref());
         f.debug_struct("BaoFileHandleInner")
             .field("hash", &DD(self.hash))
@@ -534,7 +535,7 @@ pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 impl Drop for BaoFileHandleInner {
     fn drop(&mut self) {
-        if let Ok(Some(BaoFileStorage::Partial(fs))) = self.storage.get_mut() {
+        if let Some(BaoFileStorage::Partial(fs)) = self.storage.borrow().deref() {
             let options = self.options.as_ref().unwrap();
             let path = options.path.bitfield_path(&self.hash);
             info!(
@@ -553,7 +554,7 @@ pub struct DataReader(BaoFileHandle);
 
 impl ReadBytesAt for DataReader {
     fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
-        let guard = self.0.storage.read().unwrap();
+        let guard = self.0.storage.borrow();
         match guard.deref() {
             Some(BaoFileStorage::PartialMem(x)) => x.data.read_bytes_at(offset, size),
             Some(BaoFileStorage::Partial(x)) => x.data.read_bytes_at(offset, size),
@@ -569,7 +570,7 @@ pub struct OutboardReader(BaoFileHandle);
 
 impl ReadAt for OutboardReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        let guard = self.0.storage.read().unwrap();
+        let guard = self.0.storage.borrow();
         match guard.deref() {
             Some(BaoFileStorage::Complete(x)) => x.outboard.read_at(offset, buf),
             Some(BaoFileStorage::PartialMem(x)) => x.outboard.read_at(offset, buf),
@@ -590,7 +591,7 @@ impl BaoFileHandle {
     pub fn new_partial_mem(hash: Hash, options: Arc<Options>) -> Self {
         let storage = BaoFileStorage::partial_mem();
         Self(Arc::new(BaoFileHandleInner {
-            storage: RwLock::new(Some(storage)),
+            storage: watch::Sender::new(Some(storage)),
             hash,
             options: Some(options),
         }))
@@ -600,7 +601,7 @@ impl BaoFileHandle {
     pub fn new_partial_file(hash: Hash, options: Arc<Options>) -> io::Result<Self> {
         let storage = PartialFileStorage::load(&hash, &options.path)?.into();
         Ok(Self(Arc::new(BaoFileHandleInner {
-            storage: RwLock::new(Some(storage)),
+            storage: watch::Sender::new(Some(storage)),
             hash,
             options: Some(options),
         })))
@@ -614,7 +615,7 @@ impl BaoFileHandle {
     ) -> Self {
         let storage = CompleteStorage { data, outboard }.into();
         Self(Arc::new(BaoFileHandleInner {
-            storage: RwLock::new(Some(storage)),
+            storage: watch::Sender::new(Some(storage)),
             hash,
             options: None,
         }))
@@ -626,28 +627,32 @@ impl BaoFileHandle {
         data: MemOrFile<Bytes, FixedSize<File>>,
         outboard: MemOrFile<Bytes, File>,
     ) {
-        let mut guard = self.storage.write().unwrap();
-        let res = match guard.deref_mut() {
-            Some(BaoFileStorage::Complete(_)) => None,
-            Some(BaoFileStorage::PartialMem(entry)) => Some(&mut entry.bitfield),
-            Some(BaoFileStorage::Partial(entry)) => Some(&mut entry.bitfield),
-            None => None,
-        };
-        if let Some(bitfield) = res {
-            bitfield.update(Bitfield::complete(data.size()));
-            *guard.deref_mut() = Some(BaoFileStorage::Complete(CompleteStorage { data, outboard }));
-        }
+        self.storage.send_if_modified(|guard| {
+            let res = match guard {
+                Some(BaoFileStorage::Complete(_)) => None,
+                Some(BaoFileStorage::PartialMem(entry)) => Some(&mut entry.bitfield),
+                Some(BaoFileStorage::Partial(entry)) => Some(&mut entry.bitfield),
+                None => None,
+            };
+            if let Some(bitfield) = res {
+                bitfield.update(Bitfield::complete(data.size()));
+                *guard = Some(BaoFileStorage::Complete(CompleteStorage { data, outboard }));
+                true
+            } else {
+                true
+            }
+        });
     }
 
     pub fn subscribe(&self) -> BitfieldObserver {
-        let guard = self.storage.read().unwrap();
+        let guard = self.storage.borrow();
         guard.as_ref().unwrap().subscribe()
     }
 
     /// True if the file is complete.
     pub fn is_complete(&self) -> bool {
         matches!(
-            self.storage.read().unwrap().deref(),
+            self.storage.borrow().deref(),
             Some(BaoFileStorage::Complete(_))
         )
     }
@@ -670,7 +675,7 @@ impl BaoFileHandle {
 
     /// The most precise known total size of the data file.
     pub fn current_size(&self) -> io::Result<u64> {
-        match self.storage.read().unwrap().deref() {
+        match self.storage.borrow().deref() {
             Some(BaoFileStorage::Complete(mem)) => Ok(mem.size()),
             Some(BaoFileStorage::PartialMem(mem)) => Ok(mem.current_size()),
             Some(BaoFileStorage::Partial(file)) => file.current_size(),
@@ -714,16 +719,21 @@ impl BaoFileHandle {
             ranges,
             batch.len()
         );
-        let update = {
-            let mut guard = self.storage.write().unwrap();
-            let state = guard
-                .take()
-                .ok_or_else(|| io::Error::other("handle poisoned"))?;
-            let (state1, update) = state.write_batch(size, batch, ranges, ctx, &self.hash)?;
+        let mut res = Ok(None);
+        self.storage.send_if_modified(|guard| {
+            let Some(state) = guard.take() else {
+                res = Err(io::Error::other("handle poisoned"));
+                return false
+            };
+            let Ok((state1, update)) = state.write_batch(size, batch, ranges, ctx, &self.hash) else {
+                res = Err(io::Error::other("write batch failed"));
+                return false
+            };
+            res = Ok(update);
             *guard = Some(state1);
-            update
-        };
-        if let Some(update) = update {
+            true
+        });
+        if let Some(update) = res? {
             ctx.db
                 .sender
                 .send(

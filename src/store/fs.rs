@@ -370,12 +370,6 @@ fn open_bao_file(
 pub(crate) struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
 
 impl Slot {
-    /// Get the handle if it exists and is still alive.
-    pub async fn get(&self) -> Option<BaoFileHandle> {
-        let slot = self.0.lock().await;
-        slot.as_ref().and_then(|weak| weak.upgrade())
-    }
-
     pub async fn is_live(&self) -> bool {
         let slot = self.0.lock().await;
         slot.as_ref().map(|weak| weak.is_live()).unwrap_or(false)
