@@ -1,50 +1,37 @@
-use std::{
-    fmt::{self, Debug},
-    future::Future,
-    ops::Deref,
-};
+use std::{fmt::Debug, ops::Deref};
 
-use irpc::{
-    RpcMessage,
-    channel::{SendError, spsc},
-};
-use n0_future::{Stream, join_all};
+use irpc::channel::spsc;
 use tokio::sync::watch;
-use tracing::trace;
 
-pub struct Observer2<T> {
-    receiver: watch::Receiver<T>,
+pub struct BitfieldObserver {
+    receiver: watch::Receiver<Bitfield>,
 }
 
-impl<T> Observer2<T> {
-    pub fn once(value: T) -> Self {
+impl BitfieldObserver {
+    pub fn once(value: Bitfield) -> Self {
         let (_tx, rx) = watch::channel(value);
         Self::new(rx)
     }
 
-    pub fn new(receiver: watch::Receiver<T>) -> Self {
+    pub fn new(receiver: watch::Receiver<Bitfield>) -> Self {
         Self { receiver }
     }
 
     /// Forward observed *values* to the given sender
     ///
     /// Returns an error if sending fails, ok if the last sender is dropped
-    pub async fn forward(mut self, mut tx: spsc::Sender<T>) -> anyhow::Result<()>
-    where
-        T: RpcMessage + Clone,
-    {
+    pub async fn forward(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().clone();
         tx.send(value).await?;
         loop {
             self.receiver.changed().await?;
             let value = self.receiver.borrow().clone();
-            println!("[observer2] forwarding {:?}", value);
             tx.send(value).await?;
         }
     }
 }
 
-use crate::api::blobs::Bitfield;
+use crate::api::{blobs::Bitfield, proto::bitfield::BitfieldState};
 
 // A commutative combine trait for updates
 pub trait Combine: Debug {
@@ -69,28 +56,75 @@ impl ObservableBitfield {
         }
     }
 
-    pub fn subscribe(&self) -> Observer2<Bitfield> {
-        Observer2::new(self.state.subscribe())
+    pub fn subscribe(&self) -> BitfieldObserver {
+        BitfieldObserver::new(self.state.subscribe())
     }
 
-    pub fn state(&self) -> impl Deref<Target = Bitfield> + '_ {
-        self.state.borrow()
+    /// Do something with the state. This takes a lock, so don't hold it for too long.
+    pub fn with_state<T>(&self, f: impl FnOnce(&Bitfield) -> T) -> T {
+        f(self.state.borrow().deref())
     }
 
-    pub fn update(&self, update: Bitfield) -> bool {
-        println!("[observer] update outer: {:?}", update);
-        let res = self.state.send_if_modified(|state| {
-            let current = state.clone();
-            println!("[observer] update: {:?} {:?}", current, update);
-            let new_state = current.combine(update);
-            if new_state != *state {
-                *state = new_state;
-                true
+    /// Update the bitfield with a new value, and gives detailed information about the change.
+    ///
+    /// returns a tuple of (changed, Some((old, new))). If the bitfield changed at all, the flag
+    /// is true. If there was a significant change, the old and new states are returned.
+    pub fn update(&self, update: Bitfield) -> UpdateResult {
+        let mut res = None;
+        self.state.send_if_modified(|bitfield| {
+            let s0 = bitfield.state();
+            let bitfield1 = bitfield.clone().combine(update);
+            let ur = if bitfield1 != *bitfield {
+                let s1 = bitfield1.state();
+                *bitfield = bitfield1;
+                if s0 != s1 {
+                    UpdateResult::MajorChange(s0, s1)
+                } else {
+                    UpdateResult::MinorChange(s1)
+                }
             } else {
-                false
-            }
+                UpdateResult::NoChange(s0)
+            };
+            let changed = ur.changed();
+            res = Some(ur);
+            changed
         });
-        println!("[observer] update outer end");
-        res
+        res.unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateResult {
+    NoChange(BitfieldState),
+    MinorChange(BitfieldState),
+    MajorChange(BitfieldState, BitfieldState),
+}
+
+impl UpdateResult {
+    pub fn new(&self) -> &BitfieldState {
+        match self {
+            UpdateResult::NoChange(new) => &new,
+            UpdateResult::MinorChange(new) => &new,
+            UpdateResult::MajorChange(_, new) => &new,
+        }
+    }
+
+    /// True if this change went from non-validated to validated
+    pub fn was_validated(&self) -> bool {
+        match self {
+            UpdateResult::NoChange(_) => false,
+            UpdateResult::MinorChange(_) => false,
+            UpdateResult::MajorChange(old, new) => {
+                new.validated_size.is_some() && old.validated_size.is_none()
+            }
+        }
+    }
+
+    pub fn changed(&self) -> bool {
+        match self {
+            UpdateResult::NoChange(_) => false,
+            UpdateResult::MinorChange(_) => true,
+            UpdateResult::MajorChange(_, _) => true,
+        }
     }
 }

@@ -126,7 +126,7 @@ use options::Options;
 use tracing::Instrument;
 mod gc;
 
-use super::{HashAndFormat, util::observer::Observer2};
+use super::HashAndFormat;
 use crate::api::{
     self, Store,
     blobs::{AddProgressItem, ExportMode, ExportProgressItem},

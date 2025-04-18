@@ -24,7 +24,7 @@ pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
 }
 
 /// The state of a bitfield, or an update to a bitfield
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Bitfield {
     /// The ranges that were added
     pub ranges: ChunkRanges,
@@ -32,10 +32,10 @@ pub struct Bitfield {
     size: u64,
 }
 
-impl Default for Bitfield {
-    fn default() -> Self {
-        Self::empty()
-    }
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub struct BitfieldState {
+    pub complete: bool,
+    pub validated_size: Option<u64>,
 }
 
 impl Serialize for Bitfield {
@@ -145,6 +145,13 @@ impl Bitfield {
             total += end - start;
         }
         total
+    }
+
+    pub fn state(&self) -> BitfieldState {
+        BitfieldState {
+            complete: self.is_complete(),
+            validated_size: self.validated_size(),
+        }
     }
 }
 

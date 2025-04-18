@@ -26,7 +26,7 @@ use n0_future::future::yield_now;
 use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
-use super::util::{BaoTreeSender, observer::Observer2};
+use super::util::{BaoTreeSender, observer::BitfieldObserver};
 use crate::{
     Hash,
     api::{
@@ -106,7 +106,7 @@ impl Actor {
                 let observer = if let Some(entry) = self.data.get_mut(&hash) {
                     entry.subscribe()
                 } else {
-                    Observer2::once(Bitfield::empty())
+                    BitfieldObserver::once(Bitfield::empty())
                 };
                 self.unit_tasks.spawn(async move {
                     observer.forward(tx).await.ok();

@@ -37,7 +37,7 @@ use tracing::{error, info, instrument};
 
 use super::{
     BlobFormat,
-    util::{BaoTreeSender, PartialMemStorage, observer::Observer2},
+    util::{BaoTreeSender, PartialMemStorage, observer::BitfieldObserver},
 };
 use crate::{
     Hash,
@@ -406,13 +406,12 @@ async fn import_bao_task(
                     .write_at(start, &leaf.data)
                     .expect("writing to mem can never fail");
                 let added = ChunkRanges::from(ChunkNum::chunks(start)..ChunkNum::full_chunks(end));
-                let added = &added - &entry.bitfield.state().ranges;
+                let added = entry.bitfield.with_state(|x| &added - &x.ranges);
                 if added.is_empty() {
                     continue;
                 }
-                let update = Bitfield::new(added, size);
-                entry.bitfield.update(update);
-                if entry.bitfield.state().ranges == ChunkRanges::from(..ChunkNum::chunks(size)) {
+                let update = entry.bitfield.update(Bitfield::new(added, size));
+                if update.new().complete {
                     let data = std::mem::take(&mut entry.data);
                     let outboard = std::mem::take(&mut entry.outboard);
                     let data: Bytes = <Vec<u8>>::try_from(data).unwrap().into();
@@ -604,7 +603,7 @@ impl Default for Entry {
 }
 
 impl Entry {
-    fn subscribe(&mut self) -> Observer2<Bitfield> {
+    fn subscribe(&mut self) -> BitfieldObserver {
         match self {
             Self::Partial(entry) => entry.subscribe(),
             Self::Complete(entry) => entry.subscribe(),
@@ -655,8 +654,8 @@ impl CompleteStorage {
         (hash, entry)
     }
 
-    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
-        Observer2::once(Bitfield::complete(self.size()))
+    pub fn subscribe(&mut self) -> BitfieldObserver {
+        BitfieldObserver::once(Bitfield::complete(self.size()))
     }
 
     pub fn new(data: Bytes, outboard: Bytes) -> Self {

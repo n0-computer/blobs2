@@ -7,7 +7,7 @@ use bao_tree::{
 
 use super::{
     SparseMemFile,
-    observer::{ObservableBitfield, Observer2},
+    observer::{BitfieldObserver, ObservableBitfield, UpdateResult},
     size_info::SizeInfo,
 };
 use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
@@ -23,7 +23,7 @@ pub struct PartialMemStorage {
 }
 
 impl PartialMemStorage {
-    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
+    pub fn subscribe(&self) -> BitfieldObserver {
         self.bitfield.subscribe()
     }
 
@@ -32,7 +32,7 @@ impl PartialMemStorage {
     }
 
     pub fn current_size(&self) -> u64 {
-        self.bitfield.state().size()
+        self.bitfield.with_state(|x| x.size())
     }
 
     pub fn write_batch(
@@ -40,7 +40,7 @@ impl PartialMemStorage {
         size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
-    ) -> io::Result<()> {
+    ) -> io::Result<UpdateResult> {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         for item in batch {
             match item {
@@ -62,8 +62,8 @@ impl PartialMemStorage {
                 }
             }
         }
-        let update = Bitfield::new(ranges.clone(), size.get());
-        self.bitfield.update(update);
-        Ok(())
+        Ok(self
+            .bitfield
+            .update(Bitfield::new(ranges.clone(), size.get())))
     }
 }

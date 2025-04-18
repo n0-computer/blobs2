@@ -28,13 +28,13 @@ use super::{
     options::{Options, PathOptions},
 };
 use crate::{
-    api::blobs::Bitfield,
+    api::{blobs::Bitfield, proto::bitfield::BitfieldState},
     store::{
         Hash, IROH_BLOCK_SIZE,
         fs::{TaskContext, meta::raw_outboard_size},
         util::{
             DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, ValueOrPoisioned,
-            observer::{ObservableBitfield, Observer2},
+            observer::{BitfieldObserver, ObservableBitfield, UpdateResult},
             read_checksummed_and_truncate, write_checksummed,
         },
     },
@@ -68,8 +68,8 @@ impl fmt::Debug for CompleteStorage {
 }
 
 impl CompleteStorage {
-    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
-        Observer2::once(Bitfield::complete(self.data.size()))
+    pub fn subscribe(&self) -> BitfieldObserver {
+        BitfieldObserver::once(Bitfield::complete(self.data.size()))
     }
 
     /// The size of the data file.
@@ -144,7 +144,9 @@ impl PartialFileStorage {
         //self.data.sync_all().ok();
         //self.outboard.sync_all().ok();
         //self.sizes.sync_all().ok();
-        write_checksummed(bitfield_path, self.bitfield.state().deref()).ok();
+        self.bitfield
+            .with_state(|state| write_checksummed(bitfield_path, state))
+            .ok();
         Ok(())
     }
 
@@ -191,11 +193,11 @@ impl PartialFileStorage {
 
     fn into_complete(
         self,
-        _hash: &crate::Hash,
+        state: &BitfieldState,
         ctx: &TaskContext,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
         println!("into_complete");
-        let size = self.bitfield.state().size();
+        let size = state.validated_size.unwrap();
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
             let data = read_to_end(&self.data, 0, size as usize)?;
@@ -230,7 +232,7 @@ impl PartialFileStorage {
         ))
     }
 
-    fn subscribe(&mut self) -> Observer2<Bitfield> {
+    fn subscribe(&self) -> BitfieldObserver {
         self.bitfield.subscribe()
     }
 
@@ -243,7 +245,7 @@ impl PartialFileStorage {
         size: NonZeroU64,
         batch: &[BaoContentItem],
         ranges: &ChunkRanges,
-    ) -> io::Result<()> {
+    ) -> io::Result<UpdateResult> {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         for item in batch {
             match item {
@@ -272,9 +274,9 @@ impl PartialFileStorage {
                 }
             }
         }
-        let ranges = Bitfield::new(ranges.clone(), size.get());
-        self.bitfield.update(ranges);
-        Ok(())
+        Ok(self
+            .bitfield
+            .update(Bitfield::new(ranges.clone(), size.get())))
     }
 }
 
@@ -381,18 +383,6 @@ impl PartialMemStorage {
     }
 }
 
-fn send_update(permit: mpsc::Permit<meta::Command>, hash: &Hash, update: EntryState<Bytes>) {
-    permit.send(
-        Update {
-            hash: *hash,
-            state: update,
-            tx: None,
-            span: Span::current(),
-        }
-        .into(),
-    );
-}
-
 impl BaoFileStorage {
     fn write_batch(
         self,
@@ -401,22 +391,22 @@ impl BaoFileStorage {
         ranges: &ChunkRanges,
         ctx: &TaskContext,
         hash: &Hash,
-        permit: mpsc::Permit<meta::Command>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, Option<EntryState<bytes::Bytes>>)> {
         Ok(match self {
             BaoFileStorage::PartialMem(mut ms) => {
                 // check if we need to switch to file mode, otherwise write to memory
-                let (state, update) = if max_offset(batch) <= ctx.options.inline.max_data_inlined {
-                    ms.write_batch(size, batch, ranges)?;
-                    if ms.bitfield.state().is_complete() {
+                if max_offset(batch) <= ctx.options.inline.max_data_inlined {
+                    let changes = ms.write_batch(size, batch, ranges)?;
+                    let new = changes.new();
+                    if new.complete {
                         let (cs, update) = ms.into_complete(hash, ctx)?;
-                        (cs.into(), update)
+                        (cs.into(), Some(update))
                     } else {
                         let fs = ms.persist(ctx, hash)?;
                         let update = EntryState::Partial {
-                            size: fs.bitfield.state().validated_size(),
+                            size: new.validated_size,
                         };
-                        (fs.into(), update)
+                        (fs.into(), Some(update))
                     }
                 } else {
                     // *first* switch to file mode, *then* write the batch.
@@ -426,50 +416,46 @@ impl BaoFileStorage {
                     //
                     // opt: we should check if we become complete to avoid going from mem to partial to complete
                     let mut fs = ms.persist(ctx, hash)?;
-                    fs.write_batch(size, batch, ranges)?;
-                    if fs.bitfield.state().is_complete() {
-                        let (cs, update) = fs.into_complete(hash, ctx)?;
-                        (cs.into(), update)
+                    let changes = fs.write_batch(size, batch, ranges)?;
+                    let new = changes.new();
+                    if new.complete {
+                        let (cs, update) = fs.into_complete(new, ctx)?;
+                        (cs.into(), Some(update))
                     } else {
                         let update = EntryState::Partial {
-                            size: fs.bitfield.state().validated_size(),
+                            size: new.validated_size,
                         };
-                        (fs.into(), update)
+                        (fs.into(), Some(update))
                     }
-                };
-                send_update(permit, hash, update);
-                state
+                }
             }
             BaoFileStorage::Partial(mut fs) => {
-                let validated_before = fs.bitfield.state().is_validated();
-                fs.write_batch(size, batch, ranges)?;
-                if fs.bitfield.state().is_complete() {
-                    let (cs, update) = fs.into_complete(hash, ctx)?;
-                    send_update(permit, hash, update);
-                    cs.into()
+                let changes = fs.write_batch(size, batch, ranges)?;
+                let new = changes.new();
+                if new.complete {
+                    let (cs, update) = fs.into_complete(new, ctx)?;
+                    (cs.into(), Some(update))
                 } else {
-                    if !validated_before && fs.bitfield.state().is_validated() {
+                    if changes.was_validated() {
                         // we are still partial, but now we know the size
-                        send_update(
-                            permit,
-                            hash,
-                            EntryState::Partial {
-                                size: Some(fs.bitfield.state().size()),
-                            },
-                        );
+                        let update = EntryState::Partial {
+                            size: new.validated_size,
+                        };
+                        (fs.into(), Some(update))
+                    } else {
+                        (fs.into(), None)
                     }
-                    fs.into()
                 }
             }
             BaoFileStorage::Complete(_) => {
                 // we are complete, so just ignore the write
                 // unless there is a bug, this would just write the exact same data
-                self
+                (self, None)
             }
         })
     }
 
-    fn subscribe(&mut self) -> Observer2<Bitfield> {
+    fn subscribe(&self) -> BitfieldObserver {
         match self {
             BaoFileStorage::Complete(c) => c.subscribe(),
             BaoFileStorage::Partial(i) => i.subscribe(),
@@ -653,9 +639,9 @@ impl BaoFileHandle {
         }
     }
 
-    pub fn subscribe(&self) -> Observer2<Bitfield> {
-        let mut guard = self.storage.write().unwrap();
-        guard.deref_mut().as_mut().unwrap().subscribe()
+    pub fn subscribe(&self) -> BitfieldObserver {
+        let guard = self.storage.read().unwrap();
+        guard.as_ref().unwrap().subscribe()
     }
 
     /// True if the file is complete.
@@ -728,24 +714,31 @@ impl BaoFileHandle {
             ranges,
             batch.len()
         );
-        let permit = ctx
-            .db
-            .sender
-            .reserve()
-            .await
-            .map_err(|_e| io::Error::other("reserve"))?;
-        let mut guard = self.storage.write().unwrap();
-        if let Some(state) = guard.take() {
-            match state.write_batch(size, batch, ranges, ctx, &self.hash, permit) {
-                Ok(new_state) => {
-                    *guard = Some(new_state);
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        } else {
-            Err(io::Error::other("handle poisoned"))
+        let update = {
+            let mut guard = self.storage.write().unwrap();
+            let state = guard
+                .take()
+                .ok_or_else(|| io::Error::other("handle poisoned"))?;
+            let (state1, update) = state.write_batch(size, batch, ranges, ctx, &self.hash)?;
+            *guard = Some(state1);
+            update
+        };
+        if let Some(update) = update {
+            ctx.db
+                .sender
+                .send(
+                    Update {
+                        hash: self.hash,
+                        state: update,
+                        tx: None,
+                        span: Span::current(),
+                    }
+                    .into(),
+                )
+                .await
+                .map_err(|_| io::Error::other("send update"))?;
         }
+        Ok(())
     }
 }
 
