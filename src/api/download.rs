@@ -6,7 +6,7 @@ use ref_cast::RefCast;
 
 use crate::{
     api::ApiClient,
-    get::{GetError, GetResult, Stats, fsm::DecodeError, request},
+    get::{GetError, GetResult, Stats, fsm::DecodeError},
     protocol::{GetManyRequest, PushRequest, Request},
     provider::{EventSender, ProgressWriter, StreamContext},
 };

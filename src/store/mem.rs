@@ -37,7 +37,7 @@ use tracing::{error, info, instrument};
 
 use super::{
     BlobFormat,
-    util::{BaoTreeSender, PartialMemStorage},
+    util::{BaoTreeSender, PartialMemStorage, observer::Observer2},
 };
 use crate::{
     Hash,
@@ -54,10 +54,7 @@ use crate::{
         },
         tags::TagInfo,
     },
-    store::{
-        HashAndFormat, IROH_BLOCK_SIZE,
-        util::{Tag, observer::Observer},
-    },
+    store::{HashAndFormat, IROH_BLOCK_SIZE, util::Tag},
     util::temp_tag::TempTag,
 };
 
@@ -137,8 +134,10 @@ impl Actor {
             }) => {
                 let entry = self.state.data.entry(hash).or_default();
                 let mut entry = entry.write().unwrap();
-                let tx = Observer::new(tx.try_into().unwrap());
-                entry.add_observer(tx);
+                let observer = entry.subscribe();
+                self.unit_tasks.spawn(async move {
+                    observer.forward(tx).await.ok();
+                });
             }
             Command::ImportBytes(ImportBytesMsg {
                 inner: ImportBytesRequest { data, .. },
@@ -605,18 +604,10 @@ impl Default for Entry {
 }
 
 impl Entry {
-    #[allow(dead_code)]
-    fn ranges(&self) -> &ChunkRangesRef {
+    fn subscribe(&mut self) -> Observer2<Bitfield> {
         match self {
-            Self::Partial(entry) => &entry.bitfield.state().ranges,
-            Self::Complete(_) => ChunkRangesRef::single(&ChunkNum(0)),
-        }
-    }
-
-    fn add_observer(&mut self, out: Observer<Bitfield>) {
-        match self {
-            Self::Partial(entry) => entry.add_observer(out),
-            Self::Complete(entry) => entry.add_observer(out),
+            Self::Partial(entry) => entry.subscribe(),
+            Self::Complete(entry) => entry.subscribe(),
         }
     }
 
@@ -664,9 +655,8 @@ impl CompleteStorage {
         (hash, entry)
     }
 
-    pub fn add_observer(&mut self, mut out: Observer<Bitfield>) {
-        let state = Bitfield::complete(self.size());
-        out.send(state).ok();
+    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
+        Observer2::once(Bitfield::complete(self.size()))
     }
 
     pub fn new(data: Bytes, outboard: Bytes) -> Self {

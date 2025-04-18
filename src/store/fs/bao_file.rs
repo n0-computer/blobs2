@@ -34,7 +34,7 @@ use crate::{
         fs::{TaskContext, meta::raw_outboard_size},
         util::{
             DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, ValueOrPoisioned,
-            observer::{Observable, Observer},
+            observer::{ObservableBitfield, Observer2},
             read_checksummed_and_truncate, write_checksummed,
         },
     },
@@ -68,9 +68,8 @@ impl fmt::Debug for CompleteStorage {
 }
 
 impl CompleteStorage {
-    pub fn add_observer(&mut self, mut observer: Observer<Bitfield>) {
-        let bitfield = Bitfield::complete(self.data.size());
-        observer.send(bitfield).ok();
+    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
+        Observer2::once(Bitfield::complete(self.data.size()))
     }
 
     /// The size of the data file.
@@ -137,7 +136,7 @@ pub struct PartialFileStorage {
     data: std::fs::File,
     outboard: std::fs::File,
     sizes: std::fs::File,
-    bitfield: Observable<Bitfield>,
+    bitfield: ObservableBitfield,
 }
 
 impl PartialFileStorage {
@@ -145,7 +144,7 @@ impl PartialFileStorage {
         //self.data.sync_all().ok();
         //self.outboard.sync_all().ok();
         //self.sizes.sync_all().ok();
-        write_checksummed(bitfield_path, self.bitfield.state()).ok();
+        write_checksummed(bitfield_path, self.bitfield.state().deref()).ok();
         Ok(())
     }
 
@@ -181,7 +180,7 @@ impl PartialFileStorage {
                 Bitfield::new(ranges, size)
             }
         };
-        let bitfield = Observable::new(bitfield);
+        let bitfield = ObservableBitfield::new(bitfield);
         Ok(Self {
             data,
             outboard,
@@ -195,6 +194,7 @@ impl PartialFileStorage {
         _hash: &crate::Hash,
         ctx: &TaskContext,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
+        println!("into_complete");
         let size = self.bitfield.state().size();
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
@@ -230,8 +230,8 @@ impl PartialFileStorage {
         ))
     }
 
-    fn add_observer(&mut self, observer: Observer<Bitfield>) {
-        self.bitfield.add_observer(observer);
+    fn subscribe(&mut self) -> Observer2<Bitfield> {
+        self.bitfield.subscribe()
     }
 
     fn current_size(&self) -> io::Result<u64> {
@@ -272,10 +272,8 @@ impl PartialFileStorage {
                 }
             }
         }
-        let current = &self.bitfield.state().ranges;
-        let added = ranges - current;
-        let update = Bitfield::new(added, size.get());
-        self.bitfield.update(update);
+        let ranges = Bitfield::new(ranges.clone(), size.get());
+        self.bitfield.update(ranges);
         Ok(())
     }
 }
@@ -471,19 +469,11 @@ impl BaoFileStorage {
         })
     }
 
-    fn observer_dropped(&mut self) {
+    fn subscribe(&mut self) -> Observer2<Bitfield> {
         match self {
-            BaoFileStorage::Complete(_) => {}
-            BaoFileStorage::Partial(i) => i.bitfield.observer_dropped(),
-            BaoFileStorage::PartialMem(i) => i.bitfield.observer_dropped(),
-        }
-    }
-
-    fn add_observer(&mut self, observer: Observer<Bitfield>) {
-        match self {
-            BaoFileStorage::Complete(c) => c.add_observer(observer),
-            BaoFileStorage::Partial(i) => i.add_observer(observer),
-            BaoFileStorage::PartialMem(i) => i.add_observer(observer),
+            BaoFileStorage::Complete(c) => c.subscribe(),
+            BaoFileStorage::Partial(i) => i.subscribe(),
+            BaoFileStorage::PartialMem(i) => i.subscribe(),
         }
     }
 
@@ -663,14 +653,9 @@ impl BaoFileHandle {
         }
     }
 
-    pub fn add_observer(&self, observer: Observer<Bitfield>) {
+    pub fn subscribe(&self) -> Observer2<Bitfield> {
         let mut guard = self.storage.write().unwrap();
-        guard.deref_mut().as_mut().unwrap().add_observer(observer);
-    }
-
-    pub fn observer_dropped(&self) {
-        let mut guard = self.storage.write().unwrap();
-        guard.deref_mut().as_mut().unwrap().observer_dropped();
+        guard.deref_mut().as_mut().unwrap().subscribe()
     }
 
     /// True if the file is complete.

@@ -54,11 +54,8 @@ use super::{
     tags::TagInfo,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
-    api::proto::BatchRequest,
-    provider::ProgressWriter,
-    store::{IROH_BLOCK_SIZE, util::observer::Aggregator},
-    util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat, api::proto::BatchRequest, provider::ProgressWriter,
+    store::IROH_BLOCK_SIZE, util::temp_tag::TempTag,
 };
 
 /// Options for adding bytes.
@@ -599,9 +596,14 @@ impl ObserveProgress {
         }
     }
 
-    pub async fn aggregated(self) -> super::RpcResult<Aggregator<Bitfield>> {
-        let rx = self.inner.await?.try_into().unwrap();
-        Ok(Aggregator::new(rx))
+    pub async fn await_completion(self) -> RequestResult<Bitfield> {
+        let mut stream = self.stream().await?;
+        while let Some(item) = stream.next().await {
+            if item.is_complete() {
+                return Ok(item);
+            }
+        }
+        Err(super::Error::other("unexpected end of stream").into())
     }
 
     /// Returns an infinite stream of bitfields. The first bitfield is the

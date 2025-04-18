@@ -7,7 +7,7 @@ use bao_tree::{
 
 use super::{
     SparseMemFile,
-    observer::{Observable, Observer},
+    observer::{ObservableBitfield, Observer2},
     size_info::SizeInfo,
 };
 use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
@@ -19,17 +19,12 @@ pub struct PartialMemStorage {
     pub(crate) data: SparseMemFile,
     pub(crate) outboard: SparseMemFile,
     pub(crate) size: SizeInfo,
-    pub(crate) bitfield: Observable<Bitfield>,
+    pub(crate) bitfield: ObservableBitfield,
 }
 
 impl PartialMemStorage {
-    pub fn add_observer(&mut self, out: Observer<Bitfield>) {
-        self.bitfield.add_observer(out);
-    }
-
-    #[allow(dead_code)]
-    pub fn bitfield(&self) -> &Observable<Bitfield> {
-        &self.bitfield
+    pub fn subscribe(&mut self) -> Observer2<Bitfield> {
+        self.bitfield.subscribe()
     }
 
     pub fn update(&mut self, update: Bitfield) {

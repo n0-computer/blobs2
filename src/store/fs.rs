@@ -126,7 +126,7 @@ use options::Options;
 use tracing::Instrument;
 mod gc;
 
-use super::{HashAndFormat, util::observer::Observer};
+use super::{HashAndFormat, util::observer::Observer2};
 use crate::api::{
     self, Store,
     blobs::{AddProgressItem, ExportMode, ExportProgressItem},
@@ -921,13 +921,7 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
     let Ok(handle) = ctx.get_or_create(cmd.inner.hash).await else {
         return;
     };
-    let tx = Observer::new(cmd.tx.try_into().unwrap());
-    let receiver_dropped = tx.receiver_dropped();
-    handle.add_observer(tx);
-    // this keeps the handle alive until the observer is dropped
-    receiver_dropped.await;
-    // give the handle a chance to clean up the dropped observer
-    handle.observer_dropped();
+    handle.subscribe().forward(cmd.tx).await.ok();
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
@@ -1199,6 +1193,7 @@ pub mod tests {
     };
     use n0_future::{Stream, StreamExt, stream};
     use testresult::TestResult;
+    use tracing_test::traced_test;
     use walkdir::WalkDir;
 
     use super::*;
@@ -1206,7 +1201,7 @@ pub mod tests {
         api::blobs::Bitfield,
         store::{
             HashAndFormat, IROH_BLOCK_SIZE,
-            util::{SliceInfoExt, Tag, observer::Aggregator, read_checksummed},
+            util::{SliceInfoExt, Tag, read_checksummed},
         },
     };
 
@@ -1258,7 +1253,8 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn observe() -> TestResult<()> {
+    // #[traced_test]
+    async fn test_observe() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
@@ -1271,9 +1267,8 @@ pub mod tests {
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             let obs = store.observe(hash);
             let task = tokio::spawn(async move {
-                let mut agg = obs.aggregated().await?;
-                while let Some(_delta) = agg.next().await {
-                    let state = agg.state();
+                let mut stream = obs.stream().await?;
+                while let Some(state) = stream.next().await {
                     trace!("{:?} complete={}", state, state.is_complete());
                     if state.is_complete() {
                         break;
@@ -1305,14 +1300,6 @@ pub mod tests {
         Bytes::from(res)
     }
 
-    async fn await_completion(mut obs: Aggregator<Bitfield>) {
-        while obs.next().await.is_some() {
-            if obs.state().is_complete() {
-                break;
-            }
-        }
-    }
-
     // import data via import_bytes, check that we can observe it and that it is complete
     #[tokio::test]
     async fn test_import_byte_stream() -> TestResult<()> {
@@ -1324,11 +1311,11 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let stream = bytes_to_stream(expected.clone(), 1023);
-            let obs = store.observe(expected_hash).aggregated().await?;
+            let obs = store.observe(expected_hash);
             let tt = store.add_stream(stream).await.temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            await_completion(obs).await;
+            obs.await_completion().await;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1348,11 +1335,11 @@ pub mod tests {
         for size in sizes {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).aggregated().await?;
+            let obs = store.observe(expected_hash);
             let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            await_completion(obs).await;
+            obs.await_completion().await;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1376,7 +1363,7 @@ pub mod tests {
         {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let obs = store.observe(expected_hash).aggregated().await?;
+            let obs = store.observe(expected_hash);
             let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             let actual = store.get_bytes(expected_hash).await?;
@@ -1391,7 +1378,7 @@ pub mod tests {
             // we must at some point see completion, otherwise the test will hang
             // keep the handle alive by observing until the end, otherwise the handle
             // will change and the bytes won't be the same instance anymore
-            await_completion(obs).await;
+            obs.await_completion().await;
         }
         store.shutdown().await?;
         Ok(())
@@ -1409,11 +1396,11 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let path = testdir.path().join(format!("in-{}", size));
             fs::write(&path, &expected)?;
-            let obs = store.observe(expected_hash).aggregated().await?;
+            let obs = store.observe(expected_hash);
             let tt = store.add_path(&path).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            await_completion(obs).await;
+            obs.await_completion().await;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual, "size={size}");
@@ -1699,11 +1686,8 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).aggregated().await?;
-                let Some(_) = stream.next().await else {
-                    panic!("no update");
-                };
-                assert_eq!(stream.state().ranges, expected_ranges);
+                let bitfield = store.observe(hash).await?;
+                assert_eq!(bitfield.ranges, expected_ranges);
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1751,11 +1735,8 @@ pub mod tests {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);
                 let hash = Hash::new(&data);
-                let mut stream = store.observe(hash).aggregated().await?;
-                let Some(_) = stream.next().await else {
-                    panic!("no update");
-                };
-                assert_eq!(stream.state().ranges, expected_ranges, "size={}", size);
+                let bitfield = store.observe(hash).await?;
+                assert_eq!(bitfield.ranges, expected_ranges, "size={}", size);
             }
             store.dump().await?;
             store.shutdown().await?;

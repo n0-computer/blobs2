@@ -26,7 +26,7 @@ use n0_future::future::yield_now;
 use ref_cast::RefCast;
 use tokio::task::{JoinError, JoinSet};
 
-use super::util::{BaoTreeSender, observer::Observer};
+use super::util::{BaoTreeSender, observer::Observer2};
 use crate::{
     Hash,
     api::{
@@ -38,7 +38,7 @@ use crate::{
             ObserveRequest,
         },
     },
-    store::{IROH_BLOCK_SIZE, mem::CompleteStorage, util::observer::Observable},
+    store::{IROH_BLOCK_SIZE, mem::CompleteStorage},
     util::channel::mpsc,
 };
 
@@ -59,7 +59,6 @@ struct Actor {
     commands: mpsc::Receiver<proto::Command>,
     unit_tasks: JoinSet<()>,
     data: HashMap<Hash, CompleteStorage>,
-    observers: Observable<Bitfield>,
 }
 
 impl Actor {
@@ -68,7 +67,6 @@ impl Actor {
             data,
             commands,
             unit_tasks: JoinSet::new(),
-            observers: Default::default(),
         }
     }
 
@@ -105,12 +103,14 @@ impl Actor {
                 tx,
                 ..
             }) => {
-                let tx = Observer::new(tx.try_into().unwrap());
-                if let Some(entry) = self.data.get_mut(&hash) {
-                    entry.add_observer(tx);
+                let observer = if let Some(entry) = self.data.get_mut(&hash) {
+                    entry.subscribe()
                 } else {
-                    self.observers.add_observer(tx);
-                }
+                    Observer2::once(Bitfield::empty())
+                };
+                self.unit_tasks.spawn(async move {
+                    observer.forward(tx).await.ok();
+                });
             }
             Command::ExportBao(ExportBaoMsg {
                 inner: ExportBaoRequest { hash, ranges },
