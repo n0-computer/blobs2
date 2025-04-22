@@ -44,7 +44,7 @@ use std::{
 
 use anyhow::anyhow;
 use hashlink::LinkedHashSet;
-use iroh::{Endpoint, NodeAddr, NodeId, endpoint};
+use iroh::{Endpoint, NodeId, endpoint};
 use iroh_metrics::inc;
 use n0_future::{Stream, stream::StreamExt};
 use tokio::{
@@ -254,16 +254,32 @@ impl DownloadRequest {
 ///
 /// Requests with the same key will be grouped together.
 #[derive(Debug, Eq, PartialEq, Hash, Clone, derive_more::From, derive_more::Into)]
-pub struct DownloadKind(Arc<HashAndFormat>);
+pub struct DownloadKind(Arc<GetRequest>);
 
 impl From<DownloadKind> for HashAndFormat {
     fn from(value: DownloadKind) -> Self {
-        *value.0
+        let format = if value.0.ranges.is_raw() {
+            BlobFormat::Raw
+        } else {
+            BlobFormat::HashSeq
+        };
+        HashAndFormat {
+            hash: value.0.hash,
+            format,
+        }
     }
 }
 
 impl From<HashAndFormat> for DownloadKind {
     fn from(value: HashAndFormat) -> Self {
+        let value = match value.format {
+            BlobFormat::Raw => {
+                GetRequest::new(value.hash, RangeSpecSeq::root())
+            }
+            BlobFormat::HashSeq => {
+                GetRequest::new(value.hash, RangeSpecSeq::all())
+            }
+        };
         Self(Arc::new(value))
     }
 }
@@ -273,15 +289,11 @@ impl DownloadKind {
     pub fn hash(&self) -> Hash {
         self.0.hash
     }
-
-    pub fn format(&self) -> BlobFormat {
-        self.0.format
-    }
 }
 
 impl fmt::Display for DownloadKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{:?}", self.0.hash.fmt_short(), self.format())
+        write!(f, "{}:{:?}", self.0.hash.fmt_short(), self.0.ranges)
     }
 }
 

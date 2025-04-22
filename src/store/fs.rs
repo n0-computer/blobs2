@@ -1263,13 +1263,7 @@ pub mod tests {
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             let obs = store.observe(hash);
             let task = tokio::spawn(async move {
-                let mut stream = obs.stream().await?;
-                while let Some(state) = stream.next().await {
-                    trace!("{:?} complete={}", state, state.is_complete());
-                    if state.is_complete() {
-                        break;
-                    }
-                }
+                obs.await_completion().await?;
                 api::Result::Ok(())
             });
             store.import_bao_bytes(hash, ranges, bao).await?;

@@ -247,6 +247,13 @@ impl RangeSpecSeq {
         Ok(Self(res))
     }
 
+    pub fn is_raw(&self) -> bool {
+        match self.as_single() {
+            Some((0, _)) => true,
+            _ => false,
+        }
+    }
+
     /// If this range seq describes a range for a single item, returns the offset
     /// and range spec for that item
     pub fn as_single(&self) -> Option<(u64, &RangeSpec)> {

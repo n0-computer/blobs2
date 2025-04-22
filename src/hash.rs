@@ -1,11 +1,12 @@
 //! The blake3 hash used in Iroh.
 
-use std::{borrow::Borrow, fmt, str::FromStr};
+use std::{borrow::Borrow, fmt, io, str::FromStr};
 
 use arrayvec::ArrayString;
 use bao_tree::blake3;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::store::util::DD;
 
@@ -55,6 +56,12 @@ impl Hash {
             .encode_write(&self.as_bytes()[..5], &mut res)
             .unwrap();
         res
+    }
+
+    pub(crate) async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        let mut hash = [0; 32];
+        reader.read_exact(&mut hash).await?;
+        Ok(Self::from(hash))
     }
 }
 

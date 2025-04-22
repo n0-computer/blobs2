@@ -19,18 +19,23 @@ use iroh::{
     endpoint::{self, RecvStream, SendStream},
 };
 use irpc::channel::oneshot;
+use n0_future::StreamExt;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
+    select,
     sync::mpsc,
 };
 use tracing::{Instrument, debug, debug_span, error, warn};
 
 use crate::{
     Hash,
-    api::{self, Store},
+    api::{self, Store, blobs::Bitfield},
     get::request,
     hashseq::HashSeq,
-    protocol::{GetManyRequest, GetRequest, PushRequest, RangeSpecSeq, Request, RequestType},
+    protocol::{
+        GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest, RangeSpecSeq,
+        Request, RequestType,
+    },
 };
 
 /// Provider progress events, to keep track of what the provider is doing.
@@ -431,6 +436,11 @@ async fn handle_stream(
             writer.inner.finish()?;
             handle_push(store, request, reader).await
         }
+        Request::Observe(request) => {
+            // we expect no more bytes after the request, so if there are more bytes, it is an invalid request.
+            reader.inner.read_to_end(0).await?;
+            handle_observe(store, request, writer).await
+        }
         _ => anyhow::bail!("unsupported request: {request:?}"),
         // Request::Push(request) => handle_push(store, request, writer).await,
     }
@@ -530,7 +540,7 @@ pub async fn handle_push(
             .import_bao_quinn(hash, root_ranges.to_chunk_ranges(), &mut reader.inner)
             .await?;
     }
-    if request.ranges.as_single().is_some() {
+    if request.ranges.is_raw() {
         debug!("push request complete");
         return Ok(());
     }
@@ -564,6 +574,51 @@ pub(crate) async fn send_blob(
         .export_bao(hash, ranges)
         .write_quinn_with_progress(writer, &hash, index)
         .await?)
+}
+
+/// Handle a single push request.
+///
+/// Requires a database, the request, and a reader.
+pub async fn handle_observe(
+    store: Store,
+    request: ObserveRequest,
+    writer: &mut ProgressWriter,
+) -> Result<()> {
+    let mut stream = store.observe(request.hash).stream().await?;
+    let mut old = stream
+        .next()
+        .await
+        .ok_or(anyhow::anyhow!("observe stream closed before first value"))?;
+    // send the initial bitfield
+    send_observe_item(writer, &old).await?;
+    // send updates until the remote loses interest
+    loop {
+        select! {
+            new = stream.next() => {
+                let new = new.context("observe stream closed")?;
+                let diff = old.diff(&new);
+                if diff.is_empty() {
+                    continue;
+                }
+                send_observe_item(writer, &diff).await?;
+                old = new;
+            }
+            _ = writer.inner.stopped() => {
+                debug!("observer closed");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn send_observe_item(writer: &mut ProgressWriter, item: &Bitfield) -> Result<()> {
+    let item = ObserveItem::from(item);
+    let item_bytes = postcard::to_allocvec(&item)?;
+    let item_len = item_bytes.len();
+    writer.inner.write_all(&item_bytes).await?;
+    writer.context.log_other_write(item_len);
+    Ok(())
 }
 
 /// Helper to lazyly create an [`Event`], in the case that the event creation

@@ -5,7 +5,10 @@ use std::{
     num::NonZeroU64,
     ops::{Deref, DerefMut},
     path::Path,
-    sync::{Arc, RwLock, Weak},
+    sync::{
+        Arc, RwLock, Weak,
+        mpsc::{self, SendError},
+    },
 };
 
 use bao_tree::{
@@ -32,7 +35,7 @@ use super::{
 use crate::{
     api::{
         blobs::Bitfield,
-        proto::bitfield::{BitfieldState, UpdateResult},
+        proto::bitfield::{BitfieldState, UpdateResult, choose_size},
     },
     store::{
         Hash, IROH_BLOCK_SIZE,
@@ -193,7 +196,6 @@ impl PartialFileStorage {
         state: &BitfieldState,
         ctx: &TaskContext,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
-        println!("into_complete");
         let size = state.validated_size.unwrap();
         let outboard_size = raw_outboard_size(size);
         let (data, data_location) = if ctx.options.is_inlined_data(size) {
@@ -795,14 +797,43 @@ impl BaoFileStorageSubscriber {
 
     /// Forward observed *values* to the given sender
     ///
-    /// Returns an error if sending fails, ok if the last sender is dropped
+    /// Returns an error if sending fails, or if the last sender is dropped
     pub async fn forward(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         tx.send(value).await?;
         loop {
-            self.receiver.changed().await?;
+            self.update_or_closed(&mut tx).await?;
             let value = self.receiver.borrow().bitfield();
-            tx.send(value).await?;
+            tx.send(value.clone()).await?;
+        }
+    }
+
+    /// Forward observed *deltas* to the given sender
+    ///
+    /// Returns an error if sending fails, or if the last sender is dropped
+    pub async fn forward_delta(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+        let value = self.receiver.borrow().bitfield();
+        let mut old = value.clone();
+        tx.send(value).await?;
+        loop {
+            self.update_or_closed(&mut tx).await?;
+            let new = self.receiver.borrow().bitfield();
+            let diff = old.diff(&new);
+            if diff.is_empty() {
+                continue;
+            }
+            tx.send(diff).await?;
+            old = new;
+        }
+    }
+
+    async fn update_or_closed(&mut self, tx: &mut spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+        tokio::select! {
+            _ = tx.closed() => {
+                // the sender is closed, we are done
+                return Err(irpc::channel::SendError::ReceiverClosed.into());
+            }
+            e = self.receiver.changed() => Ok(e?),
         }
     }
 }

@@ -82,6 +82,10 @@ pub struct Blobs {
     client: ApiClient,
 }
 
+pub trait AddableStream: Stream<Item = io::Result<Bytes>> + Send + Sync + 'static {}
+
+impl<T: Stream<Item = io::Result<Bytes>> + Send + Sync + 'static> AddableStream for T {}
+
 impl Blobs {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
@@ -176,10 +180,7 @@ impl Blobs {
         })
     }
 
-    pub async fn add_stream(
-        &self,
-        data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
-    ) -> AddProgress {
+    pub async fn add_stream(&self, data: impl AddableStream) -> AddProgress {
         self.add_stream_impl(Box::pin(data)).await
     }
 

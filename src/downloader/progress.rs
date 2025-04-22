@@ -155,6 +155,11 @@ impl irpc::channel::spsc::DynSender<u64> for OffsetProgressSender {
     fn is_rpc(&self) -> bool {
         false
     }
+
+    fn closed(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // todo: how would you even implement this?
+        Box::pin(n0_future::future::pending())
+    }
 }
 
 impl BroadcastProgressSender {

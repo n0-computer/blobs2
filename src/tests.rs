@@ -1,10 +1,11 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, io, path::PathBuf};
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
 use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
+use quinn::rustls::lock;
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{
@@ -16,16 +17,19 @@ use tracing_test::traced_test;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
-    api::Store,
+    api::{Store, blobs::Bitfield},
     downloader::{DownloadRequest, Downloader},
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
-    protocol::{GetManyRequest, GetRequest, PushRequest, RangeSpec, RangeSpecSeq},
+    protocol::{GetManyRequest, GetRequest, ObserveRequest, PushRequest, RangeSpec, RangeSpecSeq},
     provider::Event,
-    store::fs::{
-        FsStore,
-        tests::{INTERESTING_SIZES, create_n0_bao, test_data},
+    store::{
+        fs::{
+            FsStore,
+            tests::{INTERESTING_SIZES, create_n0_bao, test_data},
+        },
+        util::observer::Combine,
     },
 };
 
@@ -188,6 +192,41 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
     }
+    tokio::try_join!(r1.shutdown(), r2.shutdown())?;
+    Ok(())
+}
+
+#[tokio::test]
+// #[traced_test]
+async fn two_nodes_observe() -> TestResult<()> {
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
+    let size = 1024 * 1024 * 8 + 1;
+    let data = test_data(size);
+    let (hash, bao) = create_n0_bao(&data, &ChunkRanges::all())?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
+    let mut stream = store2
+        .download()
+        .observe(conn.clone(), ObserveRequest::new(hash));
+    let remote_observe_task = tokio::spawn(async move {
+        let mut current = Bitfield::empty();
+        while let Some(item) = stream.next().await {
+            // println!("{:?}", item);
+            current = current.combine(item?);
+            println!("current = {:?}", current);
+            if current.is_validated() {
+                break;
+            }
+        }
+        io::Result::Ok(())
+    });
+    println!("adding data");
+    store1
+        .import_bao_bytes(hash, ChunkRanges::all(), bao)
+        .await?;
+    println!("done adding data");
+    remote_observe_task.await??;
+    println!("awaiting shutdown");
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
 }

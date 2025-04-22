@@ -1,13 +1,16 @@
 //! Download API
 //!
 //! The entry point is the [`Download`] struct.
-use n0_future::{StreamExt, TryFutureExt};
+use genawaiter::sync::{Co, Gen};
+use n0_future::{Stream, StreamExt, TryFutureExt, io};
+use quinn::SendStream;
 use ref_cast::RefCast;
 
+use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
     get::{GetError, GetResult, Stats, fsm::DecodeError},
-    protocol::{GetManyRequest, PushRequest, Request},
+    protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
     provider::{EventSender, ProgressWriter, StreamContext},
 };
 
@@ -293,6 +296,35 @@ impl Download {
         Ok(stats)
     }
 
+    pub fn observe(
+        &self,
+        conn: Connection,
+        request: ObserveRequest,
+    ) -> impl Stream<Item = io::Result<Bitfield>> + 'static {
+        Gen::new(|co| async move {
+            if let Err(cause) = Self::observe_impl(conn, request, &co).await {
+                co.yield_(Err(cause)).await
+            }
+        })
+    }
+
+    async fn observe_impl(
+        conn: Connection,
+        request: ObserveRequest,
+        co: &Co<io::Result<Bitfield>>,
+    ) -> io::Result<()> {
+        let hash = request.hash;
+        debug!(%hash, "observing");
+        let (mut send, mut recv) = conn.open_bi().await?;
+        // write the request. Unlike for reading, we can just serialize it sync using postcard.
+        write_observe_request(request, &mut send).await?;
+        send.finish()?;
+        loop {
+            let msg = ObserveItem::read_async(&mut recv).await?;
+            co.yield_(Ok(Bitfield::from(&msg))).await;
+        }
+    }
+
     /// Push the given blob or hash sequence to a remote node.
     ///
     /// Note that many nodes will reject push requests. Also, this is an experimental feature for now.
@@ -330,7 +362,7 @@ impl Download {
                 .write_quinn_with_progress(&mut writer, &root, 0)
                 .await?;
         }
-        if request.ranges.as_single().is_some() {
+        if request.ranges.is_raw() {
             // we are done
             writer.inner.finish()?;
             return Ok(Default::default());
@@ -514,7 +546,6 @@ use iroh::{Endpoint, NodeAddr, endpoint::Connection};
 use irpc::channel::{SendError, spsc};
 use tracing::{debug, trace};
 
-use super::blobs::Bitfield;
 use crate::{
     BlobFormat, Hash, HashAndFormat,
     api::{self, Store, blobs::Blobs},
@@ -745,6 +776,15 @@ async fn write_push_request(
     };
     Ok(request)
 }
+
+async fn write_observe_request(requst: ObserveRequest, stream: &mut SendStream) -> io::Result<()> {
+    let request = Request::Observe(requst);
+    let request_bytes = postcard::to_allocvec(&request)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    stream.write_all(&request_bytes).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use bao_tree::{ChunkNum, ChunkRanges};

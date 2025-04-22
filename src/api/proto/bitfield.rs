@@ -1,9 +1,10 @@
-use std::{cmp::Ordering, num::NonZeroU64};
+use std::{cmp::Ordering, io, num::NonZeroU64};
 
-use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
+use bao_tree::{ChunkNum, ChunkRanges};
 use range_collections::range_set::RangeSetRange;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
+use tokio::io::AsyncRead;
 
 use crate::store::util::{
     RangeSetExt,
@@ -26,10 +27,10 @@ pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
 /// The state of a bitfield, or an update to a bitfield
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Bitfield {
-    /// The ranges that were added
-    pub ranges: ChunkRanges,
     /// Possible update to the size information. can this be just a u64?
     pub(crate) size: u64,
+    /// The ranges that were added
+    pub ranges: ChunkRanges,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -70,6 +71,28 @@ impl<'de> Deserialize<'de> for Bitfield {
 }
 
 impl Bitfield {
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        use irpc::util::AsyncReadVarintExt;
+        let count = reader.read_varint_u64().await?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read length prefix")
+        })?;
+        let size = reader
+            .read_varint_u64()
+            .await?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read size"))?;
+        let mut values = SmallVec::<[_; 2]>::new();
+        for _ in 0..count {
+            let value = reader.read_varint_u64().await?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read value")
+            })?;
+            values.push(ChunkNum(value));
+        }
+        let ranges = ChunkRanges::new(values).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Ranges not strictly sorted")
+        })?;
+        Ok(Bitfield { size, ranges })
+    }
+
     pub(crate) fn new_unchecked(ranges: ChunkRanges, size: u64) -> Self {
         Self { ranges, size }
     }
@@ -178,9 +201,23 @@ impl Bitfield {
             UpdateResult::NoChange(s0)
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty() && self.size == 0
+    }
+
+    /// A diff between two bitfields. This is an inverse of the combine operation.
+    pub fn diff(&self, that: &Bitfield) -> Self {
+        let size = choose_size(self, that);
+        let ranges_diff = &self.ranges ^ &that.ranges;
+        Self {
+            ranges: ranges_diff,
+            size,
+        }
+    }
 }
 
-fn choose_size(a: &Bitfield, b: &Bitfield) -> u64 {
+pub fn choose_size(a: &Bitfield, b: &Bitfield) -> u64 {
     match (a.ranges.upper_bound(), b.ranges.upper_bound()) {
         (Some(ac), Some(bc)) => match ac.cmp(&bc) {
             Ordering::Less => b.size,

@@ -345,7 +345,7 @@ mod range_spec;
 pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::Hash;
+use crate::{Hash, api::blobs::Bitfield};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 100;
@@ -358,7 +358,7 @@ pub const ALPN: &[u8] = b"/iroh-bytes/4";
 pub enum Request {
     /// A get request for a blob or collection
     Get(GetRequest),
-    Slot1,
+    Observe(ObserveRequest),
     Slot2,
     Slot3,
     Slot4,
@@ -382,7 +382,7 @@ pub enum Request {
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Copy, MaxSize)]
 pub enum RequestType {
     Get,
-    Slot1,
+    Observe,
     Slot2,
     Slot3,
     Slot4,
@@ -394,7 +394,7 @@ pub enum RequestType {
 }
 
 impl Request {
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Request> {
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
         let request_type = reader.read_u8().await?;
         let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))
             .map_err(|_| {
@@ -407,6 +407,7 @@ impl Request {
             RequestType::Get => GetRequest::read_async(reader).await?.into(),
             RequestType::Push => PushRequest::read_async(reader).await?.into(),
             RequestType::GetMany => GetManyRequest::read_async(reader).await?.into(),
+            RequestType::Observe => ObserveRequest::read_async(reader).await?.into(),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -435,10 +436,8 @@ impl GetRequest {
     }
 
     pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let mut hash = [0; 32];
-        reader.read_exact(&mut hash).await?;
-        let hash = Hash::from(hash);
-        let ranges = RangeSpecSeq::read_async(reader).await?;
+        let hash = Hash::read_async(&mut reader).await?;
+        let ranges = RangeSpecSeq::read_async(&mut reader).await?;
         Ok(Self { hash, ranges })
     }
 
@@ -528,12 +527,72 @@ impl GetManyRequest {
         })?;
         let mut hashes = Vec::new();
         for _ in 0..size {
-            let mut hash = [0; 32];
-            reader.read_exact(&mut hash).await?;
-            hashes.push(Hash::from(hash));
+            hashes.push(Hash::read_async(&mut reader).await?);
         }
         let ranges = RangeSpecSeq::read_async(&mut reader).await?;
         Ok(Self { hashes, ranges })
+    }
+}
+
+/// A request to observe a raw blob bitfield.
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
+pub struct ObserveRequest {
+    /// blake3 hash
+    pub hash: Hash,
+    /// ranges to observe.
+    pub ranges: RangeSpec,
+}
+
+impl ObserveRequest {
+    pub fn new(hash: Hash) -> Self {
+        Self {
+            hash,
+            ranges: RangeSpec::all(),
+        }
+    }
+
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        let hash = Hash::read_async(&mut reader).await?;
+        let ranges = RangeSpec::read_async(reader).await?;
+        Ok(Self { hash, ranges })
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+pub struct ObserveItem {
+    pub size: u64,
+    pub ranges: RangeSpec,
+}
+
+impl ObserveItem {
+    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+        use irpc::util::AsyncReadVarintExt;
+        let size = reader.read_varint_u64().await?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Failed to read size of ObserveItem",
+            )
+        })?;
+        let ranges = RangeSpec::read_async(reader).await?;
+        Ok(Self { size, ranges })
+    }
+}
+
+impl From<&Bitfield> for ObserveItem {
+    fn from(value: &Bitfield) -> Self {
+        Self {
+            size: value.size,
+            ranges: RangeSpec::new(&value.ranges),
+        }
+    }
+}
+
+impl From<&ObserveItem> for Bitfield {
+    fn from(value: &ObserveItem) -> Self {
+        Self {
+            size: value.size,
+            ranges: value.ranges.to_chunk_ranges(),
+        }
     }
 }
 
@@ -605,9 +664,12 @@ impl TryFrom<VarInt> for Closed {
 #[cfg(test)]
 mod tests {
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
+    use n0_future::future::block_on;
     use postcard::experimental::max_size::MaxSize;
+    use testresult::TestResult;
 
     use super::{GetRequest, Request, RequestType};
+    use crate::protocol::{ObserveItem, RangeSpec};
 
     #[test]
     fn request_wire_format() {
@@ -640,5 +702,21 @@ mod tests {
     #[test]
     fn request_type_size() {
         assert_eq!(RequestType::POSTCARD_MAX_SIZE, 1);
+    }
+
+    #[test]
+    fn observe_item_postcard() -> TestResult<()> {
+        let item = ObserveItem {
+            size: 0,
+            ranges: RangeSpec::EMPTY,
+        };
+        let bytes = postcard::to_stdvec(&item)?;
+        let item2: ObserveItem = postcard::from_bytes(&bytes)?;
+        assert_eq!(item, item2);
+
+        let item3 = block_on(ObserveItem::read_async(&bytes[..]))?;
+        assert_eq!(item, item3);
+
+        Ok(())
     }
 }

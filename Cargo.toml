@@ -11,7 +11,7 @@ derive_more = { version = "2.0.1", features = ["from", "try_from", "into", "debu
 futures-lite = "2.6.0"
 quinn = { package = "iroh-quinn", version = "0.13.0" }
 n0-future = "0.1.2"
-range-collections = { version = "0.4.5", features = ["serde"] }
+range-collections = { version = "0.4.6", features = ["serde"] }
 redb = "2.4.0"
 smallvec = { version = "1", features = ["serde", "const_new"] }
 thiserror = "2.0.11"
@@ -33,8 +33,8 @@ self_cell = "1.1.0"
 genawaiter = { version = "0.99.1", features = ["futures03"] }
 iroh-base = "0.34.0"
 reflink-copy = "0.1.24"
-irpc = { path = "../irpc", version = "0.2.0", features = ["rpc", "quinn_endpoint_setup", "message_spans"], default-features = false }
-irpc-derive = { version = "0.2.0", default-features = false }
+irpc = { version = "0.2.2", features = ["rpc", "quinn_endpoint_setup", "message_spans"], default-features = false }
+irpc-derive = { version = "0.2.2", default-features = false }
 iroh-metrics = { version = "0.32.0" }
 hashlink = "0.10.0"
 futures-buffered = "0.2.11"
