@@ -273,12 +273,8 @@ impl From<DownloadKind> for HashAndFormat {
 impl From<HashAndFormat> for DownloadKind {
     fn from(value: HashAndFormat) -> Self {
         let value = match value.format {
-            BlobFormat::Raw => {
-                GetRequest::new(value.hash, RangeSpecSeq::root())
-            }
-            BlobFormat::HashSeq => {
-                GetRequest::new(value.hash, RangeSpecSeq::all())
-            }
+            BlobFormat::Raw => GetRequest::new(value.hash, RangeSpecSeq::root()),
+            BlobFormat::HashSeq => GetRequest::new(value.hash, RangeSpecSeq::all()),
         };
         Self(Arc::new(value))
     }

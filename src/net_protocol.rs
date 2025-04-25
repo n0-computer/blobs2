@@ -6,8 +6,8 @@
 //!
 //! ```rust
 //! # async fn example() -> anyhow::Result<()> {
-//! use blobs2::{net_protocol::Blobs, store};
 //! use iroh::{Endpoint, protocol::Router};
+//! use iroh_blobs::{net_protocol::Blobs, store};
 //!
 //! // create a store
 //! let store = store::fs::FsStore::load("blobs").await?;
@@ -23,7 +23,7 @@
 //!
 //! // create a router and add the blobs protocol handler
 //! let router = Router::builder(endpoint)
-//!     .accept(blobs2::ALPN, blobs.clone())
+//!     .accept(iroh_blobs::ALPN, blobs.clone())
 //!     .spawn()
 //!     .await;
 //!

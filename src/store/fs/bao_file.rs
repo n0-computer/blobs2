@@ -2,13 +2,9 @@ use core::fmt;
 use std::{
     fs::{File, OpenOptions},
     io,
-    num::NonZeroU64,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     path::Path,
-    sync::{
-        Arc, RwLock, Weak,
-        mpsc::{self, SendError},
-    },
+    sync::{Arc, Weak},
 };
 
 use bao_tree::{
@@ -24,26 +20,20 @@ use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::spsc;
 use tokio::sync::watch;
-use tracing::{Span, info, trace, warn};
+use tracing::{Span, trace, warn};
 
 use super::{
     BaoFilePart,
     entry_state::{DataLocation, EntryState, OutboardLocation},
-    meta::{self, Update},
+    meta::Update,
     options::{Options, PathOptions},
 };
 use crate::{
-    api::{
-        blobs::Bitfield,
-        proto::bitfield::{BitfieldState, UpdateResult, choose_size},
-    },
+    api::{blobs::Bitfield, proto::bitfield::BitfieldState},
     store::{
-        Hash, IROH_BLOCK_SIZE,
-        fs::{TaskContext, meta::raw_outboard_size},
-        util::{
-            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
-            read_checksummed_and_truncate, write_checksummed,
-        },
+        fs::{meta::raw_outboard_size, TaskContext}, util::{
+            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, DD
+        }, Hash, IROH_BLOCK_SIZE
     },
 };
 

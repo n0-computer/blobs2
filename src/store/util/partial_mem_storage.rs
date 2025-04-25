@@ -1,15 +1,12 @@
-use std::{io, num::NonZeroU64};
+use std::io;
 
 use bao_tree::{
-    BaoTree, ChunkRanges,
+    BaoTree,
     io::{BaoContentItem, sync::WriteAt},
 };
 
 use super::{SparseMemFile, size_info::SizeInfo};
-use crate::{
-    api::{blobs::Bitfield, proto::bitfield::UpdateResult},
-    store::IROH_BLOCK_SIZE,
-};
+use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry
 /// and for observing changes.

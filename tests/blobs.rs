@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use blobs2::{
+use iroh_blobs::{
     Hash,
     api::{
         Store,

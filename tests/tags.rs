@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
 };
 
-use blobs2::{
+use iroh_blobs::{
     BlobFormat, Hash, HashAndFormat,
     api::{
         self, Store,
@@ -133,7 +133,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
 // #[ignore = "fixme"]
 // async fn tags_smoke_mem() -> TestResult<()> {
 //     tracing_subscriber::fmt::try_init().ok();
-//     let store = blobs2::store::mem::MemStore::new();
+//     let store = iroh_blobs::store::mem::MemStore::new();
 //     tags_smoke(store.tags()).await
 // }
 

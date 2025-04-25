@@ -1305,7 +1305,7 @@ pub mod tests {
             let tt = store.add_stream(stream).await.temp_tag().await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            obs.await_completion().await;
+            obs.await_completion().await?;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1329,7 +1329,7 @@ pub mod tests {
             let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            obs.await_completion().await;
+            obs.await_completion().await?;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1368,7 +1368,7 @@ pub mod tests {
             // we must at some point see completion, otherwise the test will hang
             // keep the handle alive by observing until the end, otherwise the handle
             // will change and the bytes won't be the same instance anymore
-            obs.await_completion().await;
+            obs.await_completion().await?;
         }
         store.shutdown().await?;
         Ok(())
@@ -1390,7 +1390,7 @@ pub mod tests {
             let tt = store.add_path(&path).await?;
             assert_eq!(expected_hash, *tt.hash());
             // we must at some point see completion, otherwise the test will hang
-            obs.await_completion().await;
+            obs.await_completion().await?;
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual, "size={size}");

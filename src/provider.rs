@@ -30,11 +30,9 @@ use tracing::{Instrument, debug, debug_span, error, warn};
 use crate::{
     Hash,
     api::{self, Store, blobs::Bitfield},
-    get::request,
     hashseq::HashSeq,
     protocol::{
-        GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest, RangeSpecSeq,
-        Request, RequestType,
+        GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest, RangeSpecSeq, Request,
     },
 };
 

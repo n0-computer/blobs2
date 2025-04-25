@@ -581,6 +581,7 @@ impl GetConnection for &Connection {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct Dialer {
     endpoint: Endpoint,
     addr: NodeAddr,
@@ -588,6 +589,7 @@ pub(crate) struct Dialer {
 }
 
 impl Dialer {
+    #[allow(dead_code)]
     pub fn new(endpoint: Endpoint, addr: NodeAddr) -> Self {
         Self {
             endpoint,
@@ -714,6 +716,7 @@ impl HashSeqChunk {
         self.offset / 32
     }
 
+    #[allow(dead_code)]
     fn get(&self, offset: u64) -> Option<Hash> {
         let start = self.offset;
         let end = start + self.chunk.len() as u64;
@@ -727,6 +730,7 @@ impl HashSeqChunk {
 }
 
 impl LazyHashSeq {
+    #[allow(dead_code)]
     pub fn new(blobs: Blobs, hash: Hash) -> Self {
         Self {
             blobs,
@@ -735,6 +739,7 @@ impl LazyHashSeq {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_from_offset(&mut self, offset: u64) -> anyhow::Result<Option<Hash>> {
         if offset == 0 {
             Ok(Some(self.hash))
@@ -743,6 +748,7 @@ impl LazyHashSeq {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get(&mut self, child_offset: u64) -> anyhow::Result<Option<Hash>> {
         // check if we have the hash in the current chunk
         if let Some(chunk) = &self.current_chunk {

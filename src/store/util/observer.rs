@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Deref};
+use std::fmt::Debug;
 
 use irpc::channel::spsc;
 use tokio::sync::watch;
@@ -31,7 +31,7 @@ impl BitfieldObserver {
     }
 }
 
-use crate::api::{blobs::Bitfield, proto::bitfield::BitfieldState};
+use crate::api::blobs::Bitfield;
 
 // A commutative combine trait for updates
 pub trait Combine: Debug {

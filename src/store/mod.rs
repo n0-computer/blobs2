@@ -11,7 +11,7 @@ pub mod readonly_mem;
 mod test;
 pub(crate) mod util;
 
-use crate::hash::{BlobFormat, Hash, HashAndFormat};
+use crate::hash::{Hash, HashAndFormat};
 
 /// Block size used by iroh, 2^4*1024 = 16KiB
 pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4);

@@ -5,7 +5,6 @@ use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
 use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
-use quinn::rustls::lock;
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{

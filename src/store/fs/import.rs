@@ -493,7 +493,6 @@ mod tests {
     use crate::{
         api::proto::BoxedByteStream,
         store::{
-            BlobFormat,
             fs::options::{InlineOptions, PathOptions},
         },
     };
