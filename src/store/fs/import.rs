@@ -492,9 +492,8 @@ mod tests {
     use super::*;
     use crate::{
         api::proto::BoxedByteStream,
-        store::{
+        store::
             fs::options::{InlineOptions, PathOptions},
-        },
     };
 
     async fn drain<T: RpcMessage>(mut recv: spsc::Receiver<T>) -> TestResult<Vec<T>> {

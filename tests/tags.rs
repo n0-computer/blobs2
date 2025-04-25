@@ -141,7 +141,7 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
 async fn tags_smoke_fs() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let td = tempfile::tempdir()?;
-    let store = FsStore::load(td.path().join("blobs.db")).await?;
+    let store = FsStore::load(td.path().join("a")).await?;
     tags_smoke(store.tags()).await
 }
 
@@ -152,7 +152,7 @@ async fn tags_smoke_rpc() -> TestResult<()> {
     let (server, cert) = irpc::util::make_server_endpoint(unspecified)?;
     let client = irpc::util::make_client_endpoint(unspecified, &[cert.as_ref()])?;
     let td = tempfile::tempdir()?;
-    let store = FsStore::load(td.path().join("blobs.db")).await?;
+    let store = FsStore::load(td.path().join("a")).await?;
     tokio::spawn(store.deref().clone().listen(server.clone()));
     let api = Store::connect(client, server.local_addr()?);
     tags_smoke(api.tags()).await?;

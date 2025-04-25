@@ -1094,7 +1094,7 @@ impl FsStore {
     }
 
     /// Load or create a new store with custom options, returning an additional sender for file store specific commands.
-    pub async fn load_with_opts(path: PathBuf, options: Options) -> anyhow::Result<FsStore> {
+    pub async fn load_with_opts(db_path: PathBuf, options: Options) -> anyhow::Result<FsStore> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .thread_name("iroh-blob-store")
             .enable_time()
@@ -1105,7 +1105,7 @@ impl FsStore {
         let gc_config = options.gc.clone();
         let actor = handle
             .spawn(Actor::new(
-                path.join("blobs.db"),
+                db_path,
                 rt.into(),
                 commands_rx,
                 fs_commands_rx,
@@ -1189,7 +1189,6 @@ pub mod tests {
     };
     use n0_future::{Stream, StreamExt, stream};
     use testresult::TestResult;
-    use tracing_test::traced_test;
     use walkdir::WalkDir;
 
     use super::*;
@@ -1255,7 +1254,7 @@ pub mod tests {
         let testdir = tempfile::tempdir()?;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
-        let store = FsStore::load_with_opts(db_dir, options).await?;
+        let store = FsStore::load_with_opts(db_dir.join("blobs.db"), options).await?;
         let sizes = INTERESTING_SIZES;
         for size in sizes {
             let data = test_data(size);
@@ -1704,7 +1703,7 @@ pub mod tests {
         let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
         {
-            let store = FsStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = FsStore::load_with_opts(db_dir.join("blobs.db"), options.clone()).await?;
             for size in sizes {
                 let data = test_data(size);
                 let (hash, ranges, encoded) = create_n0_bao_full(&data, &just_size)?;
@@ -1720,7 +1719,7 @@ pub mod tests {
         dump_dir_full(testdir.path())?;
         // stage 2, import the rest
         {
-            let store = FsStore::load_with_opts(db_dir.clone(), options.clone()).await?;
+            let store = FsStore::load_with_opts(db_dir.join("blobs.db"), options.clone()).await?;
             for size in sizes {
                 let expected_ranges = round_up_request(size as u64, &just_size);
                 let data = test_data(size);

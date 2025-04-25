@@ -579,6 +579,7 @@ impl ReadAt for OutboardReader {
 }
 
 impl BaoFileHandle {
+    #[allow(dead_code)]
     pub fn id(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
@@ -647,6 +648,7 @@ impl BaoFileHandle {
     }
 
     /// True if the file is complete.
+    #[allow(dead_code)]
     pub fn is_complete(&self) -> bool {
         matches!(self.storage.borrow().deref(), BaoFileStorage::Complete(_))
     }
@@ -801,6 +803,7 @@ impl BaoFileStorageSubscriber {
     /// Forward observed *deltas* to the given sender
     ///
     /// Returns an error if sending fails, or if the last sender is dropped
+    #[allow(dead_code)]
     pub async fn forward_delta(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         let mut old = value.clone();

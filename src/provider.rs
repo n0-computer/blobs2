@@ -21,7 +21,7 @@ use iroh::{
 use irpc::channel::oneshot;
 use n0_future::StreamExt;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::AsyncRead,
     select,
     sync::mpsc,
 };
