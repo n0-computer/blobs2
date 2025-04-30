@@ -6,14 +6,19 @@
 //! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
 use std::{
+    collections::{BTreeMap, btree_map::Entry},
     fmt::{self, Debug},
     io,
+    ops::{Bound, RangeBounds},
 };
 
-use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
+use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef, io::round_up_to_chunks};
+use range_collections::{RangeSet, RangeSet2, range_set::RangeSetEntry};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use tokio::io::AsyncRead;
+
+use super::GetRequest;
 
 /// A chunk range specification as a sequence of chunk offsets.
 ///
@@ -47,6 +52,13 @@ use tokio::io::AsyncRead;
 pub struct RangeSpec(SmallVec<[u64; 2]>);
 
 impl RangeSpec {
+    /// Build a complex range spec using a builder.
+    pub fn builder() -> builder::RangeSpecBuilder {
+        builder::RangeSpecBuilder {
+            ranges: ChunkRanges::empty(),
+        }
+    }
+
     /// Creates a new [`RangeSpec`] from a range set.
     pub fn new(ranges: impl AsRef<ChunkRangesRef>) -> Self {
         let ranges = ranges.as_ref().boundaries();
@@ -143,6 +155,415 @@ impl RangeSpec {
             ranges |= ChunkRanges::from(current..);
         }
         ranges
+    }
+}
+
+pub mod builder {
+    use std::{
+        collections::BTreeMap,
+        ops::{Bound, RangeBounds},
+    };
+
+    use bao_tree::{ChunkNum, ChunkRanges, io::round_up_to_chunks};
+    use range_collections::{RangeSet2, range_set::RangeSetEntry};
+
+    use super::{RangeSpec, RangeSpecSeq};
+    use crate::{
+        Hash,
+        protocol::{GetManyRequest, GetRequest},
+    };
+
+    // todo: move to range_collections
+    pub(crate) fn bounds_from_range<R, T, F>(range: R, f: F) -> RangeSet2<T>
+    where
+        R: RangeBounds<u64>,
+        T: RangeSetEntry,
+        F: Fn(u64) -> T,
+    {
+        let from = match range.start_bound() {
+            Bound::Included(start) => Some(*start),
+            Bound::Excluded(start) => {
+                let Some(start) = start.checked_add(1) else {
+                    return RangeSet2::empty();
+                };
+                Some(start)
+            }
+            Bound::Unbounded => None,
+        };
+        let to = match range.end_bound() {
+            Bound::Included(end) => end.checked_add(1),
+            Bound::Excluded(end) => Some(*end),
+            Bound::Unbounded => None,
+        };
+        match (from, to) {
+            (Some(from), Some(to)) => RangeSet2::from(f(from)..f(to)),
+            (Some(from), None) => RangeSet2::from(f(from)..),
+            (None, Some(to)) => RangeSet2::from(..f(to)),
+            (None, None) => RangeSet2::all(),
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct GetRequestBuilder {
+        ranges: BTreeMap<u64, ChunkRanges>,
+    }
+
+    pub struct GetRequestEntryBuilder {
+        outer: GetRequestBuilder,
+        builder: RangeSpecBuilder,
+        offset: u64,
+    }
+
+    impl GetRequestEntryBuilder {
+        /// Add a range to the request.
+        pub fn range(mut self, range: impl RangeBounds<u64>) -> Self {
+            self.builder = self.builder.range(range);
+            self
+        }
+
+        /// Add a chunk range to the request.
+        pub fn chunk_range(mut self, range: impl RangeBounds<u64>) -> Self {
+            self.builder = self.builder.chunk_range(range);
+            self
+        }
+
+        /// Add a byte offset to the request.
+        pub fn offset(mut self, offset: u64) -> Self {
+            self.builder = self.builder.offset(offset);
+            self
+        }
+
+        /// Add a specific chunk to the request.
+        pub fn chunk(mut self, chunk: u64) -> Self {
+            self.builder = self.builder.chunk(chunk);
+            self
+        }
+
+        /// Include the last chunk of the blob, which is the size proof.
+        pub fn last_chunk(mut self) -> Self {
+            self.builder = self.builder.last_chunk();
+            self
+        }
+
+        /// Include the entire blob and finish.
+        pub fn all(mut self) -> GetRequestBuilder {
+            self.builder.ranges = ChunkRanges::all();
+            self.finish()
+        }
+
+        /// Finish the ranges at this offset
+        pub fn finish(mut self) -> GetRequestBuilder {
+            self.outer
+                .ranges
+                .entry(self.offset)
+                .or_default()
+                .union_with(&self.builder.ranges);
+            self.outer
+        }
+    }
+
+    impl GetRequestBuilder {
+        /// Add a range to the request.
+        pub fn child(self, child: u64) -> GetRequestEntryBuilder {
+            GetRequestEntryBuilder {
+                outer: self,
+                builder: RangeSpec::builder(),
+                offset: child + 1,
+            }
+        }
+
+        /// Specify ranges for the root blob (the HashSeq)
+        pub fn root(self) -> GetRequestEntryBuilder {
+            GetRequestEntryBuilder {
+                outer: self,
+                builder: RangeSpec::builder(),
+                offset: 0,
+            }
+        }
+
+        /// Specify ranges for the next offset.
+        pub fn next(self) -> GetRequestEntryBuilder {
+            let offset = self.next_offset_value();
+            GetRequestEntryBuilder {
+                outer: self,
+                builder: RangeSpec::builder(),
+                offset,
+            }
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder.
+        pub fn build(self, hash: impl Into<crate::Hash>) -> GetRequest {
+            let ranges = self.build0();
+            GetRequest {
+                hash: hash.into(),
+                ranges: RangeSpecSeq::from_ranges(ranges),
+            }
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder
+        /// and the last non-empty range repeating indefinitely.
+        pub fn build_open(self, hash: impl Into<crate::Hash>) -> GetRequest {
+            let ranges = self.build0();
+            GetRequest {
+                hash: hash.into(),
+                ranges: RangeSpecSeq::from_ranges_infinite(ranges),
+            }
+        }
+
+        /// Build the request.
+        fn build0(mut self) -> impl Iterator<Item = ChunkRanges> {
+            let mut ranges = Vec::new();
+            self.ranges.retain(|k, v| !v.is_empty());
+            let until_key = self.next_offset_value();
+            for offset in 0..until_key {
+                ranges.push(self.ranges.remove(&offset).unwrap_or_default());
+            }
+            ranges.into_iter()
+        }
+
+        /// Get the next offset value.
+        fn next_offset_value(&self) -> u64 {
+            self.ranges
+                .last_key_value()
+                .map(|(k, _)| *k + 1)
+                .unwrap_or_default()
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct GetManyRequestBuilder {
+        ranges: BTreeMap<Hash, ChunkRanges>,
+    }
+
+    pub struct GetManyRequestEntryBuilder {
+        outer: GetManyRequestBuilder,
+        builder: RangeSpecBuilder,
+        hash: Hash,
+    }
+
+    impl GetManyRequestEntryBuilder {
+        /// Add a range to the request.
+        pub fn range(mut self, range: impl RangeBounds<u64>) -> Self {
+            self.builder = self.builder.range(range);
+            self
+        }
+
+        /// Add a chunk range to the request.
+        pub fn chunk_range(mut self, range: impl RangeBounds<u64>) -> Self {
+            self.builder = self.builder.chunk_range(range);
+            self
+        }
+
+        /// Add a byte offset to the request.
+        pub fn offset(mut self, offset: u64) -> Self {
+            self.builder = self.builder.offset(offset);
+            self
+        }
+
+        /// Add a specific chunk to the request.
+        pub fn chunk(mut self, chunk: u64) -> Self {
+            self.builder = self.builder.chunk(chunk);
+            self
+        }
+
+        /// Include the last chunk of the blob, which is the size proof.
+        pub fn last_chunk(mut self) -> Self {
+            self.builder = self.builder.last_chunk();
+            self
+        }
+
+        /// Include the entire blob and finish.
+        pub fn all(mut self) -> GetManyRequestBuilder {
+            self.builder.ranges = ChunkRanges::all();
+            self.finish()
+        }
+
+        /// Finish the ranges at this hash
+        pub fn finish(mut self) -> GetManyRequestBuilder {
+            self.outer
+                .ranges
+                .entry(self.hash)
+                .or_default()
+                .union_with(&self.builder.ranges);
+            self.outer
+        }
+    }
+
+    impl GetManyRequestBuilder {
+        /// Specify ranges for the next offset.
+        pub fn hash(self, hash: impl Into<Hash>) -> GetManyRequestEntryBuilder {
+            GetManyRequestEntryBuilder {
+                outer: self,
+                builder: RangeSpec::builder(),
+                hash: hash.into(),
+            }
+        }
+
+        /// Build a `GetManyRequest`.
+        pub fn build(self) -> GetManyRequest {
+            let (hashes, ranges): (Vec<Hash>, Vec<ChunkRanges>) = self
+                .ranges
+                .into_iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| (k, v))
+                .unzip();
+            let ranges = RangeSpecSeq::from_ranges(ranges);
+            GetManyRequest { hashes, ranges }
+        }
+    }
+
+    pub struct RangeSpecBuilder {
+        pub(super) ranges: ChunkRanges,
+    }
+
+    impl RangeSpecBuilder {
+        /// Include the last chunk of the blob, which is the size proof.
+        pub fn last_chunk(mut self) -> Self {
+            self.ranges |= ChunkRanges::from(ChunkNum(u64::MAX)..);
+            self
+        }
+
+        /// Get the byte at the given offset. This will be rounded up to a chunk.
+        pub fn offset(self, offset: u64) -> Self {
+            self.range(offset..=offset)
+        }
+
+        /// Get the chunk at the given offset.
+        pub fn chunk(self, chunk: u64) -> Self {
+            self.chunk_range(chunk..=chunk)
+        }
+
+        /// Include a byte range. This will be rounded up to the nearest chunk.
+        pub fn range(mut self, range: impl RangeBounds<u64>) -> Self {
+            let byte_ranges = bounds_from_range(range, |x| x);
+            let range = round_up_to_chunks(&byte_ranges);
+            self.ranges |= range;
+            self
+        }
+
+        /// Include a chunk range.
+        pub fn chunk_range(mut self, range: impl RangeBounds<u64>) -> Self {
+            let chunk_ranges = bounds_from_range(range, ChunkNum);
+            self.ranges |= chunk_ranges;
+            self
+        }
+
+        pub fn build(self) -> RangeSpec {
+            RangeSpec::new(&self.ranges)
+        }
+
+        #[cfg(test)]
+        fn chunk_ranges(self) -> ChunkRanges {
+            self.ranges
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::u64;
+
+        use super::*;
+        use crate::protocol::GetManyRequest;
+
+        #[test]
+        fn range_spec_builder() {
+            let ranges = RangeSpec::builder()
+                .range(1..2)
+                .chunk_range(100..=200)
+                .offset(1024 * 10)
+                .chunk(1024)
+                .last_chunk()
+                .chunk_ranges();
+            assert_eq!(
+                ranges,
+                ChunkRanges::from(ChunkNum(0)..ChunkNum(1)) // byte range 1..2
+                    | ChunkRanges::from(ChunkNum(10)..ChunkNum(11)) // chunk at byte offset 1024*10
+                    | ChunkRanges::from(ChunkNum(100)..ChunkNum(201)) // chunk range 100..=200
+                    | ChunkRanges::from(ChunkNum(1024)..ChunkNum(1025)) // chunk 1024
+                    | ChunkRanges::from(ChunkNum(u64::MAX)..) // last chunk
+            );
+        }
+
+        #[test]
+        fn get_request_builder() {
+            let request = GetRequest::builder()
+                .root()
+                .all()
+                .next()
+                .all()
+                .next()
+                .range(0..100)
+                .finish()
+                .build([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                RangeSpecSeq::from_ranges([
+                    ChunkRanges::all(),
+                    ChunkRanges::all(),
+                    ChunkRanges::from(..ChunkNum(1)),
+                ])
+            );
+
+            let request = GetRequest::builder()
+                .root()
+                .all()
+                .child(2)
+                .range(0..100)
+                .finish()
+                .build([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                RangeSpecSeq::from_ranges([
+                    ChunkRanges::all(),               // root
+                    ChunkRanges::empty(),             // child 0
+                    ChunkRanges::empty(),             // child 1
+                    ChunkRanges::from(..ChunkNum(1))  // child 2,
+                ])
+            );
+
+            let request = GetRequest::builder()
+                .root()
+                .all()
+                .next()
+                .range(0..1024)
+                .last_chunk()
+                .finish()
+                .build_open([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                RangeSpecSeq::from_ranges_infinite([
+                    ChunkRanges::all(),
+                    ChunkRanges::from(..ChunkNum(1)) | ChunkRanges::from(ChunkNum(u64::MAX)..),
+                ])
+            );
+        }
+
+        #[test]
+        fn get_many_request_builder() {
+            let request = GetManyRequest::builder()
+                .hash([0; 32])
+                .all()
+                .hash([1; 32])
+                .finish()
+                .hash([2; 32])
+                .range(0..100)
+                .finish()
+                .build();
+            assert_eq!(
+                request.hashes,
+                vec![Hash::from([0; 32]), Hash::from([2; 32])]
+            );
+            assert_eq!(
+                request.ranges,
+                RangeSpecSeq::from_ranges([
+                    ChunkRanges::all(),               // hash 0
+                    ChunkRanges::from(..ChunkNum(1)), // hash 2
+                ])
+            );
+        }
     }
 }
 

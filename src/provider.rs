@@ -20,11 +20,7 @@ use iroh::{
 };
 use irpc::channel::oneshot;
 use n0_future::StreamExt;
-use tokio::{
-    io::AsyncRead,
-    select,
-    sync::mpsc,
-};
+use tokio::{io::AsyncRead, select, sync::mpsc};
 use tracing::{Instrument, debug, debug_span, error, warn};
 
 use crate::{

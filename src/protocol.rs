@@ -340,6 +340,7 @@ use bao_tree::{ChunkNum, ChunkRanges};
 use derive_more::From;
 use iroh::endpoint::VarInt;
 use postcard::experimental::max_size::MaxSize;
+use range_spec::builder::{self, GetRequestBuilder};
 use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
@@ -430,6 +431,10 @@ pub struct GetRequest {
 }
 
 impl GetRequest {
+    pub fn builder() -> GetRequestBuilder {
+        GetRequestBuilder::default()
+    }
+
     /// Request a blob or collection with specified ranges
     pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
         Self { hash, ranges }
@@ -515,6 +520,10 @@ pub struct GetManyRequest {
 impl GetManyRequest {
     pub fn new(hashes: Vec<Hash>, ranges: RangeSpecSeq) -> Self {
         Self { hashes, ranges }
+    }
+
+    pub fn builder() -> builder::GetManyRequestBuilder {
+        builder::GetManyRequestBuilder::default()
     }
 
     pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {

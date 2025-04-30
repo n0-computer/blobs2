@@ -31,9 +31,12 @@ use super::{
 use crate::{
     api::{blobs::Bitfield, proto::bitfield::BitfieldState},
     store::{
-        fs::{meta::raw_outboard_size, TaskContext}, util::{
-            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile, DD
-        }, Hash, IROH_BLOCK_SIZE
+        Hash, IROH_BLOCK_SIZE,
+        fs::{TaskContext, meta::raw_outboard_size},
+        util::{
+            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
+            read_checksummed_and_truncate, write_checksummed,
+        },
     },
 };
 
