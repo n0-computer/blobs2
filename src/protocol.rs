@@ -346,7 +346,7 @@ mod range_spec;
 pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::{Hash, api::blobs::Bitfield};
+use crate::{api::blobs::Bitfield, BlobFormat, Hash, HashAndFormat};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 100;
@@ -430,6 +430,15 @@ pub struct GetRequest {
     pub ranges: RangeSpecSeq,
 }
 
+impl From<HashAndFormat> for GetRequest {
+    fn from(value: HashAndFormat) -> Self {
+        match value.format {
+            BlobFormat::Raw => Self::single(value.hash),
+            BlobFormat::HashSeq => Self::all(value.hash),
+        }
+    }
+}
+
 impl GetRequest {
     pub fn builder() -> GetRequestBuilder {
         GetRequestBuilder::default()
@@ -488,7 +497,9 @@ impl GetRequest {
 
 /// A push request contains a description of what to push, but will be followed
 /// by the data to push.
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, derive_more::Deref)]
+#[derive(
+    Deserialize, Serialize, Debug, PartialEq, Eq, Clone, derive_more::From, derive_more::Deref,
+)]
 pub struct PushRequest(GetRequest);
 
 impl PushRequest {
