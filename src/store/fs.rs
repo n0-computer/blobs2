@@ -559,7 +559,7 @@ impl Actor {
             Command::ExportRanges(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
-                self.spawn(export_chunks(cmd, ctx));
+                self.spawn(export_ranges(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
@@ -928,7 +928,7 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn export_chunks(mut cmd: ExportRangesMsg, ctx: HashContext) {
+async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
     match ctx.get_or_create(cmd.inner.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_ranges_impl(cmd.inner, &mut cmd.tx, handle).await {

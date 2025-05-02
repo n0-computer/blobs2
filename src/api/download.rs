@@ -981,4 +981,61 @@ mod tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_local_info_complex_request() -> TestResult<()> {
+        let sizes = INTERESTING_SIZES;
+        let total_size = sizes.iter().map(|x| *x as u64).sum::<u64>();
+        let hash_seq_size = (sizes.len() as u64) * 32;
+        let td = tempfile::tempdir()?;
+        let store = FsStore::load(td.path().join("blobs.db")).await?;
+        {
+            // only add the hash seq itself, and only the first chunk of the children
+            let present = |i| {
+                if i == 0 {
+                    ChunkRanges::all()
+                } else {
+                    ChunkRanges::from(..ChunkNum(1))
+                }
+            };
+            let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
+            let request = GetRequest::builder().build(content.hash);
+            let info = store.download().local_for_request(request).await?;
+            let first_chunk_size = sizes.into_iter().map(|x| x.min(1024) as u64).sum::<u64>();
+            assert_eq!(info.content(), content);
+            assert_eq!(info.bitfield.ranges, ChunkRanges::all());
+            assert_eq!(info.local_bytes(), hash_seq_size + first_chunk_size);
+            assert!(!info.is_complete());
+            assert_eq!(
+                info.missing(),
+                GetRequest::new(
+                    content.hash,
+                    ChunkRangesSeq::from_ranges([
+                        ChunkRanges::empty(), // we have the hash seq itself
+                        ChunkRanges::empty(), // we always have the empty blob
+                        ChunkRanges::empty(), // size=1
+                        ChunkRanges::empty(), // size=1024
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::from(ChunkNum(1)..),
+                    ])
+                )
+            );
+        }
+        {
+            let content = add_test_hash_seq(&store, sizes).await?;
+            let info = store.download().local(content).await?;
+            assert_eq!(info.content(), content);
+            assert_eq!(info.bitfield.ranges, ChunkRanges::all());
+            assert_eq!(info.local_bytes(), total_size + hash_seq_size);
+            assert!(info.is_complete());
+            assert_eq!(
+                info.missing(),
+                GetRequest::new(content.hash, ChunkRangesSeq::empty())
+            );
+        }
+        Ok(())
+    }
 }
