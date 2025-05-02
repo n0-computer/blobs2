@@ -696,19 +696,52 @@ pub mod builder {
     };
 
     #[derive(Debug, Clone, Default)]
-    pub struct GetRequestBuilder {
+    pub struct ChunkRangesSeqBuilder {
         ranges: BTreeMap<u64, ChunkRanges>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct GetRequestBuilder {
+        builder: ChunkRangesSeqBuilder,
     }
 
     impl GetRequestBuilder {
         /// Add a range to the request.
-        pub fn child(self, offset: u64, ranges: impl Into<ChunkRanges>) -> Self {
-            self.at_offset(offset + 1, ranges.into())
+        pub fn child(mut self, child: u64, ranges: impl Into<ChunkRanges>) -> Self {
+            self.builder = self.builder.offset(child + 1, ranges);
+            self
         }
 
         /// Specify ranges for the root blob (the HashSeq)
-        pub fn root(self, ranges: impl Into<ChunkRanges>) -> Self {
-            self.at_offset(0, ranges.into())
+        pub fn root(mut self, ranges: impl Into<ChunkRanges>) -> Self {
+            self.builder = self.builder.offset(0, ranges);
+            self
+        }
+
+        /// Specify ranges for the next offset.
+        pub fn next(mut self, ranges: impl Into<ChunkRanges>) -> Self {
+            self.builder = self.builder.next(ranges);
+            self
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder.
+        pub fn build(self, hash: impl Into<Hash>) -> GetRequest {
+            let ranges = self.builder.build();
+            GetRequest::new(hash.into(), ranges)
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder
+        /// and the last non-empty range repeating indefinitely.
+        pub fn build_open(self, hash: impl Into<Hash>) -> GetRequest {
+            let ranges = self.builder.build_open();
+            GetRequest::new(hash.into(), ranges)
+        }
+    }
+
+    impl ChunkRangesSeqBuilder {
+        /// Add a range to the request.
+        pub fn offset(self, offset: u64, ranges: impl Into<ChunkRanges>) -> Self {
+            self.at_offset(offset, ranges.into())
         }
 
         /// Specify ranges for the next offset.
@@ -718,22 +751,14 @@ pub mod builder {
         }
 
         /// Build a get request for the given hash, with the ranges specified in the builder.
-        pub fn build(self, hash: impl Into<crate::Hash>) -> GetRequest {
-            let ranges = self.build0();
-            GetRequest {
-                hash: hash.into(),
-                ranges: ChunkRangesSeq::from_ranges(ranges),
-            }
+        pub fn build(self) -> ChunkRangesSeq {
+            ChunkRangesSeq::from_ranges(self.build0())
         }
 
         /// Build a get request for the given hash, with the ranges specified in the builder
         /// and the last non-empty range repeating indefinitely.
-        pub fn build_open(self, hash: impl Into<crate::Hash>) -> GetRequest {
-            let ranges = self.build0();
-            GetRequest {
-                hash: hash.into(),
-                ranges: ChunkRangesSeq::from_ranges_infinite(ranges),
-            }
+        pub fn build_open(self) -> ChunkRangesSeq {
+            ChunkRangesSeq::from_ranges_infinite(self.build0())
         }
 
         /// Add ranges at the given offset.

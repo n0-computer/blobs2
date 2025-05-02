@@ -43,6 +43,23 @@ mod nodelta {
         }
     }
 
+    impl std::ops::Index<u64> for ChunkRangesSeq {
+        type Output = ChunkRanges;
+
+        fn index(&self, index: u64) -> &Self::Output {
+            match self.0.binary_search_by(|(o, _)| o.cmp(&index)) {
+                Ok(i) => &self.0[i].1,
+                Err(i) => {
+                    if i == 0 {
+                        chunk_ranges_empty()
+                    } else {
+                        &self.0[i - 1].1
+                    }
+                }
+            }
+        }
+    }
+
     impl ChunkRangesSeq {
         pub const fn empty() -> Self {
             Self(SmallVec::new_const())
@@ -65,9 +82,7 @@ mod nodelta {
                 let ranges = RangeSpec::read_async(&mut reader).await?.to_chunk_ranges();
                 res.push((offset, ranges));
             }
-            let res = Self(res);
-            println!("read request: {res:?}");
-            Ok(res)
+            Ok(Self(res))
         }
 
         /// Request just the first blob.

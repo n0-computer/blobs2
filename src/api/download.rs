@@ -3,6 +3,7 @@
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
 use n0_future::{Stream, StreamExt, TryFutureExt, io};
+use postcard::experimental::max_size;
 use quinn::SendStream;
 use ref_cast::RefCast;
 
@@ -46,41 +47,41 @@ pub struct LocalInfo {
     /// The bitfield for the root hash
     bitfield: Bitfield,
     /// Optional - the hash sequence info if this was a request for a hash sequence
-    children: Option<HashSeqLocalInfo>,
-}
-
-impl fmt::Display for LocalInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{:?} {:?}", self.request, self.bitfield)?;
-        if let Some(children) = &self.children {
-            for (_, hash) in iter_without_gaps(children.hash_seq.iter()) {
-                if let Some(hash) = hash {
-                    let bitfield = children
-                        .bitfields
-                        .get(&hash)
-                        .expect("missing bitfield for child");
-                    writeln!(f, "  {} {:?}", hash, bitfield)?;
-                } else {
-                    writeln!(f, "  -")?;
-                }
-            }
-            if !self.bitfield.is_validated() {
-                writeln!(f, "  ...")?;
-            }
-        }
-        Ok(())
-    }
+    children: Option<NonRawLocalInfo>,
 }
 
 impl LocalInfo {
     /// The number of bytes we have locally
     pub fn local_bytes(&self) -> u64 {
-        let mut res = self.bitfield.total_bytes();
+        let Some(root_requested) = self.requested_root_ranges() else {
+            // empty request requests 0 bytes
+            return 0;
+        };
+        let mut local = self.bitfield.clone();
+        local.ranges.intersection_with(root_requested);
+        let mut res = local.total_bytes();
         if let Some(children) = &self.children {
-            for (_, (bitfield, request)) in children.bitfields.iter() {
-                let mut for_request = bitfield.clone();
-                for_request.ranges.intersection_with(&request);
-                res += for_request.total_bytes();
+            let Some(max_local_index) = children.hash_seq.keys().next_back() else {
+                // no children
+                return res;
+            };
+            for (offset, ranges) in self.request.ranges.iter_non_empty_infinite() {
+                if offset == 0 {
+                    // skip the root hash
+                    continue;
+                }
+                let child = offset - 1;
+                if child > *max_local_index {
+                    // we are done
+                    break;
+                }
+                let Some(hash) = children.hash_seq.get(&child) else {
+                    continue;
+                };
+                let bitfield = &children.bitfields[hash];
+                let mut local = bitfield.clone();
+                local.ranges.intersection_with(ranges);
+                res += local.total_bytes();
             }
         }
         res
@@ -95,22 +96,8 @@ impl LocalInfo {
         }
     }
 
-    /// All the known sizes for blobs in this hash sequence, without gaps
-    pub fn sizes(&self) -> impl Iterator<Item = Option<u64>> + '_ {
-        let first = self.bitfield.validated_size();
-        let children = self.children.as_ref().into_iter().flat_map(|children| {
-            iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-                if let Some(hash) = hash {
-                    children
-                        .bitfields
-                        .get(&hash)
-                        .and_then(|(bitfield, request)| bitfield.validated_size())
-                } else {
-                    None
-                }
-            })
-        });
-        iter::once(first).chain(children)
+    fn requested_root_ranges(&self) -> Option<&ChunkRanges> {
+        self.request.ranges.iter().next()
     }
 
     /// True if the data is complete.
@@ -119,103 +106,162 @@ impl LocalInfo {
     /// For a hash sequence, this is true if the hash sequence is complete and
     /// all its children are complete.
     pub fn is_complete(&self) -> bool {
-        if let Some(children) = self.children.as_ref() {
-            // if the bitfield is complete, and we did not get an error, we know that we have a bitfield
-            // for every child, so we don't need to check for holes.
-            self.bitfield.is_complete()
-                && children.bitfields.values().all(|(bitfield, requested)| {
-                    bitfield.is_complete() || requested.is_subset(&bitfield.ranges)
-                })
-        } else {
-            self.bitfield.is_complete()
+        let Some(root_requested) = self.requested_root_ranges() else {
+            // empty request is complete
+            return true;
+        };
+        if !self.bitfield.ranges.is_superset(root_requested) {
+            return false;
         }
+        if let Some(children) = self.children.as_ref() {
+            let mut iter = self.request.ranges.iter_non_empty_infinite();
+            let max_child = self.bitfield.validated_size().map(|x| x / 32);
+            loop {
+                let Some((offset, range)) = iter.next() else {
+                    break;
+                };
+                if offset == 0 {
+                    // skip the root hash
+                    continue;
+                }
+                let child = offset - 1;
+                if let Some(hash) = children.hash_seq.get(&child) {
+                    let bitfield = &children.bitfields[hash];
+                    if !bitfield.ranges.is_superset(range) {
+                        // we don't have the requested ranges
+                        return false;
+                    }
+                } else {
+                    if let Some(max_child) = max_child {
+                        if child >= max_child {
+                            // reading after the end of the request
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /// A request that when executed will give us complete sizes for all entries of the blob or hash sequence
     pub fn complete_sizes(&self) -> GetRequest {
-        let request_last_chunk = ChunkRanges::from(ChunkNum(u64::MAX)..);
-        let ranges = if let Some(children) = self.children.as_ref() {
-            let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
-            let start = root_missing;
-            let end = if self.bitfield.is_validated() {
-                ChunkRanges::empty()
-            } else {
-                request_last_chunk.clone()
-            };
-            let mut hashes = HashSet::new();
-            let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-                if let Some(hash) = hash {
-                    if hashes.insert(hash) {
-                        let (bitfield, request) = children.bitfields.get(&hash).unwrap();
-                        if bitfield.is_validated() {
-                            // we have the last chunk of the blob
-                            ChunkRanges::empty()
-                        } else {
-                            // request the last chunk of the blob
-                            request_last_chunk.clone()
-                        }
-                    } else {
-                        // we have already seen this hash, so we don't need to request it again
-                        ChunkRanges::empty()
-                    }
-                } else {
-                    request_last_chunk.clone()
-                }
-            });
-            let ranges = iter::once(start).chain(children).chain(iter::once(end));
-            ChunkRangesSeq::from_ranges_infinite(ranges)
-        } else if self.bitfield.is_validated() {
-            ChunkRangesSeq::empty()
-        } else {
-            // request the last chunk of the blob
-            ChunkRangesSeq::from_ranges([request_last_chunk])
-        };
-        GetRequest::new(self.request.hash, ranges)
+        todo!()
+        //     // we need to get the last chunk of the blob
+        //     let request_last_chunk = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        //     let ranges = if let Some(children) = self.children.as_ref() {
+        //         let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
+        //         let start = root_missing;
+        //         let end = if self.bitfield.is_validated() {
+        //             ChunkRanges::empty()
+        //         } else {
+        //             request_last_chunk.clone()
+        //         };
+        //         let mut hashes = HashSet::new();
+        //         let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
+        //             if let Some(hash) = hash {
+        //                 if hashes.insert(hash) {
+        //                     let (bitfield, request) = children.bitfields.get(&hash).unwrap();
+        //                     if bitfield.is_validated() {
+        //                         // we have the last chunk of the blob
+        //                         ChunkRanges::empty()
+        //                     } else {
+        //                         // request the last chunk of the blob
+        //                         request_last_chunk.clone()
+        //                     }
+        //                 } else {
+        //                     // we have already seen this hash, so we don't need to request it again
+        //                     ChunkRanges::empty()
+        //                 }
+        //             } else {
+        //                 request_last_chunk.clone()
+        //             }
+        //         });
+        //         let ranges = iter::once(start).chain(children).chain(iter::once(end));
+        //         ChunkRangesSeq::from_ranges_infinite(ranges)
+        //     } else if self.bitfield.is_validated() {
+        //         ChunkRangesSeq::empty()
+        //     } else {
+        //         // request the last chunk of the blob
+        //         ChunkRangesSeq::from_ranges([request_last_chunk])
+        //     };
+        //     GetRequest::new(self.request.hash, ranges)
     }
 
     /// A request to get the missing data to complete this request
     pub fn missing(&self) -> GetRequest {
-        let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
-        let ranges = if let Some(children) = self.children.as_ref() {
-            let mut hashes = HashSet::new();
-            let start = root_missing;
-            let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-                if let Some(hash) = hash {
-                    if hashes.insert(hash) {
-                        children
-                            .bitfields
-                            .get(&hash)
-                            .map(|(local, requested)| requested - &local.ranges)
-                            .unwrap_or(ChunkRanges::all())
-                    } else {
-                        ChunkRanges::empty()
-                    }
-                } else {
-                    ChunkRanges::all()
-                }
-            });
-            // is_validated means we have the last chunk and thus also the last hash
-            let end = if self.bitfield.is_validated() {
-                ChunkRanges::empty()
-            } else {
-                ChunkRanges::all()
-            };
-            let ranges = iter::once(start).chain(children).chain(iter::once(end));
-            ChunkRangesSeq::from_ranges_infinite(ranges)
-        } else {
-            ChunkRangesSeq::from_ranges([root_missing])
+        let Some(root_requested) = self.requested_root_ranges() else {
+            // empty request is complete
+            return GetRequest::new(self.request.hash, ChunkRangesSeq::empty());
         };
-        GetRequest::new(self.request.hash, ranges)
+        let mut builder = GetRequest::builder().root(root_requested - &self.bitfield.ranges);
+
+        let Some(children) = self.children.as_ref() else {
+            return builder.build(self.request.hash);
+        };
+        let mut iter = self.request.ranges.iter_non_empty_infinite();
+        let max_local = children
+            .hash_seq
+            .keys()
+            .next_back()
+            .map(|x| *x + 1)
+            .unwrap_or_default();
+        let max_offset = self.bitfield.validated_size().map(|x| x / 32);
+        loop {
+            let Some((offset, requested)) = iter.next() else {
+                break;
+            };
+            if offset == 0 {
+                // skip the root hash
+                continue;
+            }
+            let child = offset - 1;
+            let missing = match children.hash_seq.get(&child) {
+                Some(hash) => requested.difference(&children.bitfields[hash].ranges),
+                None => requested.clone(),
+            };
+            builder = builder.child(child, missing);
+            if offset >= max_local {
+                // we can't do anything clever anymore
+                break;
+            }
+        }
+        loop {
+            let Some((offset, requested)) = iter.next() else {
+                return builder.build(self.request.hash);
+            };
+            if offset == 0 {
+                // skip the root hash
+                continue;
+            }
+            let child = offset - 1;
+            if let Some(max_offset) = &max_offset {
+                if child >= *max_offset {
+                    return builder.build(self.request.hash);
+                }
+                builder = builder.child(child, requested.clone());
+            } else {
+                builder = builder.child(child, requested.clone());
+                if iter.is_at_end() {
+                    if iter.next().is_none() {
+                        return builder.build(self.request.hash);
+                    } else {
+                        return builder.build_open(self.request.hash);
+                    }
+                }
+            }
+        }
     }
 }
 
 #[derive(Debug)]
-struct HashSeqLocalInfo {
+struct NonRawLocalInfo {
     /// the available and relevant part of the hash sequence
-    hash_seq: Vec<(u64, Hash)>,
+    hash_seq: BTreeMap<u64, Hash>,
     /// For each hash relevant to the request, the local bitfield and the ranges
     /// that were requested.
-    bitfields: BTreeMap<Hash, (Bitfield, ChunkRanges)>,
+    bitfields: BTreeMap<Hash, Bitfield>,
 }
 
 fn iter_without_gaps<'a, T: Copy + 'a>(
@@ -256,28 +302,29 @@ impl Download {
                 let (index, hash) = item?;
                 by_index.insert(index, hash);
             }
-            let mut bitfields: BTreeMap<Hash, (Bitfield, ChunkRanges)> = BTreeMap::new();
-            let mut hash_seq = Vec::new();
+            let mut bitfields = BTreeMap::new();
+            let mut hash_seq = BTreeMap::new();
             let max = by_index.last_key_value().map(|(k, _)| *k + 1).unwrap_or(0);
-            for (index, ranges) in request.ranges.iter_infinite().skip(1).enumerate() {
+            for (index, _) in request.ranges.iter_non_empty_infinite() {
                 let index = index as u64;
-                if index >= max {
-                    println!("done");
+                if index == 0 {
+                    // skip the root hash
+                    continue;
+                }
+                let child = index - 1;
+                if child > max {
+                    // we are done
                     break;
                 }
-                if ranges.is_empty() {
-                    println!("skipping empty range {index}");
-                    continue;
-                };
-                let Some(hash) = by_index.get(&index) else {
-                    println!("skipping missing hash {index}");
+                let Some(hash) = by_index.get(&child) else {
+                    // we don't have the hash, so we can't store the bitfield
                     continue;
                 };
                 let bitfield = self.store().observe(*hash).await?;
-                bitfields.insert(*hash, (bitfield, ranges.clone()));
-                hash_seq.push((index, *hash));
+                bitfields.insert(*hash, bitfield);
+                hash_seq.insert(child, *hash);
             }
-            Some(HashSeqLocalInfo {
+            Some(NonRawLocalInfo {
                 hash_seq,
                 bitfields,
             })
@@ -316,6 +363,7 @@ impl Download {
             return Ok(Default::default());
         }
         let request = local.missing();
+        println!("request: {request:?}");
         let stats = self
             .execute(conn.connection().await?, request, progress)
             .await?;

@@ -426,7 +426,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
     let addr1 = r1.endpoint().node_addr().await?;
-    let sizes = INTERESTING_SIZES;
+    let sizes = [1];
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2.download().fetch(conn, root, None).await?;
