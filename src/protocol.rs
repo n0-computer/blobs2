@@ -222,7 +222,7 @@
 //!
 //! ### Requesting chunks for each child
 //!
-//! The RangeSpecSeq allows some scenarios that are not covered above. E.g. you
+//! The ChunkRangesSeq allows some scenarios that are not covered above. E.g. you
 //! might want to request a collection and the first chunk of each child blob to
 //! do something like mime type detection.
 //!
@@ -337,10 +337,10 @@
 use std::io;
 
 use bao_tree::{ChunkNum, ChunkRanges};
+use builder::GetRequestBuilder;
 use derive_more::From;
 use iroh::endpoint::VarInt;
 use postcard::experimental::max_size::MaxSize;
-use range_spec::builder::{self, GetRequestBuilder};
 use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
@@ -680,6 +680,214 @@ impl TryFrom<VarInt> for Closed {
             1 => Ok(Self::ProviderTerminating),
             2 => Ok(Self::RequestReceived),
             val => Err(UnknownErrorCode(val)),
+        }
+    }
+}
+
+pub mod builder {
+    use std::collections::BTreeMap;
+
+    use bao_tree::ChunkRanges;
+
+    use super::ChunkRangesSeq;
+    use crate::{
+        Hash,
+        protocol::{GetManyRequest, GetRequest},
+    };
+
+    #[derive(Debug, Clone, Default)]
+    pub struct GetRequestBuilder {
+        ranges: BTreeMap<u64, ChunkRanges>,
+    }
+
+    impl GetRequestBuilder {
+        /// Add a range to the request.
+        pub fn child(self, offset: u64, ranges: impl Into<ChunkRanges>) -> Self {
+            self.at_offset(offset + 1, ranges.into())
+        }
+
+        /// Specify ranges for the root blob (the HashSeq)
+        pub fn root(self, ranges: impl Into<ChunkRanges>) -> Self {
+            self.at_offset(0, ranges.into())
+        }
+
+        /// Specify ranges for the next offset.
+        pub fn next(self, ranges: impl Into<ChunkRanges>) -> Self {
+            let offset = self.next_offset_value();
+            self.at_offset(offset, ranges.into())
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder.
+        pub fn build(self, hash: impl Into<crate::Hash>) -> GetRequest {
+            let ranges = self.build0();
+            GetRequest {
+                hash: hash.into(),
+                ranges: ChunkRangesSeq::from_ranges(ranges),
+            }
+        }
+
+        /// Build a get request for the given hash, with the ranges specified in the builder
+        /// and the last non-empty range repeating indefinitely.
+        pub fn build_open(self, hash: impl Into<crate::Hash>) -> GetRequest {
+            let ranges = self.build0();
+            GetRequest {
+                hash: hash.into(),
+                ranges: ChunkRangesSeq::from_ranges_infinite(ranges),
+            }
+        }
+
+        /// Add ranges at the given offset.
+        fn at_offset(mut self, offset: u64, ranges: ChunkRanges) -> Self {
+            self.ranges
+                .entry(offset)
+                .and_modify(|v| *v |= ranges.clone())
+                .or_insert(ranges);
+            self
+        }
+
+        /// Build the request.
+        fn build0(mut self) -> impl Iterator<Item = ChunkRanges> {
+            let mut ranges = Vec::new();
+            self.ranges.retain(|_, v| !v.is_empty());
+            let until_key = self.next_offset_value();
+            for offset in 0..until_key {
+                ranges.push(self.ranges.remove(&offset).unwrap_or_default());
+            }
+            ranges.into_iter()
+        }
+
+        /// Get the next offset value.
+        fn next_offset_value(&self) -> u64 {
+            self.ranges
+                .last_key_value()
+                .map(|(k, _)| *k + 1)
+                .unwrap_or_default()
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct GetManyRequestBuilder {
+        ranges: BTreeMap<Hash, ChunkRanges>,
+    }
+
+    impl GetManyRequestBuilder {
+        /// Specify ranges for the given hash.
+        ///
+        /// Note that if you specify a hash that is already in the request, the ranges will be
+        /// merged with the existing ranges.
+        pub fn hash(mut self, hash: impl Into<Hash>, ranges: impl Into<ChunkRanges>) -> Self {
+            let ranges = ranges.into();
+            let hash = hash.into();
+            self.ranges
+                .entry(hash)
+                .and_modify(|v| *v |= ranges.clone())
+                .or_insert(ranges);
+            self
+        }
+
+        /// Build a `GetManyRequest`.
+        pub fn build(self) -> GetManyRequest {
+            let (hashes, ranges): (Vec<Hash>, Vec<ChunkRanges>) = self
+                .ranges
+                .into_iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| (k, v))
+                .unzip();
+            let ranges = ChunkRangesSeq::from_ranges(ranges);
+            GetManyRequest { hashes, ranges }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::u64;
+
+        use bao_tree::ChunkNum;
+
+        use super::*;
+        use crate::{protocol::GetManyRequest, util::ChunkRangesExt};
+
+        #[test]
+        fn chunk_ranges_ext() {
+            let ranges = ChunkRanges::bytes(1..2)
+                | ChunkRanges::chunks(100..=200)
+                | ChunkRanges::offset(1024 * 10)
+                | ChunkRanges::chunk(1024)
+                | ChunkRanges::last_chunk();
+            assert_eq!(
+                ranges,
+                ChunkRanges::from(ChunkNum(0)..ChunkNum(1)) // byte range 1..2
+                    | ChunkRanges::from(ChunkNum(10)..ChunkNum(11)) // chunk at byte offset 1024*10
+                    | ChunkRanges::from(ChunkNum(100)..ChunkNum(201)) // chunk range 100..=200
+                    | ChunkRanges::from(ChunkNum(1024)..ChunkNum(1025)) // chunk 1024
+                    | ChunkRanges::from(ChunkNum(u64::MAX)..) // last chunk
+            );
+        }
+
+        #[test]
+        fn get_request_builder() {
+            let request = GetRequest::builder()
+                .root(ChunkRanges::all())
+                .next(ChunkRanges::all())
+                .next(ChunkRanges::bytes(0..100))
+                .build([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                ChunkRangesSeq::from_ranges([
+                    ChunkRanges::all(),
+                    ChunkRanges::all(),
+                    ChunkRanges::from(..ChunkNum(1)),
+                ])
+            );
+
+            let request = GetRequest::builder()
+                .root(ChunkRanges::all())
+                .child(2, ChunkRanges::bytes(0..100))
+                .build([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                ChunkRangesSeq::from_ranges([
+                    ChunkRanges::all(),               // root
+                    ChunkRanges::empty(),             // child 0
+                    ChunkRanges::empty(),             // child 1
+                    ChunkRanges::from(..ChunkNum(1))  // child 2,
+                ])
+            );
+
+            let request = GetRequest::builder()
+                .root(ChunkRanges::all())
+                .next(ChunkRanges::bytes(0..1024) | ChunkRanges::last_chunk())
+                .build_open([0; 32]);
+            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+            assert_eq!(
+                request.ranges,
+                ChunkRangesSeq::from_ranges_infinite([
+                    ChunkRanges::all(),
+                    ChunkRanges::from(..ChunkNum(1)) | ChunkRanges::from(ChunkNum(u64::MAX)..),
+                ])
+            );
+        }
+
+        #[test]
+        fn get_many_request_builder() {
+            let request = GetManyRequest::builder()
+                .hash([0; 32], ChunkRanges::all())
+                .hash([1; 32], ChunkRanges::empty()) // will be ignored!
+                .hash([2; 32], ChunkRanges::bytes(0..100))
+                .build();
+            assert_eq!(
+                request.hashes,
+                vec![Hash::from([0; 32]), Hash::from([2; 32])]
+            );
+            assert_eq!(
+                request.ranges,
+                ChunkRangesSeq::from_ranges([
+                    ChunkRanges::all(),               // hash 0
+                    ChunkRanges::from(..ChunkNum(1)), // hash 2
+                ])
+            );
         }
     }
 }

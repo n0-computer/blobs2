@@ -1,3 +1,8 @@
+use std::ops::{Bound, RangeBounds};
+
+use bao_tree::{ChunkNum, ChunkRanges, io::round_up_to_chunks};
+use range_collections::{RangeSet2, range_set::RangeSetEntry};
+
 pub mod channel;
 pub mod temp_tag;
 pub mod serde {
@@ -43,6 +48,66 @@ pub mod serde {
 
             deserializer.deserialize_str(IoErrorVisitor)
         }
+    }
+}
+
+pub trait ChunkRangesExt {
+    fn last_chunk() -> Self;
+    fn chunk(offset: u64) -> Self;
+    fn bytes(ranges: impl RangeBounds<u64>) -> Self;
+    fn chunks(ranges: impl RangeBounds<u64>) -> Self;
+    fn offset(offset: u64) -> Self;
+}
+
+impl ChunkRangesExt for ChunkRanges {
+    fn last_chunk() -> Self {
+        ChunkRanges::from(ChunkNum(u64::MAX)..)
+    }
+
+    fn chunk(offset: u64) -> Self {
+        ChunkRanges::from(ChunkNum(offset)..ChunkNum(offset + 1))
+    }
+
+    fn bytes(ranges: impl RangeBounds<u64>) -> Self {
+        round_up_to_chunks(&bounds_from_range(ranges, |v| v))
+    }
+
+    fn chunks(ranges: impl RangeBounds<u64>) -> Self {
+        bounds_from_range(ranges, |v| ChunkNum(v))
+    }
+
+    fn offset(offset: u64) -> Self {
+        Self::bytes(offset..offset + 1)
+    }
+}
+
+// todo: move to range_collections
+pub(crate) fn bounds_from_range<R, T, F>(range: R, f: F) -> RangeSet2<T>
+where
+    R: RangeBounds<u64>,
+    T: RangeSetEntry,
+    F: Fn(u64) -> T,
+{
+    let from = match range.start_bound() {
+        Bound::Included(start) => Some(*start),
+        Bound::Excluded(start) => {
+            let Some(start) = start.checked_add(1) else {
+                return RangeSet2::empty();
+            };
+            Some(start)
+        }
+        Bound::Unbounded => None,
+    };
+    let to = match range.end_bound() {
+        Bound::Included(end) => end.checked_add(1),
+        Bound::Excluded(end) => Some(*end),
+        Bound::Unbounded => None,
+    };
+    match (from, to) {
+        (Some(from), Some(to)) => RangeSet2::from(f(from)..f(to)),
+        (Some(from), None) => RangeSet2::from(f(from)..),
+        (None, Some(to)) => RangeSet2::from(..f(to)),
+        (None, None) => RangeSet2::all(),
     }
 }
 
