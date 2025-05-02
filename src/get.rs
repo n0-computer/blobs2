@@ -85,7 +85,7 @@ pub mod fsm {
     self_cell::self_cell! {
         struct RangesIterInner {
             owner: ChunkRangesSeq,
-            #[covariant]
+            #[not_covariant]
             dependent: NonEmptyRequestRangeSpecIter,
         }
     }

@@ -173,7 +173,7 @@ impl LocalInfo {
         GetRequest::new(self.request.hash, ranges)
     }
 
-    /// A request to get the missing data to complete this blob or hash sequence
+    /// A request to get the missing data to complete this request
     pub fn missing(&self) -> GetRequest {
         let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
         let ranges = if let Some(children) = self.children.as_ref() {
@@ -285,7 +285,7 @@ impl Download {
             None
         };
         Ok(LocalInfo {
-            request,
+            request: request.clone(),
             bitfield,
             children,
         })
