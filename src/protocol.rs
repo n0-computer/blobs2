@@ -85,11 +85,11 @@
 //! ## Specifying the required data
 //!
 //! A [`GetRequest`] contains a hash and a specification of what data related to
-//! that hash is required. The specification is using a [`RangeSpecSeq`] which
+//! that hash is required. The specification is using a [`ChunkRangesSeq`] which
 //! has a compact representation on the wire but is otherwise identical to a
 //! sequence of sets of ranges.
 //!
-//! In the following, we describe how the [`RangeSpecSeq`] is to be created for
+//! In the following, we describe how the [`ChunkRangesSeq`] is to be created for
 //! different common scenarios.
 //!
 //! Ranges are always given in terms of 1024 byte blake3 chunks, *not* in terms
@@ -101,7 +101,7 @@
 //! ### Individual blobs
 //!
 //! In the easiest case, the getter just wants to retrieve a single blob. In this
-//! case, the getter specifies [`RangeSpecSeq`] that contains a single element.
+//! case, the getter specifies [`ChunkRangesSeq`] that contains a single element.
 //! This element is the set of all chunks to indicate that we
 //! want the entire blob, no matter how many chunks it has.
 //!
@@ -119,18 +119,18 @@
 //! In this case, we have a (possibly large) blob and we want to retrieve only
 //! some ranges of chunks. This is useful in similar cases as HTTP range requests.
 //!
-//! We still need just a single element in the [`RangeSpecSeq`], since we are
+//! We still need just a single element in the [`ChunkRangesSeq`], since we are
 //! still only interested in a single blob. However, this element contains all
 //! the chunk ranges we want to retrieve.
 //!
 //! For example, if we want to retrieve chunks 0-10 of a blob, we would
-//! create a [`RangeSpecSeq`] like this:
+//! create a [`ChunkRangesSeq`] like this:
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let spec = RangeSpecSeq::from_ranges([ChunkRanges::from(..ChunkNum(10))]);
+//! let spec = ChunkRangesSeq::from_ranges([ChunkRanges::from(..ChunkNum(10))]);
 //! let request = GetRequest::new(hash, spec);
 //! ```
 //!
@@ -139,15 +139,15 @@
 //!
 //! While not that common, it is also possible to request multiple ranges of a
 //! single blob. For example, if we want to retrieve chunks `0-10` and `100-110`
-//! of a large file, we would create a [`RangeSpecSeq`] like this:
+//! of a large file, we would create a [`ChunkRangesSeq`] like this:
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
 //! let ranges =
 //!     &ChunkRanges::from(..ChunkNum(10)) | &ChunkRanges::from(ChunkNum(100)..ChunkNum(110));
-//! let spec = RangeSpecSeq::from_ranges([ranges]);
+//! let spec = ChunkRangesSeq::from_ranges([ranges]);
 //! let request = GetRequest::new(hash, spec);
 //! ```
 //!
@@ -167,26 +167,26 @@
 //! In this case the provider has a collection that contains multiple blobs.
 //! We want to retrieve all blobs in the collection.
 //!
-//! When used for collections, the first element of a [`RangeSpecSeq`] refers
+//! When used for collections, the first element of a [`ChunkRangesSeq`] refers
 //! to the collection itself, and all subsequent elements refer to the blobs
-//! in the collection. When a [`RangeSpecSeq`] specifies ranges for more than
+//! in the collection. When a [`ChunkRangesSeq`] specifies ranges for more than
 //! one blob, the provider will interpret this as a request for a collection.
 //!
 //! One thing to note is that we might not yet know how many blobs are in the
 //! collection. Therefore, it is not possible to download an entire collection
 //! by just specifying [`ChunkRanges::all()`] for all children.
 //!
-//! Instead, [`RangeSpecSeq`] allows defining infinite sequences of range sets.
-//! The [`RangeSpecSeq::all()`] method returns a [`RangeSpecSeq`] that, when iterated
+//! Instead, [`ChunkRangesSeq`] allows defining infinite sequences of range sets.
+//! The [`ChunkRangesSeq::all()`] method returns a [`ChunkRangesSeq`] that, when iterated
 //! over, will yield [`ChunkRanges::all()`] forever.
 //!
 //! So specifying a collection would work like this:
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let spec = RangeSpecSeq::all();
+//! let spec = ChunkRangesSeq::all();
 //! let request = GetRequest::new(hash, spec);
 //! ```
 //!
@@ -209,9 +209,9 @@
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let spec = RangeSpecSeq::from_ranges([
+//! let spec = ChunkRangesSeq::from_ranges([
 //!   ChunkRanges::empty(), // we don't need the collection itself
 //!   ChunkRanges::empty(), // we don't need the first child either
 //!   ChunkRanges::from(ChunkNum(1000000)..), // we need the second child from chunk 1000000 onwards
@@ -231,9 +231,9 @@
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let spec = RangeSpecSeq::from_ranges_infinite([
+//! let spec = ChunkRangesSeq::from_ranges_infinite([
 //!     ChunkRanges::all(),               // the collection itself
 //!     ChunkRanges::from(..ChunkNum(1)), // the first chunk of each child
 //! ]);
@@ -247,9 +247,9 @@
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let spec = RangeSpecSeq::from_ranges([
+//! let spec = ChunkRangesSeq::from_ranges([
 //!     ChunkRanges::empty(), // we don't need the collection itself
 //!     ChunkRanges::empty(), // we don't need the first child either
 //!     ChunkRanges::all(),   // we need the second child completely
@@ -262,7 +262,7 @@
 //!
 //! ```rust
 //! # use bao_tree::{ChunkNum, ChunkRanges};
-//! # use iroh_blobs::protocol::{GetRequest, RangeSpecSeq};
+//! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let child_hash: iroh_blobs::Hash = [0; 32].into();
 //! let request = GetRequest::single(child_hash);
 //! ```
@@ -343,10 +343,10 @@ use postcard::experimental::max_size::MaxSize;
 use range_spec::builder::{self, GetRequestBuilder};
 use serde::{Deserialize, Serialize};
 mod range_spec;
-pub use range_spec::{NonEmptyRequestRangeSpecIter, RangeSpec, RangeSpecSeq};
+pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::{api::blobs::Bitfield, BlobFormat, Hash, HashAndFormat};
+use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 100;
@@ -427,7 +427,7 @@ pub struct GetRequest {
     /// The range of data to request
     ///
     /// The first element is the parent, all subsequent elements are children.
-    pub ranges: RangeSpecSeq,
+    pub ranges: ChunkRangesSeq,
 }
 
 impl From<HashAndFormat> for GetRequest {
@@ -445,13 +445,13 @@ impl GetRequest {
     }
 
     /// Request a blob or collection with specified ranges
-    pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
+    pub fn new(hash: Hash, ranges: ChunkRangesSeq) -> Self {
         Self { hash, ranges }
     }
 
     pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
         let hash = Hash::read_async(&mut reader).await?;
-        let ranges = RangeSpecSeq::read_async(&mut reader).await?;
+        let ranges = ChunkRangesSeq::read_async(&mut reader).await?;
         Ok(Self { hash, ranges })
     }
 
@@ -459,7 +459,7 @@ impl GetRequest {
     pub fn all(hash: Hash) -> Self {
         Self {
             hash,
-            ranges: RangeSpecSeq::all(),
+            ranges: ChunkRangesSeq::all(),
         }
     }
 
@@ -467,7 +467,7 @@ impl GetRequest {
     pub fn single(hash: Hash) -> Self {
         Self {
             hash,
-            ranges: RangeSpecSeq::from_ranges([ChunkRanges::all()]),
+            ranges: ChunkRangesSeq::from_ranges([ChunkRanges::all()]),
         }
     }
 
@@ -477,7 +477,7 @@ impl GetRequest {
     pub fn last_chunk(hash: Hash) -> Self {
         Self {
             hash,
-            ranges: RangeSpecSeq::from_ranges([ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+            ranges: ChunkRangesSeq::from_ranges([ChunkRanges::from(ChunkNum(u64::MAX)..)]),
         }
     }
 
@@ -487,7 +487,7 @@ impl GetRequest {
     pub fn last_chunks(hash: Hash) -> Self {
         Self {
             hash,
-            ranges: RangeSpecSeq::from_ranges_infinite([
+            ranges: ChunkRangesSeq::from_ranges_infinite([
                 ChunkRanges::all(),
                 ChunkRanges::from(ChunkNum(u64::MAX)..),
             ]),
@@ -503,7 +503,7 @@ impl GetRequest {
 pub struct PushRequest(GetRequest);
 
 impl PushRequest {
-    pub fn new(hash: Hash, ranges: RangeSpecSeq) -> Self {
+    pub fn new(hash: Hash, ranges: ChunkRangesSeq) -> Self {
         Self(GetRequest::new(hash, ranges))
     }
 
@@ -525,11 +525,11 @@ pub struct GetManyRequest {
     ///
     /// There is no range request for the parent, since we just sent the hashes
     /// and therefore have the parent already.
-    pub ranges: RangeSpecSeq,
+    pub ranges: ChunkRangesSeq,
 }
 
 impl GetManyRequest {
-    pub fn new(hashes: Vec<Hash>, ranges: RangeSpecSeq) -> Self {
+    pub fn new(hashes: Vec<Hash>, ranges: ChunkRangesSeq) -> Self {
         Self { hashes, ranges }
     }
 
@@ -549,7 +549,7 @@ impl GetManyRequest {
         for _ in 0..size {
             hashes.push(Hash::read_async(&mut reader).await?);
         }
-        let ranges = RangeSpecSeq::read_async(&mut reader).await?;
+        let ranges = ChunkRangesSeq::read_async(&mut reader).await?;
         Ok(Self { hashes, ranges })
     }
 }
@@ -581,7 +581,7 @@ impl ObserveRequest {
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct ObserveItem {
     pub size: u64,
-    pub ranges: RangeSpec,
+    pub ranges: ChunkRanges,
 }
 
 impl ObserveItem {
@@ -594,7 +594,10 @@ impl ObserveItem {
             )
         })?;
         let ranges = RangeSpec::read_async(reader).await?;
-        Ok(Self { size, ranges })
+        Ok(Self {
+            size,
+            ranges: ranges.to_chunk_ranges(),
+        })
     }
 }
 
@@ -602,7 +605,7 @@ impl From<&Bitfield> for ObserveItem {
     fn from(value: &Bitfield) -> Self {
         Self {
             size: value.size,
-            ranges: RangeSpec::new(&value.ranges),
+            ranges: value.ranges.clone(),
         }
     }
 }
@@ -611,7 +614,7 @@ impl From<&ObserveItem> for Bitfield {
     fn from(value: &ObserveItem) -> Self {
         Self {
             size: value.size,
-            ranges: value.ranges.to_chunk_ranges(),
+            ranges: value.ranges.clone(),
         }
     }
 }
@@ -683,13 +686,14 @@ impl TryFrom<VarInt> for Closed {
 
 #[cfg(test)]
 mod tests {
+    use bao_tree::ChunkRanges;
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
     use n0_future::future::block_on;
     use postcard::experimental::max_size::MaxSize;
     use testresult::TestResult;
 
     use super::{GetRequest, Request, RequestType};
-    use crate::protocol::{ObserveItem, RangeSpec};
+    use crate::protocol::ObserveItem;
 
     #[test]
     fn request_wire_format() {
@@ -728,7 +732,7 @@ mod tests {
     fn observe_item_postcard() -> TestResult<()> {
         let item = ObserveItem {
             size: 0,
-            ranges: RangeSpec::EMPTY,
+            ranges: ChunkRanges::empty(),
         };
         let bytes = postcard::to_stdvec(&item)?;
         let item2: ObserveItem = postcard::from_bytes(&bytes)?;

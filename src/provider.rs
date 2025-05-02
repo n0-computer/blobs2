@@ -28,7 +28,8 @@ use crate::{
     api::{self, Store, blobs::Bitfield},
     hashseq::HashSeq,
     protocol::{
-        GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest, RangeSpecSeq, Request,
+        ChunkRangesSeq, GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest,
+        Request,
     },
 };
 
@@ -56,7 +57,7 @@ pub enum Event {
         /// The root hash of the request.
         hash: Hash,
         /// The exact query ranges of the request.
-        ranges: RangeSpecSeq,
+        ranges: ChunkRangesSeq,
     },
     /// A new get request was received from the provider.
     GetManyRequestReceived {
@@ -67,7 +68,7 @@ pub enum Event {
         /// The root hash of the request.
         hashes: Vec<Hash>,
         /// The exact query ranges of the request.
-        ranges: RangeSpecSeq,
+        ranges: ChunkRangesSeq,
     },
     /// A new get request was received from the provider.
     PushRequestReceived {
@@ -78,7 +79,7 @@ pub enum Event {
         /// The root hash of the request.
         hash: Hash,
         /// The exact query ranges of the request.
-        ranges: RangeSpecSeq,
+        ranges: ChunkRangesSeq,
         /// Complete this to permit the request.
         permitted: oneshot::Sender<bool>,
     },
@@ -251,7 +252,7 @@ impl StreamContext {
     ///
     /// This sends all the required information to make sense of subsequent events such as
     /// [`Event::TransferStarted`] and [`Event::TransferProgress`].
-    pub async fn send_get_request_received(&self, hash: &Hash, ranges: &RangeSpecSeq) {
+    pub async fn send_get_request_received(&self, hash: &Hash, ranges: &ChunkRangesSeq) {
         self.progress
             .send(|| Event::GetRequestReceived {
                 connection_id: self.connection_id,
@@ -266,7 +267,7 @@ impl StreamContext {
     ///
     /// This sends all the required information to make sense of subsequent events such as
     /// [`Event::TransferStarted`] and [`Event::TransferProgress`].
-    pub async fn send_get_many_request_received(&self, hashes: &[Hash], ranges: &RangeSpecSeq) {
+    pub async fn send_get_many_request_received(&self, hashes: &[Hash], ranges: &ChunkRangesSeq) {
         self.progress
             .send(|| Event::GetManyRequestReceived {
                 connection_id: self.connection_id,
@@ -285,7 +286,7 @@ impl StreamContext {
     /// We want to make accepting push requests very explicit, since this allows
     /// remote nodes to add arbitrary data to our store.
     #[must_use = "permit should be checked by the caller"]
-    pub async fn authorize_push_request(&self, hash: &Hash, ranges: &RangeSpecSeq) -> bool {
+    pub async fn authorize_push_request(&self, hash: &Hash, ranges: &ChunkRangesSeq) -> bool {
         let mut wait_for_permit = None;
         // send the request, including the permit channel
         self.progress
@@ -457,7 +458,7 @@ pub async fn handle_get(
     let mut hash_seq = None;
     for (offset, ranges) in request.ranges.iter_non_empty_infinite() {
         if offset == 0 {
-            send_blob(&store, offset, hash, ranges.to_chunk_ranges(), writer).await?;
+            send_blob(&store, offset, hash, ranges.clone(), writer).await?;
         } else {
             // todo: this assumes that 1. the hashseq is complete and 2. it is
             // small enough to fit in memory.
@@ -477,7 +478,7 @@ pub async fn handle_get(
             let Some(hash) = hash_seq.get(o) else {
                 break;
             };
-            send_blob(&store, offset, hash, ranges.to_chunk_ranges(), writer).await?;
+            send_blob(&store, offset, hash, ranges.clone(), writer).await?;
         }
     }
 
@@ -499,14 +500,7 @@ pub async fn handle_get_many(
     let request_ranges = request.ranges.iter_infinite();
     for (child, (hash, ranges)) in request.hashes.iter().zip(request_ranges).enumerate() {
         if !ranges.is_empty() {
-            send_blob(
-                &store,
-                child as u64,
-                *hash,
-                ranges.to_chunk_ranges(),
-                writer,
-            )
-            .await?;
+            send_blob(&store, child as u64, *hash, ranges.clone(), writer).await?;
         }
     }
     Ok(())
@@ -531,7 +525,7 @@ pub async fn handle_push(
     if !root_ranges.is_empty() {
         // todo: send progress from import_bao_quinn or rename to import_bao_quinn_with_progress
         store
-            .import_bao_quinn(hash, root_ranges.to_chunk_ranges(), &mut reader.inner)
+            .import_bao_quinn(hash, root_ranges.clone(), &mut reader.inner)
             .await?;
     }
     if request.ranges.is_raw() {
@@ -546,11 +540,7 @@ pub async fn handle_push(
             continue;
         }
         store
-            .import_bao_quinn(
-                child_hash,
-                child_ranges.to_chunk_ranges(),
-                &mut reader.inner,
-            )
+            .import_bao_quinn(child_hash, child_ranges.clone(), &mut reader.inner)
             .await?;
     }
     Ok(())

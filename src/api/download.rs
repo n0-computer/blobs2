@@ -42,7 +42,7 @@ pub struct Download {
 #[derive(Debug)]
 pub struct LocalInfo {
     /// The hash for which this is the local info
-    root: Hash,
+    request: Arc<GetRequest>,
     /// The bitfield for the root hash
     bitfield: Bitfield,
     /// Optional - the hash sequence info if this was a request for a hash sequence
@@ -51,7 +51,7 @@ pub struct LocalInfo {
 
 impl fmt::Display for LocalInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{} {:?}", self.root, self.bitfield)?;
+        writeln!(f, "{:?} {:?}", self.request, self.bitfield)?;
         if let Some(children) = &self.children {
             for (_, hash) in iter_without_gaps(children.hash_seq.iter()) {
                 if let Some(hash) = hash {
@@ -76,7 +76,7 @@ impl LocalInfo {
     /// Content (hash and format) of this local info
     pub fn content(&self) -> HashAndFormat {
         HashAndFormat {
-            hash: self.root,
+            hash: self.request.hash,
             format: if self.children.is_some() {
                 BlobFormat::HashSeq
             } else {
@@ -111,7 +111,10 @@ impl LocalInfo {
         let children = self.children.as_ref().into_iter().flat_map(|children| {
             iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
                 if let Some(hash) = hash {
-                    children.bitfields.get(&hash).unwrap().validated_size()
+                    children
+                        .bitfields
+                        .get(&hash)
+                        .and_then(|x| x.validated_size())
                 } else {
                     None
                 }
@@ -167,14 +170,14 @@ impl LocalInfo {
                 }
             });
             let ranges = iter::once(start).chain(children).chain(iter::once(end));
-            RangeSpecSeq::from_ranges_infinite(ranges)
+            ChunkRangesSeq::from_ranges_infinite(ranges)
         } else if self.bitfield.is_validated() {
-            RangeSpecSeq::empty()
+            ChunkRangesSeq::empty()
         } else {
             // request the last chunk of the blob
-            RangeSpecSeq::from_ranges([request_last_chunk])
+            ChunkRangesSeq::from_ranges([request_last_chunk])
         };
-        GetRequest::new(self.root, ranges)
+        GetRequest::new(self.request.hash, ranges)
     }
 
     /// A request to get the missing data to complete this blob or hash sequence
@@ -186,7 +189,11 @@ impl LocalInfo {
             let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
                 if let Some(hash) = hash {
                     if hashes.insert(hash) {
-                        ChunkRanges::all() - &children.bitfields.get(&hash).unwrap().ranges
+                        children
+                            .bitfields
+                            .get(&hash)
+                            .map(|local| ChunkRanges::all() - &local.ranges)
+                            .unwrap_or(ChunkRanges::all())
                     } else {
                         ChunkRanges::empty()
                     }
@@ -201,17 +208,17 @@ impl LocalInfo {
                 ChunkRanges::all()
             };
             let ranges = iter::once(start).chain(children).chain(iter::once(end));
-            RangeSpecSeq::from_ranges_infinite(ranges)
+            ChunkRangesSeq::from_ranges_infinite(ranges)
         } else {
-            RangeSpecSeq::from_ranges([root_missing])
+            ChunkRangesSeq::from_ranges([root_missing])
         };
-        GetRequest::new(self.root, ranges)
+        GetRequest::new(self.request.hash, ranges)
     }
 }
 
 #[derive(Debug)]
 struct HashSeqLocalInfo {
-    /// the available part of the hash sequence
+    /// the available and relevant part of the hash sequence
     hash_seq: Vec<(u64, Hash)>,
     /// Bitfield for every hash in the hash sequence
     bitfields: BTreeMap<Hash, Bitfield>,
@@ -240,19 +247,46 @@ impl Download {
         Store::ref_from_sender(&self.client)
     }
 
-    /// Get the local info for a given blob or hash sequence, at the present time.
-    pub async fn local(&self, content: impl Into<HashAndFormat>) -> anyhow::Result<LocalInfo> {
-        let content = content.into();
-        let root = content.hash;
+    pub async fn local_for_request(
+        &self,
+        request: impl Into<Arc<GetRequest>>,
+    ) -> anyhow::Result<LocalInfo> {
+        let request = request.into();
+        let root = request.hash;
         let bitfield = self.store().observe(root).await?;
-        let children = if content.format == BlobFormat::HashSeq {
+        let children = if !request.ranges.is_raw() {
             let bao = self.store().export_bao(root, bitfield.ranges.clone());
-            let mut hash_seq = Vec::new();
+            let mut by_index = BTreeMap::new();
             let mut stream = bao.hashes_with_index();
             while let Some(item) = stream.next().await {
-                hash_seq.push(item?);
+                let (index, hash) = item?;
+                by_index.insert(index, hash);
             }
             let mut bitfields = BTreeMap::new();
+            let mut hash_seq = Vec::new();
+            let max = by_index.last_key_value().map(|(k, _)| *k + 1).unwrap_or(0);
+            for (index, ranges) in request.ranges.iter_infinite().skip(1).enumerate() {
+                let index = index as u64;
+                if index >= max {
+                    println!("done");
+                    break;
+                }
+                if ranges.is_empty() {
+                    println!("skipping empty range {index}");
+                    continue;
+                };
+                let Some(hash) = by_index.get(&index) else {
+                    println!("skipping missing hash {index}");
+                    continue;
+                };
+                let bitfield = self.store().observe(*hash).await?;
+                if bitfield.is_empty() {
+                    println!("skipping empty bitfield {index}");
+                    // continue;
+                }
+                bitfields.insert(*hash, bitfield);
+                hash_seq.push((index, *hash));
+            }
             for (_, hash) in hash_seq.iter() {
                 let bitfield = self.store().observe(*hash).await?;
                 bitfields.insert(*hash, bitfield);
@@ -265,10 +299,16 @@ impl Download {
             None
         };
         Ok(LocalInfo {
-            root,
+            request,
             bitfield,
             children,
         })
+    }
+
+    /// Get the local info for a given blob or hash sequence, at the present time.
+    pub async fn local(&self, content: impl Into<HashAndFormat>) -> anyhow::Result<LocalInfo> {
+        let request = GetRequest::from(content.into());
+        self.local_for_request(request).await
     }
 
     /// Get a blob or hash sequence from the given connection, taking the locally available
@@ -281,10 +321,10 @@ impl Download {
     pub async fn fetch(
         &self,
         mut conn: impl GetConnection,
-        data: impl Into<HashAndFormat>,
+        content: impl Into<HashAndFormat>,
         progress: Option<spsc::Sender<u64>>,
     ) -> anyhow::Result<Stats> {
-        let content = data.into();
+        let content = content.into();
         let local = self.local(content).await?;
         if local.is_complete() {
             return Ok(Default::default());
@@ -358,7 +398,7 @@ impl Download {
         let root_ranges = request_ranges.next().expect("infinite iterator");
         if !root_ranges.is_empty() {
             self.store()
-                .export_bao(root, root_ranges.to_chunk_ranges())
+                .export_bao(root, root_ranges.clone())
                 .write_quinn_with_progress(&mut writer, &root, 0)
                 .await?;
         }
@@ -374,7 +414,7 @@ impl Download {
         {
             if !child_ranges.is_empty() {
                 self.store()
-                    .export_bao(child_hash, child_ranges.to_chunk_ranges())
+                    .export_bao(child_hash, child_ranges.clone())
                     .write_quinn_with_progress(&mut writer, &child_hash, (child + 1) as u64)
                     .await?;
             }
@@ -536,6 +576,7 @@ use std::{
     future::Future,
     iter,
     num::NonZeroU64,
+    sync::Arc,
 };
 
 use bao_tree::{
@@ -551,7 +592,7 @@ use crate::{
     api::{self, Store, blobs::Blobs},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},
-    protocol::{GetRequest, RangeSpecSeq},
+    protocol::{ChunkRangesSeq, GetRequest},
     store::IROH_BLOCK_SIZE,
     util::channel::mpsc,
 };
@@ -797,7 +838,7 @@ mod tests {
     use testresult::TestResult;
 
     use crate::{
-        protocol::{GetRequest, RangeSpecSeq},
+        protocol::{ChunkRangesSeq, GetRequest},
         store::fs::{FsStore, tests::INTERESTING_SIZES},
         tests::{add_test_hash_seq, add_test_hash_seq_incomplete},
     };
@@ -814,7 +855,10 @@ mod tests {
         assert_eq!(info.bitfield.ranges, ChunkRanges::all());
         assert_eq!(info.local_bytes(), 4);
         assert!(info.is_complete());
-        assert_eq!(info.missing(), GetRequest::new(hash, RangeSpecSeq::empty()));
+        assert_eq!(
+            info.missing(),
+            GetRequest::new(hash, ChunkRangesSeq::empty())
+        );
         Ok(())
     }
 
@@ -874,7 +918,7 @@ mod tests {
                 info.missing(),
                 GetRequest::new(
                     content.hash,
-                    RangeSpecSeq::from_ranges([
+                    ChunkRangesSeq::from_ranges([
                         ChunkRanges::empty(), // we have the hash seq itself
                         ChunkRanges::empty(), // we always have the empty blob
                         ChunkRanges::all(),   // we miss all the remaining blobs (sizes.len() - 1)
@@ -909,7 +953,7 @@ mod tests {
                 info.missing(),
                 GetRequest::new(
                     content.hash,
-                    RangeSpecSeq::from_ranges([
+                    ChunkRangesSeq::from_ranges([
                         ChunkRanges::empty(), // we have the hash seq itself
                         ChunkRanges::empty(), // we always have the empty blob
                         ChunkRanges::empty(), // size=1
@@ -932,7 +976,7 @@ mod tests {
             assert!(info.is_complete());
             assert_eq!(
                 info.missing(),
-                GetRequest::new(content.hash, RangeSpecSeq::empty())
+                GetRequest::new(content.hash, ChunkRangesSeq::empty())
             );
         }
         Ok(())

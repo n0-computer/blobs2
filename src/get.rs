@@ -29,7 +29,7 @@ use iroh_io::TokioStreamReader;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-use crate::{Hash, protocol::RangeSpecSeq, store::IROH_BLOCK_SIZE};
+use crate::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
 
 mod error;
 pub mod request;
@@ -84,7 +84,7 @@ pub mod fsm {
 
     self_cell::self_cell! {
         struct RangesIterInner {
-            owner: RangeSpecSeq,
+            owner: ChunkRangesSeq,
             #[covariant]
             dependent: NonEmptyRequestRangeSpecIter,
         }
@@ -144,7 +144,7 @@ pub mod fsm {
     }
 
     impl RangesIter {
-        pub fn new(owner: RangeSpecSeq) -> Self {
+        pub fn new(owner: ChunkRangesSeq) -> Self {
             Self(RangesIterInner::new(owner, |owner| {
                 owner.iter_non_empty_infinite()
             }))
@@ -160,8 +160,7 @@ pub mod fsm {
 
         fn next(&mut self) -> Option<Self::Item> {
             self.0.with_dependent_mut(|_owner, iter| {
-                iter.next()
-                    .map(|(offset, ranges)| (offset, ranges.to_chunk_ranges()))
+                iter.next().map(|(offset, ranges)| (offset, ranges.clone()))
             })
         }
     }

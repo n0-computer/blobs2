@@ -21,7 +21,7 @@ use crate::{
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
-    protocol::{GetManyRequest, GetRequest, ObserveRequest, PushRequest, RangeSpec, RangeSpecSeq},
+    protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest},
     provider::Event,
     store::{
         fs::{
@@ -244,7 +244,11 @@ async fn two_nodes_get_many() -> TestResult<()> {
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2
         .download()
-        .execute_get_many(conn, GetManyRequest::new(hashes, RangeSpecSeq::all()), None)
+        .execute_get_many(
+            conn,
+            GetManyRequest::new(hashes, ChunkRangesSeq::all()),
+            None,
+        )
         .await?;
     for size in sizes {
         let expected = test_data(size);
@@ -309,7 +313,7 @@ async fn two_nodes_push_blobs() -> TestResult<()> {
             .download()
             .execute_push(
                 conn.clone(),
-                PushRequest::new(hash, RangeSpecSeq::root()),
+                PushRequest::new(hash, ChunkRangesSeq::root()),
                 None,
             )
             .await?;
@@ -465,7 +469,7 @@ async fn two_nodes_size_request() -> TestResult<()> {
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let sizes = store2.download().local(root).await?.complete_sizes();
-    assert_eq!(sizes.ranges, RangeSpecSeq::verified_child_sizes());
+    assert_eq!(sizes.ranges, ChunkRangesSeq::verified_child_sizes());
     // get the first 3 items (hash_seq, and 2 children)
     store2
         .download()
@@ -473,11 +477,11 @@ async fn two_nodes_size_request() -> TestResult<()> {
             conn.clone(),
             GetRequest::new(
                 root.hash,
-                RangeSpecSeq::new([
-                    RangeSpec::all(),
-                    RangeSpec::all(),
-                    RangeSpec::all(),
-                    RangeSpec::EMPTY,
+                ChunkRangesSeq::new([
+                    ChunkRanges::all(),
+                    ChunkRanges::all(),
+                    ChunkRanges::all(),
+                    ChunkRanges::empty(),
                 ]),
             ),
             None,
@@ -487,17 +491,17 @@ async fn two_nodes_size_request() -> TestResult<()> {
     let sizes = store2.download().local(root).await?.complete_sizes();
     assert_eq!(
         sizes.ranges,
-        RangeSpecSeq::new([
-            RangeSpec::EMPTY,
-            RangeSpec::EMPTY,
-            RangeSpec::EMPTY,
-            RangeSpec::verified_size(),
-            RangeSpec::verified_size(),
-            RangeSpec::verified_size(),
-            RangeSpec::verified_size(),
-            RangeSpec::verified_size(),
-            RangeSpec::verified_size(),
-            RangeSpec::EMPTY
+        ChunkRangesSeq::new([
+            ChunkRanges::empty(),
+            ChunkRanges::empty(),
+            ChunkRanges::empty(),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::from(ChunkNum(u64::MAX)..),
+            ChunkRanges::empty()
         ])
     );
     store2.download().execute(conn.clone(), sizes, None).await?;

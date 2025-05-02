@@ -25,7 +25,7 @@ use super::{GetError, GetResult, Stats, fsm};
 use crate::{
     Hash, HashAndFormat,
     hashseq::HashSeq,
-    protocol::{GetRequest, RangeSpecSeq},
+    protocol::{ChunkRangesSeq, GetRequest},
 };
 
 /// Result of a [`get_blob`] request.
@@ -154,7 +154,7 @@ async fn get_blob_impl(
 pub async fn get_unverified_size(connection: &Connection, hash: &Hash) -> GetResult<(u64, Stats)> {
     let request = GetRequest::new(
         *hash,
-        RangeSpecSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+        ChunkRangesSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
     );
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -175,7 +175,7 @@ pub async fn get_verified_size(connection: &Connection, hash: &Hash) -> GetResul
     tracing::trace!("Getting verified size of {}", hash.to_hex());
     let request = GetRequest::new(
         *hash,
-        RangeSpecSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+        ChunkRangesSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
     );
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -224,7 +224,7 @@ pub async fn get_hash_seq_and_sizes(
     tracing::debug!("Getting hash seq and children sizes of {}", content);
     let request = GetRequest::new(
         *hash,
-        RangeSpecSeq::from_ranges_infinite([
+        ChunkRangesSeq::from_ranges_infinite([
             ChunkRanges::all(),
             ChunkRanges::from(ChunkNum(u64::MAX)..),
         ]),
@@ -285,7 +285,7 @@ pub async fn get_chunk_probe(
     chunk: ChunkNum,
 ) -> GetResult<Stats> {
     let ranges = ChunkRanges::from(chunk..chunk + 1);
-    let ranges = RangeSpecSeq::from_ranges([ranges]);
+    let ranges = ChunkRangesSeq::from_ranges([ranges]);
     let request = GetRequest::new(*hash, ranges);
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -317,7 +317,7 @@ pub async fn get_chunk_probe(
 ///
 /// The random chunk is chosen uniformly from the chunks of the children, so
 /// larger children are more likely to be selected.
-pub fn random_hash_seq_ranges(sizes: &[u64], mut rng: impl Rng) -> RangeSpecSeq {
+pub fn random_hash_seq_ranges(sizes: &[u64], mut rng: impl Rng) -> ChunkRangesSeq {
     let total_chunks = sizes
         .iter()
         .map(|size| ChunkNum::full_chunks(*size).0)
@@ -338,5 +338,5 @@ pub fn random_hash_seq_ranges(sizes: &[u64], mut rng: impl Rng) -> RangeSpecSeq 
             ranges.push(ChunkRanges::empty());
         }
     }
-    RangeSpecSeq::from_ranges(ranges)
+    ChunkRangesSeq::from_ranges(ranges)
 }
