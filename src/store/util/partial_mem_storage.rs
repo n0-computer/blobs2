@@ -23,6 +23,10 @@ impl PartialMemStorage {
         self.bitfield.size()
     }
 
+    pub fn bitfield(&self) -> &Bitfield {
+        &self.bitfield
+    }
+
     pub fn write_batch(&mut self, size: u64, batch: &[BaoContentItem]) -> io::Result<()> {
         let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
         for item in batch {

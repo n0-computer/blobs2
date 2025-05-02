@@ -27,9 +27,8 @@ use irpc::{
     Request,
     channel::{oneshot, spsc},
 };
-use n0_future::{Stream, StreamExt};
+use n0_future::{Stream, StreamExt, future};
 use ref_cast::RefCast;
-use serde::Serialize;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
 
@@ -40,16 +39,16 @@ use tracing::trace;
 pub use super::proto::{
     AddProgressItem, Bitfield, BlobDeleteRequest as DeleteOptions, BlobStatus,
     ExportBaoRequest as ExportBaoOptions, ExportMode, ExportPathRequest as ExportOptions,
-    ExportProgressItem, ImportBaoRequest as ImportBaoOptions, ImportMode,
-    ObserveRequest as ObserveOptions,
+    ExportProgressItem, ExportRangesRequest as ExportChunksOptions,
+    ImportBaoRequest as ImportBaoOptions, ImportMode, ObserveRequest as ObserveOptions,
 };
 use super::{
     ApiClient, RequestResult, Tags,
     download::HashSeqChunk,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
-        ExportBaoRequest, ImportBaoRequest, ImportByteStreamRequest, ImportBytesRequest,
-        ImportPathRequest, ListRequest, Scope,
+        ExportBaoRequest, ExportRangesItem, ImportBaoRequest, ImportByteStreamRequest,
+        ImportBytesRequest, ImportPathRequest, ListRequest, Scope,
     },
     tags::TagInfo,
 };
@@ -151,7 +150,7 @@ impl Blobs {
 
     fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddProgress {
         trace!("{options:?}");
-        AddProgress::new(self, self.client.server_streaming_owned(options, 32))
+        AddProgress::new(self, self.client.server_streaming(options, 32))
     }
 
     pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
@@ -167,9 +166,10 @@ impl Blobs {
     fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddProgress {
         trace!("{:?}", options);
         let client = self.client.clone();
-        AddProgress::new(self, async move {
-            client.server_streaming_owned(options, 32).await
-        })
+        AddProgress::new(
+            self,
+            async move { client.server_streaming(options, 32).await },
+        )
     }
 
     pub fn add_path(&self, path: impl AsRef<Path>) -> AddProgress {
@@ -199,12 +199,17 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        AddProgress::new(self, self.client.server_streaming_owned(inner, 32))
+        AddProgress::new(self, self.client.server_streaming(inner, 32))
+    }
+
+    pub fn export_ranges_with_opts(&self, options: ExportChunksOptions) -> ExportRangesProgress {
+        trace!("{options:?}");
+        ExportRangesProgress::new(self.client.server_streaming(options, 32))
     }
 
     pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoProgress {
         trace!("{options:?}");
-        ExportBaoProgress::new(self.client.server_streaming_owned(options, 32))
+        ExportBaoProgress::new(self.client.server_streaming(options, 32))
     }
 
     pub fn export_bao(
@@ -262,12 +267,12 @@ impl Blobs {
                 Ok(rx)
             });
         }
-        ObserveProgress::new(self.client.server_streaming_owned(options, 32))
+        ObserveProgress::new(self.client.server_streaming(options, 32))
     }
 
     pub fn export_with_opts(&self, options: ExportOptions) -> ExportProgress {
         trace!("{:?}", options);
-        ExportProgress::new(self.client.server_streaming_owned(options, 32))
+        ExportProgress::new(self.client.server_streaming(options, 32))
     }
 
     pub fn export(&self, hash: impl Into<Hash>, target: impl AsRef<Path>) -> ExportProgress {
@@ -390,7 +395,7 @@ impl Blobs {
     pub fn list(&self) -> BlobsListProgress {
         let msg = ListRequest;
         let client = self.client.clone();
-        BlobsListProgress::new(client.server_streaming_owned(msg, 32))
+        BlobsListProgress::new(client.server_streaming(msg, 32))
     }
 
     pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
@@ -488,7 +493,7 @@ pub struct AddPathOptions {
 /// If you want access to the stream, you can use the [`AddResult::stream`] method.
 pub struct AddProgress<'a> {
     blobs: &'a Blobs,
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<AddProgressItem>>>,
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<AddProgressItem>>>,
 }
 
 impl<'a> IntoFuture for AddProgress<'a> {
@@ -569,7 +574,7 @@ impl<'a> AddProgress<'a> {
 /// Calling [`ObserveProgress::aggregated`] will return a stream of states,
 /// where each state is the current state at the time of the update.
 pub struct ObserveProgress {
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<Bitfield>>>,
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<Bitfield>>>,
 }
 
 impl IntoFuture for ObserveProgress {
@@ -632,7 +637,7 @@ impl ObserveProgress {
 /// It also implements [`IntoFuture`], so you can await it to get the size of the
 /// exported blob.
 pub struct ExportProgress {
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<ExportProgressItem>>>,
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<ExportProgressItem>>>,
 }
 
 impl IntoFuture for ExportProgress {
@@ -693,7 +698,7 @@ impl ExportProgress {
 /// This future will resolve once the import is complete, but *must* be polled even before!
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ImportBaoResult {
-    inner: n0_future::future::Boxed<RequestResult<()>>,
+    inner: future::Boxed<RequestResult<()>>,
 }
 
 impl ImportBaoResult {
@@ -716,7 +721,7 @@ impl IntoFuture for ImportBaoResult {
 
 /// Lazy result of a blobs list operation.
 pub struct BlobsListProgress {
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
 }
 
 impl BlobsListProgress {
@@ -756,8 +761,29 @@ impl BlobsListProgress {
 /// process the stream.
 ///
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
+pub struct ExportRangesProgress {
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<ExportRangesItem>>>,
+}
+
+impl ExportRangesProgress {
+    fn new(
+        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportRangesItem>>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(fut),
+        }
+    }
+}
+
+/// A lazy result of a bao export operation.
+///
+/// Internally, this is a stream of [`EncodedItem`]s. Using this stream directly
+/// is often inconvenient, so there are a number of higher level methods to
+/// process the stream.
+///
+/// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportBaoProgress {
-    inner: n0_future::future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
+    inner: future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoProgress {
@@ -964,51 +990,5 @@ impl ExportBaoProgress {
                 co.yield_(item).await;
             }
         })
-    }
-}
-
-trait ClientExt<M, R, S> {
-    fn server_streaming_owned<Req, Res>(
-        &self,
-        msg: Req,
-        local_response_cap: usize,
-    ) -> impl Future<Output = Result<irpc::channel::spsc::Receiver<Res>, irpc::Error>> + 'static
-    where
-        S: irpc::Service,
-        M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
-        R: From<Req> + Serialize + Send + Sync + Unpin + 'static,
-        Req: irpc::Channels<
-                S,
-                Tx = irpc::channel::spsc::Sender<Res>,
-                Rx = irpc::channel::none::NoReceiver,
-            > + Send
-            + Sync
-            + Unpin
-            + 'static,
-        Res: irpc::RpcMessage;
-}
-
-impl<M, R, S> ClientExt<M, R, S> for irpc::Client<M, R, S> {
-    fn server_streaming_owned<Req, Res>(
-        &self,
-        msg: Req,
-        local_response_cap: usize,
-    ) -> impl Future<Output = Result<irpc::channel::spsc::Receiver<Res>, irpc::Error>> + 'static
-    where
-        S: irpc::Service,
-        M: From<irpc::WithChannels<Req, S>> + Send + Sync + Unpin + 'static,
-        R: From<Req> + Serialize + Send + Sync + Unpin + 'static,
-        Req: irpc::Channels<
-                S,
-                Tx = irpc::channel::spsc::Sender<Res>,
-                Rx = irpc::channel::none::NoReceiver,
-            > + Send
-            + Sync
-            + Unpin
-            + 'static,
-        Res: irpc::RpcMessage,
-    {
-        let this = self.clone();
-        async move { this.server_streaming(msg, local_response_cap).await }
     }
 }

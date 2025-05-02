@@ -74,6 +74,10 @@ impl CompleteStorage {
             MemOrFile::File(file) => file.size,
         }
     }
+
+    pub fn bitfield(&self) -> Bitfield {
+        Bitfield::complete(self.size())
+    }
 }
 
 /// Create a file for reading and writing, but *without* truncating the existing
@@ -135,6 +139,10 @@ pub struct PartialFileStorage {
 }
 
 impl PartialFileStorage {
+    pub fn bitfield(&self) -> &Bitfield {
+        &self.bitfield
+    }
+
     fn sync_all(&self, bitfield_path: &Path) -> io::Result<()> {
         self.data.sync_all()?;
         self.outboard.sync_all()?;
@@ -678,6 +686,18 @@ impl BaoFileHandle {
             BaoFileStorage::Complete(mem) => Ok(mem.size()),
             BaoFileStorage::PartialMem(mem) => Ok(mem.current_size()),
             BaoFileStorage::Partial(file) => file.current_size(),
+            BaoFileStorage::Poisoned => {
+                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+            }
+        }
+    }
+
+    /// The most precise known total size of the data file.
+    pub fn bitfield(&self) -> io::Result<Bitfield> {
+        match self.storage.borrow().deref() {
+            BaoFileStorage::Complete(mem) => Ok(mem.bitfield()),
+            BaoFileStorage::PartialMem(mem) => Ok(mem.bitfield().clone()),
+            BaoFileStorage::Partial(file) => Ok(file.bitfield().clone()),
             BaoFileStorage::Poisoned => {
                 return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
             }

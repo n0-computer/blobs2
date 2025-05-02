@@ -237,6 +237,7 @@ impl Store {
                     Request::Batch(msg) => local.send((msg, tx, rx)),
 
                     Request::ExportBao(msg) => local.send((msg, tx)),
+                    Request::ExportRanges(msg) => local.send((msg, tx)),
                     Request::ExportPath(msg) => local.send((msg, tx)),
 
                     Request::Observe(msg) => local.send((msg, tx)),

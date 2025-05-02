@@ -25,12 +25,13 @@ use std::{
 use arrayvec::ArrayString;
 use bao_tree::{
     ChunkRanges,
-    io::{BaoContentItem, mixed::EncodedItem},
+    io::{BaoContentItem, Leaf, mixed::EncodedItem},
 };
 use bytes::Bytes;
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
 use n0_future::Stream;
+use range_collections::RangeSet2;
 use serde::{Deserialize, Serialize};
 pub(crate) mod bitfield;
 pub use bitfield::Bitfield;
@@ -58,6 +59,12 @@ impl HashSpecific for ObserveMsg {
 }
 
 impl HashSpecific for ExportBaoMsg {
+    fn hash(&self) -> crate::Hash {
+        self.inner.hash
+    }
+}
+
+impl HashSpecific for ExportRangesMsg {
     fn hash(&self) -> crate::Hash {
         self.inner.hash
     }
@@ -94,6 +101,8 @@ pub enum Request {
     ImportBao(ImportBaoRequest),
     #[rpc(tx = spsc::Sender<EncodedItem>)]
     ExportBao(ExportBaoRequest),
+    #[rpc(tx = spsc::Sender<ExportRangesItem>)]
+    ExportRanges(ExportRangesRequest),
     #[rpc(tx = spsc::Sender<Bitfield>)]
     Observe(ObserveRequest),
     #[rpc(tx = oneshot::Sender<BlobStatus>)]
@@ -211,6 +220,13 @@ pub struct ObserveRequest {
 pub struct ExportBaoRequest {
     pub hash: Hash,
     pub ranges: ChunkRanges,
+}
+
+/// Export the given ranges as chunkks, without validation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportRangesRequest {
+    pub hash: Hash,
+    pub ranges: RangeSet2<u64>,
 }
 
 /// Export a file to a target path.
@@ -512,6 +528,19 @@ impl From<io::Error> for AddProgressItem {
     fn from(e: io::Error) -> Self {
         Self::Error(e)
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ExportRangesItem {
+    /// The size of the file being exported.
+    ///
+    /// This is a guaranteed progress event, so you can rely on getting exactly
+    /// one of these.
+    Size(u64),
+    /// A range of the file being exported.
+    Data(Leaf),
+    /// Error while exporting the ranges.
+    Error(super::Error),
 }
 
 /// Progress events for exporting to a local file.

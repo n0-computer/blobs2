@@ -78,7 +78,7 @@ use bao_tree::{
     ChunkNum, ChunkRanges,
     io::{
         BaoContentItem, Leaf,
-        mixed::{EncodedItem, traverse_ranges_validated},
+        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
         sync::ReadAt,
     },
 };
@@ -91,6 +91,7 @@ use irpc::channel::spsc;
 use meta::{Snapshot, list_blobs};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
+use range_collections::{RangeSet2, range_set::RangeSetRange};
 use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
@@ -99,8 +100,9 @@ use crate::{
         ApiClient,
         proto::{
             self, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg, ExportBaoMsg,
-            ExportBaoRequest, ExportPathMsg, ExportPathRequest, HashSpecific, ImportBaoMsg,
-            ImportBaoRequest, ObserveMsg, Scope, bitfield::is_validated,
+            ExportBaoRequest, ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
+            ExportRangesRequest, HashSpecific, ImportBaoMsg, ImportBaoRequest, ObserveMsg, Scope,
+            bitfield::is_validated,
         },
     },
     store::{
@@ -554,6 +556,11 @@ impl Actor {
                 let ctx = self.hash_context(cmd.inner.hash);
                 self.spawn(export_bao(cmd, ctx));
             }
+            Command::ExportRanges(cmd) => {
+                trace!("{cmd:?}");
+                let ctx = self.hash_context(cmd.inner.hash);
+                self.spawn(export_chunks(cmd, ctx));
+            }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
                 let ctx = self.hash_context(cmd.inner.hash);
@@ -918,6 +925,74 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
         return;
     };
     handle.subscribe().forward(cmd.tx).await.ok();
+}
+
+#[instrument(skip_all, fields(hash = %cmd.hash_short()))]
+async fn export_chunks(mut cmd: ExportRangesMsg, ctx: HashContext) {
+    match ctx.get_or_create(cmd.inner.hash).await {
+        Ok(handle) => {
+            if let Err(cause) = export_ranges_impl(cmd.inner, &mut cmd.tx, handle).await {
+                cmd.tx
+                    .send(ExportRangesItem::Error(cause.into()))
+                    .await
+                    .ok();
+            }
+        }
+        Err(cause) => {
+            cmd.tx
+                .send(ExportRangesItem::Error(cause.into()))
+                .await
+                .ok();
+        }
+    }
+}
+
+async fn export_ranges_impl(
+    cmd: ExportRangesRequest,
+    tx: &mut spsc::Sender<ExportRangesItem>,
+    handle: BaoFileHandle,
+) -> io::Result<()> {
+    let ExportRangesRequest { ranges, hash } = cmd;
+    trace!(
+        "exporting ranges: {hash} {ranges:?} size={}",
+        handle.current_size()?
+    );
+    debug_assert!(handle.hash() == hash, "hash mismatch");
+    let bitfield = handle.bitfield()?;
+    let data = handle.data_reader();
+    let size = bitfield.size();
+    for range in ranges.iter() {
+        let range = match range {
+            RangeSetRange::Range(range) => size.min(*range.start)..size.min(*range.end),
+            RangeSetRange::RangeFrom(range) => size.min(*range.start)..size,
+        };
+        let start_chunk = ChunkNum::full_chunks(range.start);
+        let end_chunk = ChunkNum::chunks(range.end);
+        if !bitfield
+            .ranges
+            .is_subset(&RangeSet2::from(start_chunk..end_chunk))
+        {
+            return Err(io::Error::other(format!(
+                "missing range: {start_chunk}..{end_chunk}"
+            )));
+        }
+        let bs = 1024;
+        let mut offset = range.start;
+        loop {
+            let end: u64 = (offset + bs).min(range.end);
+            let size = (end - offset) as usize;
+            tx.send(ExportRangesItem::Data(Leaf {
+                offset,
+                data: data.read_bytes_at(offset, size)?,
+            }))
+            .await?;
+            offset = end;
+            if offset >= range.end {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
