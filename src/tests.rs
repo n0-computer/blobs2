@@ -188,7 +188,7 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        store2.download().fetch(conn.clone(), hash, None).await?;
+        store2.remote().fetch(conn.clone(), hash, None).await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
     }
@@ -206,7 +206,7 @@ async fn two_nodes_observe() -> TestResult<()> {
     let addr1 = r1.endpoint().node_addr().await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let mut stream = store2
-        .download()
+        .remote()
         .observe(conn.clone(), ObserveRequest::new(hash));
     let remote_observe_task = tokio::spawn(async move {
         let mut current = Bitfield::empty();
@@ -244,7 +244,7 @@ async fn two_nodes_get_many() -> TestResult<()> {
     let addr1 = r1.endpoint().node_addr().await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2
-        .download()
+        .remote()
         .execute_get_many(
             conn,
             GetManyRequest::new(hashes, ChunkRangesSeq::all()),
@@ -311,7 +311,7 @@ async fn two_nodes_push_blobs() -> TestResult<()> {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
         store1
-            .download()
+            .remote()
             .execute_push(
                 conn.clone(),
                 PushRequest::new(hash, ChunkRangesSeq::root()),
@@ -429,7 +429,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = [1];
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    store2.download().fetch(conn, root, None).await?;
+    store2.remote().fetch(conn, root, None).await?;
     check_presence(&store2, &sizes).await?;
     Ok(())
 }
@@ -443,7 +443,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let (tx, rx) = spsc::channel::<u64>(16);
-    let res = store2.download().fetch(conn, root, Some(tx));
+    let res = store2.remote().fetch(conn, root, Some(tx));
     pin!(rx);
     pin!(res);
     loop {

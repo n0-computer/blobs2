@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tags::Tags;
 
 pub mod blobs;
-pub mod download;
+pub mod remote;
 pub mod proto;
 pub mod tags;
 pub use crate::{store::util::Tag, util::temp_tag::TempTag};
@@ -200,8 +200,8 @@ impl Store {
         blobs::Blobs::ref_from_sender(&self.client)
     }
 
-    pub fn download(&self) -> &download::Download {
-        download::Download::ref_from_sender(&self.client)
+    pub fn remote(&self) -> &remote::Remote {
+        remote::Remote::ref_from_sender(&self.client)
     }
 
     /// Connect to a remote store as a rpc client.

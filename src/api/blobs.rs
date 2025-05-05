@@ -44,7 +44,7 @@ pub use super::proto::{
 };
 use super::{
     ApiClient, RequestResult, Tags,
-    download::HashSeqChunk,
+    remote::HashSeqChunk,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
         ExportBaoRequest, ExportRangesItem, ImportBaoRequest, ImportByteStreamRequest,

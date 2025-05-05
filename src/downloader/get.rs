@@ -9,7 +9,7 @@ use super::{
     progress::BroadcastProgressSender,
 };
 use crate::{
-    api::{Store, download::LocalInfo},
+    api::{Store, remote::LocalInfo},
     get::GetError,
 };
 
@@ -47,7 +47,7 @@ impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
         let local_bytes = self.info.local_bytes();
         Box::pin(async move {
             let res = store
-                .download()
+                .remote()
                 .execute(
                     conn,
                     self.info.missing(),
@@ -75,7 +75,7 @@ impl Getter for IoGetter {
     ) -> GetStartFut<Self::NeedsConn> {
         let store = self.store.clone();
         Box::pin(async move {
-            let local = store.download().local(kind).await.map_err(|e| {
+            let local = store.remote().local(kind).await.map_err(|e| {
                 error!("failed to get local info: {}", e);
                 FailureAction::AbortRequest(e)
             })?;

@@ -32,7 +32,7 @@ use crate::{
 /// [`Download::fetch`]. This will internally do the dance described above.
 #[derive(Debug, RefCast)]
 #[repr(transparent)]
-pub struct Download {
+pub struct Remote {
     client: ApiClient,
 }
 
@@ -238,7 +238,7 @@ fn iter_without_gaps<'a, T: Copy + 'a>(
     })
 }
 
-impl Download {
+impl Remote {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
     }
@@ -845,7 +845,7 @@ mod tests {
         let blobs = store.blobs();
         let tt = blobs.add_slice(b"test").temp_tag().await?;
         let hash = *tt.hash();
-        let info = store.download().local(hash).await?;
+        let info = store.remote().local(hash).await?;
         assert_eq!(info.bitfield.ranges, ChunkRanges::all());
         assert_eq!(info.local_bytes(), 4);
         assert!(info.is_complete());
@@ -876,7 +876,7 @@ mod tests {
                 }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
-            let info = store.download().local(content).await?;
+            let info = store.remote().local(content).await?;
             assert_eq!(info.bitfield.ranges, hash_seq_ranges);
             assert!(!info.is_complete());
             assert_eq!(info.local_bytes(), relevant_sizes + 16 * 1024);
@@ -902,7 +902,7 @@ mod tests {
                 }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
-            let info = store.download().local(content).await?;
+            let info = store.remote().local(content).await?;
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size);
             assert!(!info.is_complete());
@@ -935,7 +935,7 @@ mod tests {
                 }
             };
             let content = add_test_hash_seq_incomplete(&store, sizes, present).await?;
-            let info = store.download().local(content).await?;
+            let info = store.remote().local(content).await?;
             let first_chunk_size = sizes.into_iter().map(|x| x.min(1024) as u64).sum::<u64>();
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size + first_chunk_size);
@@ -960,7 +960,7 @@ mod tests {
         }
         {
             let content = add_test_hash_seq(&store, sizes).await?;
-            let info = store.download().local(content).await?;
+            let info = store.remote().local(content).await?;
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), total_size + hash_seq_size);
             assert!(info.is_complete());
@@ -992,7 +992,7 @@ mod tests {
             let request: GetRequest = GetRequest::builder()
                 .root(ChunkRanges::all())
                 .build(content.hash);
-            let info = store.download().local_for_request(request).await?;
+            let info = store.remote().local_for_request(request).await?;
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size);
             assert!(info.is_complete());
@@ -1002,7 +1002,7 @@ mod tests {
                 .root(ChunkRanges::all())
                 .next(ChunkRanges::all())
                 .build(content.hash);
-            let info = store.download().local_for_request(request).await?;
+            let info = store.remote().local_for_request(request).await?;
             let expected_child_sizes = sizes
                 .into_iter()
                 .take(1)
@@ -1018,7 +1018,7 @@ mod tests {
                 .next(ChunkRanges::all())
                 .next(ChunkRanges::all())
                 .build(content.hash);
-            let info = store.download().local_for_request(request).await?;
+            let info = store.remote().local_for_request(request).await?;
             let expected_child_sizes = sizes
                 .into_iter()
                 .take(2)
@@ -1033,7 +1033,7 @@ mod tests {
                 .root(ChunkRanges::all())
                 .next(ChunkRanges::chunk(0))
                 .build_open(content.hash);
-            let info = store.download().local_for_request(request).await?;
+            let info = store.remote().local_for_request(request).await?;
             let expected_child_sizes = sizes.into_iter().map(|x| 1024.min(x as u64)).sum::<u64>();
             assert_eq!(info.bitfield.ranges, ChunkRanges::all());
             assert_eq!(info.local_bytes(), hash_seq_size + expected_child_sizes);
