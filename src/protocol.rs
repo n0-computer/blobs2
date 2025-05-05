@@ -851,12 +851,13 @@ pub mod builder {
 
         #[test]
         fn get_request_builder() {
+            let hash = [0; 32];
             let request = GetRequest::builder()
                 .root(ChunkRanges::all())
                 .next(ChunkRanges::all())
                 .next(ChunkRanges::bytes(0..100))
-                .build([0; 32]);
-            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+                .build(hash);
+            assert_eq!(request.hash.as_bytes(), &hash);
             assert_eq!(
                 request.ranges,
                 ChunkRangesSeq::from_ranges([
@@ -869,8 +870,8 @@ pub mod builder {
             let request = GetRequest::builder()
                 .root(ChunkRanges::all())
                 .child(2, ChunkRanges::bytes(0..100))
-                .build([0; 32]);
-            assert_eq!(request.hash.as_bytes(), &[0; 32]);
+                .build(hash);
+            assert_eq!(request.hash.as_bytes(), &hash);
             assert_eq!(
                 request.ranges,
                 ChunkRangesSeq::from_ranges([
@@ -884,7 +885,7 @@ pub mod builder {
             let request = GetRequest::builder()
                 .root(ChunkRanges::all())
                 .next(ChunkRanges::bytes(0..1024) | ChunkRanges::last_chunk())
-                .build_open([0; 32]);
+                .build_open(hash);
             assert_eq!(request.hash.as_bytes(), &[0; 32]);
             assert_eq!(
                 request.ranges,

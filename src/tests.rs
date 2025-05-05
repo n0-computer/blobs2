@@ -461,60 +461,6 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn two_nodes_size_request() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup().await?;
-    let addr1 = r1.endpoint().node_addr().await?;
-    let sizes = INTERESTING_SIZES;
-    let root = add_test_hash_seq(&store1, sizes).await?;
-    let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    let sizes = store2.download().local(root).await?.complete_sizes();
-    assert_eq!(sizes.ranges, ChunkRangesSeq::verified_child_sizes());
-    // get the first 3 items (hash_seq, and 2 children)
-    store2
-        .download()
-        .execute(
-            conn.clone(),
-            GetRequest::builder()
-                .root(ChunkRanges::all())
-                .next(ChunkRanges::all())
-                .next(ChunkRanges::all())
-                .build(root.hash),
-            None,
-        )
-        .await?;
-    // check that sizes for the data we have already are omitted
-    let sizes = store2.download().local(root).await?.complete_sizes();
-    assert_eq!(
-        sizes,
-        GetRequest::builder()
-            .child(2, ChunkRanges::last_chunk())
-            .next(ChunkRanges::last_chunk())
-            .next(ChunkRanges::last_chunk())
-            .next(ChunkRanges::last_chunk())
-            .next(ChunkRanges::last_chunk())
-            .next(ChunkRanges::last_chunk())
-            .build(root.hash)
-    );
-    store2.download().execute(conn.clone(), sizes, None).await?;
-
-    let local = store2.download().local(root).await?;
-    // let missing_chunks = missing.chunks();
-    // println!("{:?} {:?}", missing, missing_chunks);
-    store2
-        .download()
-        .execute(conn, local.missing(), None)
-        .await?;
-    check_presence(&store2, &INTERESTING_SIZES).await?;
-    // for size in INTERESTING_SIZES {
-    //     let hash = Hash::new(test_data(size));
-    //     let bitfield = store2.observe(hash).await?;
-    //     println!("size: {} bitfield: {:?}", size, bitfield);
-    // }
-    Ok(())
-}
-
 /// A node serves a hash sequence with all the interesting sizes.
 ///
 /// The client requests the hash sequence and the children, but does not store the data.

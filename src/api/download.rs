@@ -96,6 +96,10 @@ impl LocalInfo {
         }
     }
 
+    /// The requested root ranges.
+    /// 
+    /// This will return None if the request is empty, and an empty CHunkRanges
+    /// if no ranges were requested for the root hash.
     fn requested_root_ranges(&self) -> Option<&ChunkRanges> {
         self.request.ranges.iter().next()
     }
@@ -143,50 +147,6 @@ impl LocalInfo {
             }
         }
         return true;
-    }
-
-    /// A request that when executed will give us complete sizes for all entries of the blob or hash sequence
-    pub fn complete_sizes(&self) -> GetRequest {
-        todo!()
-        //     // we need to get the last chunk of the blob
-        //     let request_last_chunk = ChunkRanges::from(ChunkNum(u64::MAX)..);
-        //     let ranges = if let Some(children) = self.children.as_ref() {
-        //         let root_missing = ChunkRanges::all() - &self.bitfield.ranges;
-        //         let start = root_missing;
-        //         let end = if self.bitfield.is_validated() {
-        //             ChunkRanges::empty()
-        //         } else {
-        //             request_last_chunk.clone()
-        //         };
-        //         let mut hashes = HashSet::new();
-        //         let children = iter_without_gaps(&children.hash_seq).map(|(_, hash)| {
-        //             if let Some(hash) = hash {
-        //                 if hashes.insert(hash) {
-        //                     let (bitfield, request) = children.bitfields.get(&hash).unwrap();
-        //                     if bitfield.is_validated() {
-        //                         // we have the last chunk of the blob
-        //                         ChunkRanges::empty()
-        //                     } else {
-        //                         // request the last chunk of the blob
-        //                         request_last_chunk.clone()
-        //                     }
-        //                 } else {
-        //                     // we have already seen this hash, so we don't need to request it again
-        //                     ChunkRanges::empty()
-        //                 }
-        //             } else {
-        //                 request_last_chunk.clone()
-        //             }
-        //         });
-        //         let ranges = iter::once(start).chain(children).chain(iter::once(end));
-        //         ChunkRangesSeq::from_ranges_infinite(ranges)
-        //     } else if self.bitfield.is_validated() {
-        //         ChunkRangesSeq::empty()
-        //     } else {
-        //         // request the last chunk of the blob
-        //         ChunkRangesSeq::from_ranges([request_last_chunk])
-        //     };
-        //     GetRequest::new(self.request.hash, ranges)
     }
 
     /// A request to get the missing data to complete this request
