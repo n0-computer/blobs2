@@ -64,18 +64,25 @@ impl ChunkRangesExt for ChunkRanges {
         ChunkRanges::from(ChunkNum(u64::MAX)..)
     }
 
+    /// Create a chunk range that contains a single chunk.
     fn chunk(offset: u64) -> Self {
         ChunkRanges::from(ChunkNum(offset)..ChunkNum(offset + 1))
     }
 
+    /// Create a range of chunks that contains the given byte ranges.
+    /// The byte ranges are rounded up to the nearest chunk size.
     fn bytes(ranges: impl RangeBounds<u64>) -> Self {
         round_up_to_chunks(&bounds_from_range(ranges, |v| v))
     }
 
+    /// Create a range of chunks from u64 chunk bounds.
+    /// 
+    /// This is equivalent but more convenient than using the ChunkNum newtype.
     fn chunks(ranges: impl RangeBounds<u64>) -> Self {
         bounds_from_range(ranges, ChunkNum)
     }
 
+    /// Create a chunk range that contains a single byte offset.
     fn offset(offset: u64) -> Self {
         Self::bytes(offset..offset + 1)
     }
