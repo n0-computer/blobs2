@@ -855,7 +855,7 @@ mod tests {
             .map(|x| *x as u64)
             .sum::<u64>();
         let td = tempfile::tempdir()?;
-        let hash_seq_ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
+        let hash_seq_ranges = ChunkRanges::chunks(16..32);
         let store = FsStore::load(td.path().join("blobs.db")).await?;
         {
             // only add the hash seq itself, and only the first chunk of the children
@@ -940,11 +940,11 @@ mod tests {
                         ChunkRanges::empty(), // we always have the empty blob
                         ChunkRanges::empty(), // size=1
                         ChunkRanges::empty(), // size=1024
-                        ChunkRanges::from(ChunkNum(1)..),
-                        ChunkRanges::from(ChunkNum(1)..),
-                        ChunkRanges::from(ChunkNum(1)..),
-                        ChunkRanges::from(ChunkNum(1)..),
-                        ChunkRanges::from(ChunkNum(1)..),
+                        ChunkRanges::chunks(1..),
+                        ChunkRanges::chunks(1..),
+                        ChunkRanges::chunks(1..),
+                        ChunkRanges::chunks(1..),
+                        ChunkRanges::chunks(1..),
                     ])
                 )
             );
