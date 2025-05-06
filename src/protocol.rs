@@ -816,7 +816,6 @@ pub mod builder {
                 .ranges
                 .into_iter()
                 .filter(|(_, v)| !v.is_empty())
-                .map(|(k, v)| (k, v))
                 .unzip();
             let ranges = ChunkRangesSeq::from_ranges(ranges);
             GetManyRequest { hashes, ranges }

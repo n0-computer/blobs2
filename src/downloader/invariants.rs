@@ -152,7 +152,10 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
         for hash in self.providers.hash_node.keys() {
             assert!(
                 self.queue.contains_hash(*hash)
-                    || self.active_requests.iter().find(|(key, _)| key.0.hash == *hash).is_some(),
+                    || self
+                        .active_requests
+                        .iter()
+                        .any(|(key, _)| key.0.hash == *hash),
                 "all hashes in the provider map are in the queue or active"
             )
         }

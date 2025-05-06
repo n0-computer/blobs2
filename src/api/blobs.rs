@@ -44,12 +44,12 @@ pub use super::proto::{
 };
 use super::{
     ApiClient, RequestResult, Tags,
-    remote::HashSeqChunk,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
         ExportBaoRequest, ExportRangesItem, ImportBaoRequest, ImportByteStreamRequest,
         ImportBytesRequest, ImportPathRequest, ListRequest, Scope,
     },
+    remote::HashSeqChunk,
     tags::TagInfo,
 };
 use crate::{

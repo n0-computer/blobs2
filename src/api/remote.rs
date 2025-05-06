@@ -3,7 +3,6 @@
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
 use n0_future::{Stream, StreamExt, TryFutureExt, io};
-use postcard::experimental::max_size;
 use quinn::SendStream;
 use ref_cast::RefCast;
 
@@ -97,7 +96,7 @@ impl LocalInfo {
     }
 
     /// The requested root ranges.
-    /// 
+    ///
     /// This will return None if the request is empty, and an empty CHunkRanges
     /// if no ranges were requested for the root hash.
     fn requested_root_ranges(&self) -> Option<&ChunkRanges> {
@@ -146,7 +145,7 @@ impl LocalInfo {
                 }
             }
         }
-        return true;
+        true
     }
 
     /// A request to get the missing data to complete this request
@@ -266,7 +265,6 @@ impl Remote {
             let mut hash_seq = BTreeMap::new();
             let max = by_index.last_key_value().map(|(k, _)| *k + 1).unwrap_or(0);
             for (index, _) in request.ranges.iter_non_empty_infinite() {
-                let index = index as u64;
                 if index == 0 {
                     // skip the root hash
                     continue;
@@ -460,7 +458,7 @@ impl Remote {
                         .await
                         .map_err(|e| GetError::LocalFailure(e.into()))?,
                 )
-                .map_err(|e| GetError::BadRequest(e.into()))?;
+                .map_err(GetError::BadRequest)?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -565,10 +563,8 @@ pub enum ExecuteError {
 }
 
 use std::{
-    collections::{BTreeMap, HashSet},
-    fmt::{self},
+    collections::BTreeMap,
     future::Future,
-    iter,
     num::NonZeroU64,
     sync::Arc,
 };
@@ -582,7 +578,7 @@ use irpc::channel::{SendError, spsc};
 use tracing::{debug, trace};
 
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
+    Hash, HashAndFormat,
     api::{self, Store, blobs::Blobs},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},

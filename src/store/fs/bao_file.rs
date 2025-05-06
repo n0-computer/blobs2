@@ -400,7 +400,7 @@ impl BaoFileStorage {
                 if max_offset(batch) <= ctx.options.inline.max_data_inlined {
                     ms.write_batch(bitfield.size(), batch)?;
                     let changes = ms.bitfield.update(bitfield);
-                    let new = changes.new();
+                    let new = changes.new_state();
                     if new.complete {
                         let (cs, update) = ms.into_complete(hash, ctx)?;
                         (cs.into(), Some(update))
@@ -421,7 +421,7 @@ impl BaoFileStorage {
                     let mut fs = ms.persist(ctx, hash)?;
                     fs.write_batch(bitfield.size(), batch)?;
                     let changes = fs.bitfield.update(bitfield);
-                    let new = changes.new();
+                    let new = changes.new_state();
                     if new.complete {
                         let (cs, update) = fs.into_complete(new, ctx)?;
                         (cs.into(), Some(update))
@@ -436,20 +436,18 @@ impl BaoFileStorage {
             BaoFileStorage::Partial(mut fs) => {
                 fs.write_batch(bitfield.size(), batch)?;
                 let changes = fs.bitfield.update(bitfield);
-                let new = changes.new();
+                let new = changes.new_state();
                 if new.complete {
                     let (cs, update) = fs.into_complete(new, ctx)?;
                     (cs.into(), Some(update))
+                } else if changes.was_validated() {
+                    // we are still partial, but now we know the size
+                    let update = EntryState::Partial {
+                        size: new.validated_size,
+                    };
+                    (fs.into(), Some(update))
                 } else {
-                    if changes.was_validated() {
-                        // we are still partial, but now we know the size
-                        let update = EntryState::Partial {
-                            size: new.validated_size,
-                        };
-                        (fs.into(), Some(update))
-                    } else {
-                        (fs.into(), None)
-                    }
+                    (fs.into(), None)
                 }
             }
             BaoFileStorage::Complete(_) => {
@@ -565,7 +563,7 @@ impl ReadBytesAt for DataReader {
             BaoFileStorage::Partial(x) => x.data.read_bytes_at(offset, size),
             BaoFileStorage::Complete(x) => x.data.read_bytes_at(offset, size),
             BaoFileStorage::Poisoned => {
-                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+                io::Result::Err(io::Error::other("poisoned storage"))
             }
         }
     }
@@ -583,7 +581,7 @@ impl ReadAt for OutboardReader {
             BaoFileStorage::PartialMem(x) => x.outboard.read_at(offset, buf),
             BaoFileStorage::Partial(x) => x.outboard.read_at(offset, buf),
             BaoFileStorage::Poisoned => {
-                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+                io::Result::Err(io::Error::other("poisoned storage"))
             }
         }
     }
@@ -687,7 +685,7 @@ impl BaoFileHandle {
             BaoFileStorage::PartialMem(mem) => Ok(mem.current_size()),
             BaoFileStorage::Partial(file) => file.current_size(),
             BaoFileStorage::Poisoned => {
-                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+                io::Result::Err(io::Error::other("poisoned storage"))
             }
         }
     }
@@ -699,7 +697,7 @@ impl BaoFileHandle {
             BaoFileStorage::PartialMem(mem) => Ok(mem.bitfield().clone()),
             BaoFileStorage::Partial(file) => Ok(file.bitfield().clone()),
             BaoFileStorage::Poisoned => {
-                return io::Result::Err(io::Error::new(io::ErrorKind::Other, "poisoned storage"));
+                io::Result::Err(io::Error::other("poisoned storage"))
             }
         }
     }

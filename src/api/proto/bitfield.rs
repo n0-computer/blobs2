@@ -266,11 +266,11 @@ pub enum UpdateResult {
 }
 
 impl UpdateResult {
-    pub fn new(&self) -> &BitfieldState {
+    pub fn new_state(&self) -> &BitfieldState {
         match self {
-            UpdateResult::NoChange(new) => &new,
-            UpdateResult::MinorChange(new) => &new,
-            UpdateResult::MajorChange(_, new) => &new,
+            UpdateResult::NoChange(new) => new,
+            UpdateResult::MinorChange(new) => new,
+            UpdateResult::MajorChange(_, new) => new,
         }
     }
 

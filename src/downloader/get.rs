@@ -101,7 +101,8 @@ fn track_metrics(res: &Result<crate::get::Stats, GetError>) {
         Ok(stats) => {
             let crate::get::Stats {
                 bytes_written,
-                bytes_read: _,
+                payload_bytes_read: _,
+                other_bytes_read: _,
                 elapsed,
             } = stats;
 

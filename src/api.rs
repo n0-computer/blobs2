@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use tags::Tags;
 
 pub mod blobs;
-pub mod remote;
 pub mod proto;
+pub mod remote;
 pub mod tags;
 pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 

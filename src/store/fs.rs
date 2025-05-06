@@ -940,7 +940,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
         }
         Err(cause) => {
             cmd.tx
-                .send(ExportRangesItem::Error(cause.into()))
+                .send(ExportRangesItem::Error(cause))
                 .await
                 .ok();
         }

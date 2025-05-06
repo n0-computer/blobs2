@@ -101,7 +101,7 @@ impl Inner {
 
     fn try_send(&mut self, progress: u64) {
         self.subscribers
-            .retain(|sender| !sender.try_send(progress).is_err());
+            .retain(|sender| sender.try_send(progress).is_ok());
     }
 
     async fn send(&mut self, progress: u64) {

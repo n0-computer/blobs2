@@ -73,7 +73,7 @@ impl ChunkRangesExt for ChunkRanges {
     }
 
     fn chunks(ranges: impl RangeBounds<u64>) -> Self {
-        bounds_from_range(ranges, |v| ChunkNum(v))
+        bounds_from_range(ranges, ChunkNum)
     }
 
     fn offset(offset: u64) -> Self {

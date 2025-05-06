@@ -15,7 +15,7 @@ use tokio::io::AsyncRead;
 static CHUNK_RANGES_EMPTY: OnceLock<ChunkRanges> = OnceLock::new();
 
 fn chunk_ranges_empty() -> &'static ChunkRanges {
-    CHUNK_RANGES_EMPTY.get_or_init(|| ChunkRanges::empty())
+    CHUNK_RANGES_EMPTY.get_or_init(ChunkRanges::empty)
 }
 
 pub use nodelta::*;
@@ -172,7 +172,7 @@ mod nodelta {
         /// added immediately after it to terminate the sequence.
         pub fn from_ranges(ranges: impl IntoIterator<Item = ChunkRanges>) -> Self {
             let (mut res, next) = from_ranges_inner(ranges);
-            if let Some((i, r)) = res.iter().next_back() {
+            if let Some((_, r)) = res.iter().next_back() {
                 if !r.is_empty() {
                     res.push((next, ChunkRanges::empty()));
                 }
@@ -689,7 +689,7 @@ mod delta {
         /// Compared to [`RangeSpecSeq::from_ranges`], this will not add an empty range spec at the end, so the final
         /// range spec will repeat forever.
         pub fn from_ranges_infinite(ranges: impl IntoIterator<Item = ChunkRanges>) -> Self {
-            Self::new(ranges.into_iter())
+            Self::new(ranges)
         }
 
         /// Creates a new range spec sequence from a sequence of range specs.
@@ -957,8 +957,7 @@ mod tests {
     fn range_spec_seq_roundtrip_impl(ranges: &[ChunkRanges]) -> Vec<ChunkRanges> {
         let spec = ChunkRangesSeq::from_ranges(ranges.iter().cloned());
         spec.iter_infinite()
-            .cloned()
-            .take(ranges.len())
+            .take(ranges.len()).cloned()
             .collect::<Vec<_>>()
     }
 
@@ -968,8 +967,7 @@ mod tests {
         let spec2: ChunkRangesSeq = postcard::from_bytes(&bytes).unwrap();
         spec2
             .iter_infinite()
-            .cloned()
-            .take(ranges.len())
+            .take(ranges.len()).cloned()
             .collect::<Vec<_>>()
     }
 
@@ -1093,8 +1091,8 @@ mod tests {
     #[test]
     fn range_spec_seq_roundtrip_cases() {
         for case in [
-            // vec![0..1, 0..0],
-            // vec![1..2, 1..2, 1..2],
+            vec![0..1, 0..0],
+            vec![1..2, 1..2, 1..2],
             vec![1..2, 1..2, 2..3, 2..3],
         ] {
             let case = mk_case(case);

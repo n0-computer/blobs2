@@ -241,7 +241,7 @@ pub async fn get_hash_seq_and_sizes(
         return Err(GetError::BadRequest(anyhow::anyhow!("size too large")));
     }
     let (mut curr, hash_seq) = at_blob_content.concatenate_into_vec().await?;
-    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq)).map_err(|e| GetError::BadRequest(e))?;
+    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq)).map_err(GetError::BadRequest)?;
     let mut sizes = Vec::with_capacity(hash_seq.len());
     let closing = loop {
         match curr.next() {

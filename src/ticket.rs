@@ -22,11 +22,11 @@ pub struct BlobTicket {
     hash: Hash,
 }
 
-impl Into<HashAndFormat> for BlobTicket {
-    fn into(self) -> HashAndFormat {
+impl From<BlobTicket> for HashAndFormat {
+    fn from(val: BlobTicket) -> Self {
         HashAndFormat {
-            hash: self.hash,
-            format: self.format,
+            hash: val.hash,
+            format: val.format,
         }
     }
 }

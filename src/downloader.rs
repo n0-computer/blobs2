@@ -69,7 +69,7 @@ mod test;
 
 /// Requirements for a connection
 pub trait DownloaderConnection: Clone + Send + 'static {}
-impl<T> DownloaderConnection for T where T:  Clone + Send + 'static {}
+impl<T> DownloaderConnection for T where T: Clone + Send + 'static {}
 
 use self::progress::{BroadcastProgressSender, ProgressSubscriber, ProgressTracker};
 
@@ -1532,10 +1532,8 @@ impl Queue {
     /// If not this is a no-op.
     fn remove_kind_by_hash(&mut self, kind: &DownloadKind) {
         if let Entry::Occupied(mut entry) = self.kind_by_hash.entry(kind.hash()) {
-            if entry.get_mut().remove(kind) {
-                if entry.get().is_empty() {
-                    entry.remove();
-                }
+            if entry.get_mut().remove(kind) && entry.get().is_empty() {
+                entry.remove();
             }
         }
     }

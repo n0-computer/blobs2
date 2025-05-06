@@ -11,7 +11,7 @@ use tokio::{
     select,
     sync::{mpsc, watch},
 };
-use tracing::{error, info};
+use tracing::info;
 use tracing_test::traced_test;
 
 use crate::{
@@ -146,14 +146,15 @@ async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
     // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
     r3.endpoint().add_node_addr(addr1.clone())?;
     r3.endpoint().add_node_addr(addr2.clone())?;
-    let request = GetRequest::builder().root(ChunkRanges::chunks(10..20)).build(hash);
+    let request = GetRequest::builder()
+        .root(ChunkRanges::chunks(10..20))
+        .build(hash);
     // create progress channel - big enough to not block
     let (tx, rx) = mpsc::channel(1024 * 1024);
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
     // protect the downloaded data from being deleted
     let _tt3 = store3.tags().temp_tag(hash).await?;
-    let request = DownloadRequest::new(request, [addr1.node_id, addr2.node_id])
-        .progress_sender(tx);
+    let request = DownloadRequest::new(request, [addr1.node_id, addr2.node_id]).progress_sender(tx);
     let handle = d1.queue(request).await;
     handle.await?;
     let progress = drain(rx).await;
