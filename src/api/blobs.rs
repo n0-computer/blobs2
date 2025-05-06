@@ -5,9 +5,11 @@
 //!
 //! The main entry point is the [`Blobs`] struct.
 use std::{
+    collections::BTreeMap,
     future::{Future, IntoFuture},
     io,
     num::NonZeroU64,
+    ops::RangeFrom,
     path::{Path, PathBuf},
     pin::Pin,
 };
@@ -28,6 +30,7 @@ use irpc::{
     channel::{oneshot, spsc},
 };
 use n0_future::{Stream, StreamExt, future};
+use range_collections::{RangeSet2, range_set::RangeSetRange};
 use ref_cast::RefCast;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::trace;
@@ -39,7 +42,7 @@ use tracing::trace;
 pub use super::proto::{
     AddProgressItem, Bitfield, BlobDeleteRequest as DeleteOptions, BlobStatus,
     ExportBaoRequest as ExportBaoOptions, ExportMode, ExportPathRequest as ExportOptions,
-    ExportProgressItem, ExportRangesRequest as ExportChunksOptions,
+    ExportProgressItem, ExportRangesRequest as ExportRangesOptions,
     ImportBaoRequest as ImportBaoOptions, ImportMode, ObserveRequest as ObserveOptions,
 };
 use super::{
@@ -202,9 +205,23 @@ impl Blobs {
         AddProgress::new(self, self.client.server_streaming(inner, 32))
     }
 
-    pub fn export_ranges_with_opts(&self, options: ExportChunksOptions) -> ExportRangesProgress {
+    pub fn export_ranges(
+        &self,
+        hash: impl Into<Hash>,
+        ranges: impl Into<RangeSet2<u64>>,
+    ) -> ExportRangesProgress {
+        self.export_ranges_with_opts(ExportRangesOptions {
+            hash: hash.into(),
+            ranges: ranges.into(),
+        })
+    }
+
+    pub fn export_ranges_with_opts(&self, options: ExportRangesOptions) -> ExportRangesProgress {
         trace!("{options:?}");
-        ExportRangesProgress::new(self.client.server_streaming(options, 32))
+        ExportRangesProgress::new(
+            options.ranges.clone(),
+            self.client.server_streaming(options, 32),
+        )
     }
 
     pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoProgress {
@@ -762,16 +779,76 @@ impl BlobsListProgress {
 ///
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportRangesProgress {
+    ranges: RangeSet2<u64>,
     inner: future::Boxed<super::RpcResult<spsc::Receiver<ExportRangesItem>>>,
 }
 
 impl ExportRangesProgress {
     fn new(
+        ranges: RangeSet2<u64>,
         fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportRangesItem>>> + Send + 'static,
     ) -> Self {
         Self {
+            ranges,
             inner: Box::pin(fut),
         }
+    }
+}
+
+impl ExportRangesProgress {
+    /// A raw stream of [`ExportRangesItem`]s.
+    ///
+    /// Ranges will be rounded up to chunk boundaries. So if you request a
+    /// range of 0..100, you will get the entire first chunk, 0..1024.
+    ///
+    /// It is up to the caller to clip the ranges to the requested ranges.
+    pub async fn stream(self) -> impl Stream<Item = ExportRangesItem> {
+        Gen::new(|co| async move {
+            let mut rx = match self.inner.await {
+                Ok(rx) => rx,
+                Err(e) => {
+                    co.yield_(ExportRangesItem::Error(e.into())).await;
+                    return;
+                }
+            };
+            while let Ok(Some(item)) = rx.recv().await {
+                co.yield_(item).await;
+            }
+        })
+    }
+
+    /// Concatenate all the data into a single `Bytes`.
+    pub async fn concatenate(self) -> RequestResult<Vec<u8>> {
+        let mut rx = self.inner.await?;
+        let mut data = BTreeMap::new();
+        while let Some(item) = rx.recv().await? {
+            match item {
+                ExportRangesItem::Size(_) => {}
+                ExportRangesItem::Data(leaf) => {
+                    data.insert(leaf.offset, leaf.data);
+                }
+                ExportRangesItem::Error(cause) => return Err(cause.into()),
+            }
+        }
+        let mut res = Vec::new();
+        for range in self.ranges.iter() {
+            let (start, end) = match range {
+                RangeSetRange::RangeFrom(range) => (*range.start, u64::MAX),
+                RangeSetRange::Range(range) => (*range.start, *range.end),
+            };
+            for (offset, data) in data.iter() {
+                let cstart = *offset;
+                let cend = *offset + (data.len() as u64);
+                if cstart >= end || cend <= start {
+                    continue;
+                }
+                let start = start.max(cstart);
+                let end = end.min(cend);
+                let data = &data[(start - cstart) as usize..(end - cstart) as usize];
+                res.extend_from_slice(data);
+            }
+        }
+        Ok(res)
     }
 }
 

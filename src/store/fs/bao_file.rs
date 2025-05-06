@@ -562,9 +562,7 @@ impl ReadBytesAt for DataReader {
             BaoFileStorage::PartialMem(x) => x.data.read_bytes_at(offset, size),
             BaoFileStorage::Partial(x) => x.data.read_bytes_at(offset, size),
             BaoFileStorage::Complete(x) => x.data.read_bytes_at(offset, size),
-            BaoFileStorage::Poisoned => {
-                io::Result::Err(io::Error::other("poisoned storage"))
-            }
+            BaoFileStorage::Poisoned => io::Result::Err(io::Error::other("poisoned storage")),
         }
     }
 }
@@ -580,9 +578,7 @@ impl ReadAt for OutboardReader {
             BaoFileStorage::Complete(x) => x.outboard.read_at(offset, buf),
             BaoFileStorage::PartialMem(x) => x.outboard.read_at(offset, buf),
             BaoFileStorage::Partial(x) => x.outboard.read_at(offset, buf),
-            BaoFileStorage::Poisoned => {
-                io::Result::Err(io::Error::other("poisoned storage"))
-            }
+            BaoFileStorage::Poisoned => io::Result::Err(io::Error::other("poisoned storage")),
         }
     }
 }
@@ -684,9 +680,7 @@ impl BaoFileHandle {
             BaoFileStorage::Complete(mem) => Ok(mem.size()),
             BaoFileStorage::PartialMem(mem) => Ok(mem.current_size()),
             BaoFileStorage::Partial(file) => file.current_size(),
-            BaoFileStorage::Poisoned => {
-                io::Result::Err(io::Error::other("poisoned storage"))
-            }
+            BaoFileStorage::Poisoned => io::Result::Err(io::Error::other("poisoned storage")),
         }
     }
 
@@ -696,9 +690,7 @@ impl BaoFileHandle {
             BaoFileStorage::Complete(mem) => Ok(mem.bitfield()),
             BaoFileStorage::PartialMem(mem) => Ok(mem.bitfield().clone()),
             BaoFileStorage::Partial(file) => Ok(file.bitfield().clone()),
-            BaoFileStorage::Poisoned => {
-                io::Result::Err(io::Error::other("poisoned storage"))
-            }
+            BaoFileStorage::Poisoned => io::Result::Err(io::Error::other("poisoned storage")),
         }
     }
 

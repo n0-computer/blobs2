@@ -957,7 +957,8 @@ mod tests {
     fn range_spec_seq_roundtrip_impl(ranges: &[ChunkRanges]) -> Vec<ChunkRanges> {
         let spec = ChunkRangesSeq::from_ranges(ranges.iter().cloned());
         spec.iter_infinite()
-            .take(ranges.len()).cloned()
+            .take(ranges.len())
+            .cloned()
             .collect::<Vec<_>>()
     }
 
@@ -967,7 +968,8 @@ mod tests {
         let spec2: ChunkRangesSeq = postcard::from_bytes(&bytes).unwrap();
         spec2
             .iter_infinite()
-            .take(ranges.len()).cloned()
+            .take(ranges.len())
+            .cloned()
             .collect::<Vec<_>>()
     }
 

@@ -562,12 +562,7 @@ pub enum ExecuteError {
     MpscSend(#[from] tokio::sync::mpsc::error::SendError<BaoContentItem>),
 }
 
-use std::{
-    collections::BTreeMap,
-    future::Future,
-    num::NonZeroU64,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, future::Future, num::NonZeroU64, sync::Arc};
 
 use bao_tree::{
     ChunkNum, ChunkRanges,

@@ -110,6 +110,7 @@ use crate::{
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
     },
     util::{
+        ChunkRangesExt,
         channel::{mpsc, oneshot},
         temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
     },
@@ -939,10 +940,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
             }
         }
         Err(cause) => {
-            cmd.tx
-                .send(ExportRangesItem::Error(cause))
-                .await
-                .ok();
+            cmd.tx.send(ExportRangesItem::Error(cause)).await.ok();
         }
     }
 }
@@ -966,14 +964,10 @@ async fn export_ranges_impl(
             RangeSetRange::Range(range) => size.min(*range.start)..size.min(*range.end),
             RangeSetRange::RangeFrom(range) => size.min(*range.start)..size,
         };
-        let start_chunk = ChunkNum::full_chunks(range.start);
-        let end_chunk = ChunkNum::chunks(range.end);
-        if !bitfield
-            .ranges
-            .is_subset(&RangeSet2::from(start_chunk..end_chunk))
-        {
+        let requested = ChunkRanges::bytes(range.start..range.end);
+        if !bitfield.ranges.is_superset(&requested) {
             return Err(io::Error::other(format!(
-                "missing range: {start_chunk}..{end_chunk}"
+                "missing range: {requested:?}, present: {bitfield:?}",
             )));
         }
         let bs = 1024;

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io, path::PathBuf};
+use std::{collections::HashSet, io, ops::Range, path::PathBuf};
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
@@ -6,6 +6,7 @@ use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
 use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
 use tempfile::TempDir;
+use test_strategy::proptest;
 use testresult::TestResult;
 use tokio::{
     select,
@@ -16,7 +17,10 @@ use tracing_test::traced_test;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
-    api::{Store, blobs::Bitfield},
+    api::{
+        Store,
+        blobs::{Bitfield, ExportRangesOptions},
+    },
     downloader::{DownloadRequest, Downloader},
     get,
     hashseq::HashSeq,
@@ -141,13 +145,14 @@ async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
     let _tt1 = store1.tags().temp_tag(hash).await?;
     store1.import_bao_bytes(hash, ranges, bao).await?;
     // b has the data completely
-    let _tt2: crate::api::TempTag = store2.add_bytes(data).await?;
+    let _tt2: crate::api::TempTag = store2.add_bytes(data.clone()).await?;
 
     // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
     r3.endpoint().add_node_addr(addr1.clone())?;
     r3.endpoint().add_node_addr(addr2.clone())?;
+    let range = 10000..20000;
     let request = GetRequest::builder()
-        .root(ChunkRanges::chunks(10..20))
+        .root(ChunkRanges::bytes(range.clone()))
         .build(hash);
     // create progress channel - big enough to not block
     let (tx, rx) = mpsc::channel(1024 * 1024);
@@ -160,8 +165,12 @@ async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
     let progress = drain(rx).await;
     assert!(!progress.is_empty());
     let bitfield = store3.observe(hash).await?;
-    assert_eq!(bitfield.ranges, ChunkRanges::chunks(10..20));
-    println!("bitfield: {:?}", bitfield);
+    assert_eq!(bitfield.ranges, ChunkRanges::bytes(range.clone()));
+    let bytes = store3
+        .export_ranges(hash, range.clone())
+        .concatenate()
+        .await?;
+    assert_eq!(&bytes, &data[range.start as usize..range.end as usize]);
     // assert_eq!(store3.get_bytes(hash).await?, test_data(size));
     Ok(())
 }
@@ -616,6 +625,43 @@ async fn test_export_chunk() -> TestResult {
         println!("{:?}", c);
         let c = blobs.export_chunk(hash, 1000000).await;
         println!("{:?}", c);
+    }
+    Ok(())
+}
+
+async fn test_export_ranges(
+    store: &Store,
+    hash: Hash,
+    data: &[u8],
+    range: Range<u64>,
+) -> TestResult {
+    let actual = store
+        .export_ranges(hash, range.clone())
+        .concatenate()
+        .await?;
+    let start = (range.start as usize).min(data.len());
+    let end = (range.end as usize).min(data.len());
+    assert_eq!(&actual, &data[start..end]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_export_ranges_smoke() -> TestResult {
+    tracing_subscriber::fmt::try_init().ok();
+    let testdir = tempfile::tempdir()?;
+    let db_path = testdir.path().join("db");
+    let store = crate::store::fs::FsStore::load(&db_path).await?;
+    let sizes = INTERESTING_SIZES;
+    for size in sizes {
+        let data = test_data(size);
+        let tt = store.add_bytes(data.clone()).await?;
+        let hash = *tt.hash();
+        let size = size as u64;
+        test_export_ranges(&store, hash, &data, 0..size).await?;
+        test_export_ranges(&store, hash, &data, 0..(size / 2)).await?;
+        test_export_ranges(&store, hash, &data, (size / 2)..size).await?;
+        test_export_ranges(&store, hash, &data, (size / 2)..(size + size / 2)).await?;
+        test_export_ranges(&store, hash, &data, size * 4..size * 5).await?;
     }
     Ok(())
 }
