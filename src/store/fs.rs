@@ -1495,7 +1495,7 @@ pub mod tests {
         {
             let store = FsStore::load(&db_dir).await?;
             let data = test_data(100000);
-            let ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(32));
+            let ranges = ChunkRanges::chunks((16)..(32));
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             store
                 .import_bao_bytes(hash, ranges.clone(), bao.clone())
@@ -1601,7 +1601,7 @@ pub mod tests {
             1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
-        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        let just_size = ChunkRanges::last_chunk();
         {
             let store = FsStore::load(&db_dir).await?;
             for size in sizes {
@@ -1648,7 +1648,7 @@ pub mod tests {
             1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
         ];
         let db_dir = testdir.path().join("db");
-        let just_size = ChunkRanges::from(ChunkNum(u64::MAX)..);
+        let just_size = ChunkRanges::last_chunk();
         // stage 1, import just the last full chunk group to get a validated size
         {
             let store = FsStore::load(&db_dir).await?;
@@ -1703,7 +1703,7 @@ pub mod tests {
     }
 
     fn just_size() -> ChunkRanges {
-        ChunkRanges::from(ChunkNum(u64::MAX)..)
+        ChunkRanges::last_chunk()
     }
 
     #[tokio::test]

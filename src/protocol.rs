@@ -145,8 +145,7 @@
 //! # use bao_tree::{ChunkNum, ChunkRanges};
 //! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let ranges =
-//!     &ChunkRanges::from(..ChunkNum(10)) | &ChunkRanges::from(ChunkNum(100)..ChunkNum(110));
+//! let ranges = &ChunkRanges::chunks(..10) | &ChunkRanges::chunks(100..110);
 //! let spec = ChunkRangesSeq::from_ranges([ranges]);
 //! let request = GetRequest::new(hash, spec);
 //! ```
@@ -212,10 +211,10 @@
 //! # use iroh_blobs::protocol::{GetRequest, ChunkRangesSeq};
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
 //! let spec = ChunkRangesSeq::from_ranges([
-//!   ChunkRanges::empty(), // we don't need the collection itself
-//!   ChunkRanges::empty(), // we don't need the first child either
-//!   ChunkRanges::from(ChunkNum(1000000)..), // we need the second child from chunk 1000000 onwards
-//!   ChunkRanges::all(), // we need the third child completely
+//!     ChunkRanges::empty(),           // we don't need the collection itself
+//!     ChunkRanges::empty(),           // we don't need the first child either
+//!     ChunkRanges::chunks(1000000..), // we need the second child from chunk 1000000 onwards
+//!     ChunkRanges::all(),             // we need the third child completely
 //! ]);
 //! let request = GetRequest::new(hash, spec);
 //! ```
@@ -346,7 +345,7 @@ mod range_spec;
 pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield};
+use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, util::ChunkRangesExt};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 100;
@@ -477,7 +476,7 @@ impl GetRequest {
     pub fn last_chunk(hash: Hash) -> Self {
         Self {
             hash,
-            ranges: ChunkRangesSeq::from_ranges([ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+            ranges: ChunkRangesSeq::from_ranges([ChunkRanges::last_chunk()]),
         }
     }
 
@@ -489,7 +488,7 @@ impl GetRequest {
             hash,
             ranges: ChunkRangesSeq::from_ranges_infinite([
                 ChunkRanges::all(),
-                ChunkRanges::from(ChunkNum(u64::MAX)..),
+                ChunkRanges::last_chunk(),
             ]),
         }
     }
@@ -844,7 +843,7 @@ pub mod builder {
                     | ChunkRanges::from(ChunkNum(10)..ChunkNum(11)) // chunk at byte offset 1024*10
                     | ChunkRanges::from(ChunkNum(100)..ChunkNum(201)) // chunk range 100..=200
                     | ChunkRanges::from(ChunkNum(1024)..ChunkNum(1025)) // chunk 1024
-                    | ChunkRanges::from(ChunkNum(u64::MAX)..) // last chunk
+                    | ChunkRanges::last_chunk() // last chunk
             );
         }
 
@@ -890,7 +889,7 @@ pub mod builder {
                 request.ranges,
                 ChunkRangesSeq::from_ranges_infinite([
                     ChunkRanges::all(),
-                    ChunkRanges::from(..ChunkNum(1)) | ChunkRanges::from(ChunkNum(u64::MAX)..),
+                    ChunkRanges::from(..ChunkNum(1)) | ChunkRanges::last_chunk(),
                 ])
             );
         }

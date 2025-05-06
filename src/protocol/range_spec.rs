@@ -526,7 +526,7 @@ mod delta {
     use tokio::io::AsyncRead;
 
     use super::chunk_ranges_empty;
-    use crate::protocol::RangeSpec;
+    use crate::{protocol::RangeSpec, util::ChunkRangesExt};
 
     /// A chunk range specification for a sequence of blobs.
     ///
@@ -662,7 +662,7 @@ mod delta {
         /// A [`RangeSpecSeq`] getting the verified size for the first blob.
         pub fn verified_size() -> Self {
             Self(smallvec![
-                (0, ChunkRanges::from(ChunkNum(u64::MAX)..)),
+                (0, ChunkRanges::last_chunk()),
                 (0, ChunkRanges::empty())
             ])
         }
@@ -671,7 +671,7 @@ mod delta {
         pub fn verified_child_sizes() -> Self {
             Self(smallvec![
                 (0, ChunkRanges::all()),
-                (1, ChunkRanges::from(ChunkNum(u64::MAX)..))
+                (1, ChunkRanges::last_chunk())
             ])
         }
 
@@ -941,6 +941,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::util::ChunkRangesExt;
 
     fn ranges(value_range: Range<u64>) -> impl Strategy<Value = ChunkRanges> {
         prop::collection::vec((value_range.clone(), value_range), 0..16).prop_map(|v| {
@@ -948,7 +949,7 @@ mod tests {
             for (a, b) in v {
                 let start = a.min(b);
                 let end = a.max(b);
-                res |= ChunkRanges::from(ChunkNum(start)..ChunkNum(end));
+                res |= ChunkRanges::chunks(start..end);
             }
             res
         })
@@ -975,7 +976,7 @@ mod tests {
 
     fn mk_case(case: Vec<Range<u64>>) -> Vec<ChunkRanges> {
         case.iter()
-            .map(|x| ChunkRanges::from(ChunkNum(x.start)..ChunkNum(x.end)))
+            .map(|x| ChunkRanges::chunks(x.start..x.end))
             .collect::<Vec<_>>()
     }
 
@@ -992,21 +993,21 @@ mod tests {
                 ",
             ),
             (
-                RangeSpec::new(ChunkRanges::from(ChunkNum(64)..)),
+                RangeSpec::new(ChunkRanges::chunks(64..)),
                 r"
                     01 # length prefix - 1 element
                     40 # span width - 64. everything starting from 64 is included
                 ",
             ),
             (
-                RangeSpec::new(ChunkRanges::from(ChunkNum(10000)..)),
+                RangeSpec::new(ChunkRanges::chunks(10000..)),
                 r"
                     01 # length prefix - 1 element
                     904E # span width - 10000, 904E in postcard varint encoding. everything starting from 10000 is included
                 ",
             ),
             (
-                RangeSpec::new(ChunkRanges::from(..ChunkNum(64))),
+                RangeSpec::new(ChunkRanges::chunks(..(64))),
                 r"
                     02 # length prefix - 2 elements
                     00 # span width - 0. everything stating from 0 is included
@@ -1014,10 +1015,7 @@ mod tests {
                 ",
             ),
             (
-                RangeSpec::new(
-                    &ChunkRanges::from(ChunkNum(1)..ChunkNum(3))
-                        | &ChunkRanges::from(ChunkNum(9)..ChunkNum(13)),
-                ),
+                RangeSpec::new(&ChunkRanges::chunks((1)..(3)) | &ChunkRanges::chunks((9)..(13))),
                 r"
                     04 # length prefix - 4 elements
                     01 # span width - 1
@@ -1048,8 +1046,8 @@ mod tests {
             ),
             (
                 ChunkRangesSeq::from_ranges([
-                    ChunkRanges::from(ChunkNum(1)..ChunkNum(3)),
-                    ChunkRanges::from(ChunkNum(7)..ChunkNum(13)),
+                    ChunkRanges::chunks((1)..(3)),
+                    ChunkRanges::chunks((7)..(13)),
                 ]),
                 r"
                     03 # 3 tuples in total
@@ -1069,7 +1067,7 @@ mod tests {
                     ChunkRanges::empty(),
                     ChunkRanges::empty(),
                     ChunkRanges::empty(),
-                    ChunkRanges::from(ChunkNum(7)..),
+                    ChunkRanges::chunks(7..),
                     ChunkRanges::all(),
                 ]),
                 r"

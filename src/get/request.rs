@@ -26,6 +26,7 @@ use crate::{
     Hash, HashAndFormat,
     hashseq::HashSeq,
     protocol::{ChunkRangesSeq, GetRequest},
+    util::ChunkRangesExt,
 };
 
 /// Result of a [`get_blob`] request.
@@ -154,7 +155,7 @@ async fn get_blob_impl(
 pub async fn get_unverified_size(connection: &Connection, hash: &Hash) -> GetResult<(u64, Stats)> {
     let request = GetRequest::new(
         *hash,
-        ChunkRangesSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+        ChunkRangesSeq::from_ranges(vec![ChunkRanges::last_chunk()]),
     );
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -175,7 +176,7 @@ pub async fn get_verified_size(connection: &Connection, hash: &Hash) -> GetResul
     tracing::trace!("Getting verified size of {}", hash.to_hex());
     let request = GetRequest::new(
         *hash,
-        ChunkRangesSeq::from_ranges(vec![ChunkRanges::from(ChunkNum(u64::MAX)..)]),
+        ChunkRangesSeq::from_ranges(vec![ChunkRanges::last_chunk()]),
     );
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
@@ -224,10 +225,7 @@ pub async fn get_hash_seq_and_sizes(
     tracing::debug!("Getting hash seq and children sizes of {}", content);
     let request = GetRequest::new(
         *hash,
-        ChunkRangesSeq::from_ranges_infinite([
-            ChunkRanges::all(),
-            ChunkRanges::from(ChunkNum(u64::MAX)..),
-        ]),
+        ChunkRangesSeq::from_ranges_infinite([ChunkRanges::all(), ChunkRanges::last_chunk()]),
     );
     let at_start = fsm::start(connection.clone(), request);
     let at_connected = at_start.next().await?;
