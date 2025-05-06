@@ -110,7 +110,6 @@ async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
     // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
     r3.endpoint().add_node_addr(addr1.clone())?;
     r3.endpoint().add_node_addr(addr2.clone())?;
-    error!("SETUP DONE");
     // create progress channel - big enough to not block
     let (tx, rx) = mpsc::channel(1024 * 1024);
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
@@ -123,6 +122,46 @@ async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
     let progress = drain(rx).await;
     assert!(!progress.is_empty());
     assert_eq!(store3.get_bytes(hash).await?, test_data(size));
+    Ok(())
+}
+
+#[tokio::test]
+async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
+    let testdir = tempfile::tempdir()?;
+    let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
+    let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
+    let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+    let addr1 = r1.endpoint().node_addr().await?;
+    let addr2 = r2.endpoint().node_addr().await?;
+    let size = 1024 * 1024 * 8 + 1;
+    let data = test_data(size);
+    // a has the data just partially
+    let ranges = ChunkRanges::chunks(..15);
+    let (hash, bao) = create_n0_bao(&data, &ranges)?;
+    let _tt1 = store1.tags().temp_tag(hash).await?;
+    store1.import_bao_bytes(hash, ranges, bao).await?;
+    // b has the data completely
+    let _tt2: crate::api::TempTag = store2.add_bytes(data).await?;
+
+    // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
+    r3.endpoint().add_node_addr(addr1.clone())?;
+    r3.endpoint().add_node_addr(addr2.clone())?;
+    let request = GetRequest::builder().root(ChunkRanges::chunks(10..20)).build(hash);
+    // create progress channel - big enough to not block
+    let (tx, rx) = mpsc::channel(1024 * 1024);
+    let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());
+    // protect the downloaded data from being deleted
+    let _tt3 = store3.tags().temp_tag(hash).await?;
+    let request = DownloadRequest::new(request, [addr1.node_id, addr2.node_id])
+        .progress_sender(tx);
+    let handle = d1.queue(request).await;
+    handle.await?;
+    let progress = drain(rx).await;
+    assert!(!progress.is_empty());
+    let bitfield = store3.observe(hash).await?;
+    assert_eq!(bitfield.ranges, ChunkRanges::chunks(10..20));
+    println!("bitfield: {:?}", bitfield);
+    // assert_eq!(store3.get_bytes(hash).await?, test_data(size));
     Ok(())
 }
 
@@ -150,7 +189,6 @@ async fn three_nodes_hash_seq_downloader_switch() -> TestResult<()> {
     // tell ep3 about the addr of ep1 and ep2, so we don't need to rely on node discovery
     r3.endpoint().add_node_addr(addr1.clone())?;
     r3.endpoint().add_node_addr(addr2.clone())?;
-    error!("SETUP DONE");
     // create progress channel - big enough to not block
     let (tx, rx) = mpsc::channel(1024 * 1024);
     let d1 = Downloader::new(store3.clone(), r3.endpoint().clone());

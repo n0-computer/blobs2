@@ -75,7 +75,7 @@ impl Getter for IoGetter {
     ) -> GetStartFut<Self::NeedsConn> {
         let store = self.store.clone();
         Box::pin(async move {
-            let local = store.remote().local(kind).await.map_err(|e| {
+            let local = store.remote().local_for_request(kind).await.map_err(|e| {
                 error!("failed to get local info: {}", e);
                 FailureAction::AbortRequest(e)
             })?;

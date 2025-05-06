@@ -898,10 +898,13 @@ pub mod builder {
 
         #[test]
         fn get_many_request_builder() {
+            let hash1 = [0; 32];
+            let hash2 = [1; 32];
+            let hash3 = [2; 32];
             let request = GetManyRequest::builder()
-                .hash([0; 32], ChunkRanges::all())
-                .hash([1; 32], ChunkRanges::empty()) // will be ignored!
-                .hash([2; 32], ChunkRanges::bytes(0..100))
+                .hash(hash1, ChunkRanges::all())
+                .hash(hash2, ChunkRanges::empty()) // will be ignored!
+                .hash(hash3, ChunkRanges::bytes(0..100))
                 .build();
             assert_eq!(
                 request.hashes,

@@ -150,12 +150,9 @@ impl<G: Getter<Connection = D::Connection>, D: DialerT> Service<G, D> {
     #[track_caller]
     fn check_provider_map_prunning(&self) {
         for hash in self.providers.hash_node.keys() {
-            let as_raw = DownloadKind::from(HashAndFormat::raw(*hash));
-            let as_hash_seq = DownloadKind::from(HashAndFormat::hash_seq(*hash));
             assert!(
                 self.queue.contains_hash(*hash)
-                    || self.active_requests.contains_key(&as_raw)
-                    || self.active_requests.contains_key(&as_hash_seq),
+                    || self.active_requests.iter().find(|(key, _)| key.0.hash == *hash).is_some(),
                 "all hashes in the provider map are in the queue or active"
             )
         }

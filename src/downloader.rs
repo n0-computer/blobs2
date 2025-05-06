@@ -69,7 +69,7 @@ mod test;
 
 /// Requirements for a connection
 pub trait DownloaderConnection: Clone + Send + 'static {}
-impl<T> DownloaderConnection for T where T: Clone + Send + 'static {}
+impl<T> DownloaderConnection for T where T:  Clone + Send + 'static {}
 
 use self::progress::{BroadcastProgressSender, ProgressSubscriber, ProgressTracker};
 
@@ -255,6 +255,12 @@ impl DownloadRequest {
 /// Requests with the same key will be grouped together.
 #[derive(Debug, Eq, PartialEq, Hash, Clone, derive_more::From, derive_more::Into)]
 pub struct DownloadKind(Arc<GetRequest>);
+
+impl From<GetRequest> for DownloadKind {
+    fn from(value: GetRequest) -> Self {
+        Self(Arc::new(value))
+    }
+}
 
 impl From<DownloadKind> for HashAndFormat {
     fn from(value: DownloadKind) -> Self {
