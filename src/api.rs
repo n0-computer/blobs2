@@ -13,6 +13,7 @@ use tags::Tags;
 pub mod blobs;
 pub mod proto;
 pub mod remote;
+pub mod swarm;
 pub mod tags;
 pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 
@@ -200,6 +201,7 @@ impl Store {
         blobs::Blobs::ref_from_sender(&self.client)
     }
 
+    /// API for getting blobs from a *single* remote node.
     pub fn remote(&self) -> &remote::Remote {
         remote::Remote::ref_from_sender(&self.client)
     }

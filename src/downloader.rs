@@ -47,6 +47,7 @@ use hashlink::LinkedHashSet;
 use iroh::{Endpoint, NodeId, endpoint};
 use iroh_metrics::inc;
 use n0_future::{Stream, stream::StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -306,7 +307,7 @@ type ExternalDownloadResult = Result<Stats, DownloadError>;
 type InternalDownloadResult = Result<Stats, FailureAction>;
 
 /// Error returned when a download could not be completed.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 pub enum DownloadError {
     /// Failed to download from any provider
     #[error("Failed to complete download")]
