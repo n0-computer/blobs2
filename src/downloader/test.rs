@@ -126,15 +126,15 @@ async fn cancellation() {
     let req = DownloadRequest::new(kind_1.clone(), vec![peer]);
     let handle_a = downloader.queue(req.clone()).await;
     let handle_b = downloader.queue(req).await;
-    downloader.cancel(handle_a).await;
+    drop(handle_a);
 
     // create a request with two intents and cancel them both
     let kind_2 = HashAndFormat::raw(Hash::new([1u8; 32]));
     let req = DownloadRequest::new(kind_2, vec![peer]);
     let handle_c = downloader.queue(req.clone()).await;
     let handle_d = downloader.queue(req).await;
-    downloader.cancel(handle_c).await;
-    downloader.cancel(handle_d).await;
+    drop(handle_c);
+    drop(handle_d);
 
     // wait for the download result to be reported, a was cancelled but b should continue
     handle_b.await.expect("should report success");

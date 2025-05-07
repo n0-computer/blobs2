@@ -49,7 +49,7 @@ use iroh_metrics::inc;
 use n0_future::{Stream, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc::{self, OwnedPermit}, oneshot},
     task::JoinSet,
 };
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
@@ -332,6 +332,20 @@ pub struct DownloadHandle {
     kind: DownloadKind,
     /// Receiver to retrieve the return value of this download.
     receiver: oneshot::Receiver<ExternalDownloadResult>,
+    /// Permit to cancel the download from drop.
+    cancel_permit: Option<OwnedPermit<Message>>,
+}
+
+impl Drop for DownloadHandle {
+    fn drop(&mut self) {
+        if let Some(permit) = self.cancel_permit.take() {
+            // cancel the download
+            permit.send(Message::CancelIntent {
+                id: self.id,
+                kind: self.kind.clone(),
+            });
+        }
+    }
 }
 
 impl Future for DownloadHandle {
@@ -404,10 +418,12 @@ impl Downloader {
         let kind = request.kind.clone();
         let intent_id = IntentId(self.next_id.fetch_add(1, Ordering::SeqCst));
         let (sender, receiver) = oneshot::channel();
+        let cancel_permit = self.msg_tx.clone().reserve_owned().await.ok();
         let handle = DownloadHandle {
             id: intent_id,
             kind,
             receiver,
+            cancel_permit,
         };
         let msg = Message::Queue {
             on_finish: sender,
@@ -421,21 +437,6 @@ impl Downloader {
             debug!(?msg, "download not sent");
         }
         handle
-    }
-
-    /// Cancel a download.
-    // NOTE: receiving the handle ensures an intent can't be cancelled twice
-    pub async fn cancel(&self, handle: DownloadHandle) {
-        let DownloadHandle {
-            id,
-            kind,
-            receiver: _,
-        } = handle;
-        let msg = Message::CancelIntent { id, kind };
-        if let Err(send_err) = self.msg_tx.send(msg).await {
-            let msg = send_err.0;
-            debug!(?msg, "cancel not sent");
-        }
     }
 
     /// Declare that certain nodes can be used to download a hash.

@@ -165,13 +165,13 @@ impl PartialFileStorage {
         let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
             Ok(bitfield) => bitfield,
             Err(cause) => {
-                error!(
+                trace!(
                     "failed to read bitfield for {} at {}: {:?}",
                     hash.to_hex(),
                     bitfield_path.display(),
                     cause
                 );
-                error!("reconstructing bitfield from outboard");
+                trace!("reconstructing bitfield from outboard");
                 let size = read_size(&sizes).ok().unwrap_or_default();
                 let outboard = PreOrderOutboard {
                     data: &outboard,
