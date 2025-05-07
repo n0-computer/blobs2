@@ -351,7 +351,8 @@ impl Progress for OutboardProgress {
         // }
         self.0
             .try_send(AddProgressItem::OutboardProgress(offset.to_bytes()))
-            .await
+            .await?;
+        Ok(())
     }
 }
 

@@ -76,7 +76,7 @@ impl ChunkRangesExt for ChunkRanges {
     }
 
     /// Create a range of chunks from u64 chunk bounds.
-    /// 
+    ///
     /// This is equivalent but more convenient than using the ChunkNum newtype.
     fn chunks(ranges: impl RangeBounds<u64>) -> Self {
         bounds_from_range(ranges, ChunkNum)
