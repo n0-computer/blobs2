@@ -196,7 +196,7 @@ mod nodelta {
             self.0
                 .iter()
                 .next_back()
-                .map(|(k, v)| !v.is_empty())
+                .map(|(_, v)| !v.is_empty())
                 .unwrap_or_default()
         }
 
@@ -520,7 +520,7 @@ impl fmt::Debug for RangeSpec {
 mod delta {
     use std::{fmt, io};
 
-    use bao_tree::{ChunkNum, ChunkRanges};
+    use bao_tree::ChunkRanges;
     use serde::{Deserialize, Serialize};
     use smallvec::{SmallVec, smallvec};
     use tokio::io::AsyncRead;
@@ -839,10 +839,6 @@ mod delta {
     impl<'a> NonEmptyRequestRangeSpecIter<'a> {
         fn new(inner: RequestRangeSpecIterInfinite<'a>) -> Self {
             Self { inner, count: 0 }
-        }
-
-        pub(crate) fn offset(&self) -> u64 {
-            self.count
         }
 
         pub fn is_at_end(&self) -> bool {
@@ -1164,7 +1160,7 @@ mod tests {
         let max = ranges.len() + 1;
         let mut a_iter = a.iter_non_empty_infinite();
         let mut b_iter = b.iter_non_empty_infinite();
-        for i in 0..max {
+        for _ in 0..max {
             let a = a_iter.next();
             let b = b_iter.next();
             assert_eq!(a_iter.is_at_end(), b_iter.is_at_end());
@@ -1172,7 +1168,7 @@ mod tests {
         }
         let mut a_iter = a.iter_infinite();
         let mut b_iter = b.iter_infinite();
-        for i in 0..max {
+        for _ in 0..max {
             let a = a_iter.next();
             let b = b_iter.next();
             assert_eq!(a_iter.is_at_end(), b_iter.is_at_end());
@@ -1180,7 +1176,7 @@ mod tests {
         }
         let mut a_iter = a.iter();
         let mut b_iter = b.iter();
-        for i in 0..max {
+        for _ in 0..max {
             let a = a_iter.next();
             let b = b_iter.next();
             assert_eq!(a, b);
