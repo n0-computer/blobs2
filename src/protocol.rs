@@ -114,7 +114,7 @@
 //! ```rust
 //! # use iroh_blobs::protocol::GetRequest;
 //! # let hash: iroh_blobs::Hash = [0; 32].into();
-//! let request = GetRequest::single(hash);
+//! let request = GetRequest::blob(hash);
 //! ```
 //!
 //! ### Ranges of blobs
@@ -282,7 +282,7 @@
 //! ```rust
 //! # use iroh_blobs::protocol::{GetRequest, ChunkRanges, ChunkRangesSeq};
 //! # let child_hash: iroh_blobs::Hash = [0; 32].into();
-//! let request = GetRequest::single(child_hash);
+//! let request = GetRequest::blob(child_hash);
 //! ```
 //!
 //! ### Why RangeSpec and RangeSpecSeq?
