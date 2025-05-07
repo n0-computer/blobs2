@@ -20,7 +20,7 @@ use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::spsc;
 use tokio::sync::watch;
-use tracing::{Span, trace, warn};
+use tracing::{Span, error, trace};
 
 use super::{
     BaoFilePart,
@@ -148,6 +148,11 @@ impl PartialFileStorage {
         self.outboard.sync_all()?;
         self.sizes.sync_all()?;
         // only write the bitfield if the syncs were successful
+        trace!(
+            "writing bitfield {:?} to {}",
+            self.bitfield,
+            bitfield_path.display()
+        );
         write_checksummed(bitfield_path, &self.bitfield)?;
         Ok(())
     }
@@ -160,13 +165,13 @@ impl PartialFileStorage {
         let bitfield = match read_checksummed_and_truncate(&bitfield_path) {
             Ok(bitfield) => bitfield,
             Err(cause) => {
-                warn!(
+                error!(
                     "failed to read bitfield for {} at {}: {:?}",
                     hash.to_hex(),
                     bitfield_path.display(),
                     cause
                 );
-                trace!("reconstructing bitfield from outboard");
+                error!("reconstructing bitfield from outboard");
                 let size = read_size(&sizes).ok().unwrap_or_default();
                 let outboard = PreOrderOutboard {
                     data: &outboard,
@@ -180,7 +185,7 @@ impl PartialFileStorage {
                 {
                     ranges |= ChunkRanges::from(range);
                 }
-                trace!("reconstructed range is {:?}", ranges);
+                error!("reconstructed range is {:?}", ranges);
                 Bitfield::new(ranges, size)
             }
         };
@@ -302,6 +307,12 @@ pub(crate) enum BaoFileStorage {
     /// Writing to this is a no-op, since it is already complete.
     Complete(CompleteStorage),
     /// We will get into that state if there is an io error in the middle of an operation
+    ///
+    /// Also, when the handle is dropped we will poison the storage, so poisoned
+    /// can be seen when the handle is revived during the drop.
+    ///
+    /// BaoFileHandleWeak::upgrade() will return None if the storage is poisoned,
+    /// treat it as dead.
     Poisoned,
 }
 
@@ -498,12 +509,17 @@ pub struct BaoFileHandleWeak(Weak<BaoFileHandleInner>);
 impl BaoFileHandleWeak {
     /// Upgrade to a strong reference if possible.
     pub fn upgrade(&self) -> Option<BaoFileHandle> {
-        self.0.upgrade().map(BaoFileHandle)
+        let inner = self.0.upgrade()?;
+        if let &BaoFileStorage::Poisoned = inner.storage.borrow().deref() {
+            trace!("poisoned storage, cannot upgrade");
+            return None;
+        };
+        Some(BaoFileHandle(inner))
     }
 
-    /// True if the handle is still live (has strong references)
-    pub fn is_live(&self) -> bool {
-        self.0.strong_count() > 0
+    /// True if the handle is definitely dead.
+    pub fn is_dead(&self) -> bool {
+        self.0.strong_count() == 0
     }
 }
 
@@ -529,9 +545,22 @@ impl fmt::Debug for BaoFileHandleInner {
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
-impl Drop for BaoFileHandleInner {
+impl Drop for BaoFileHandle {
     fn drop(&mut self) {
-        if let BaoFileStorage::Partial(fs) = self.storage.borrow().deref() {
+        self.0.storage.send_if_modified(|guard| {
+            if Arc::strong_count(&self.0) > 1 {
+                return false;
+            }
+            // there is the possibility that somebody else will increase the strong count
+            // here. there is nothing we can do about it, but they won't be able to
+            // access the internals of the handle because we have the lock.
+            //
+            // We poison the storage. A poisoned storage is considered dead and will
+            // have to be recreated, but only *after* we are done with persisting
+            // the bitfield.
+            let BaoFileStorage::Partial(fs) = guard.take() else {
+                return false;
+            };
             let options = self.options.as_ref().unwrap();
             let path = options.path.bitfield_path(&self.hash);
             trace!(
@@ -540,16 +569,53 @@ impl Drop for BaoFileHandleInner {
                 path.display()
             );
             if let Err(cause) = fs.sync_all(&path) {
-                warn!(
+                error!(
                     "failed to write bitfield for {} at {}: {:?}",
                     self.hash,
                     path.display(),
                     cause
                 );
             }
-        }
+            false
+        });
     }
 }
+
+// impl Drop for BaoFileHandleInner {
+//     fn drop(&mut self) {
+//         let id: u16 = rand::random();
+//         error!(
+//             "{id} dropping BaoFileHandleInner for hash {}",
+//             self.hash.to_hex()
+//         );
+//         if let BaoFileStorage::Partial(fs) = self.storage.borrow().deref() {
+//             let options = self.options.as_ref().unwrap();
+//             let path = options.path.bitfield_path(&self.hash);
+//             error!(
+//                 "{id} writing bitfield for hash {} to {}",
+//                 self.hash,
+//                 path.display()
+//             );
+//             if let Err(cause) = fs.sync_all(&path) {
+//                 error!(
+//                     "{id} failed to write bitfield for {} at {}: {:?}",
+//                     self.hash,
+//                     path.display(),
+//                     cause
+//                 );
+//             }
+//             error!(
+//                 "{id} wrote bitfield for hash {} to {}",
+//                 self.hash,
+//                 path.display()
+//             );
+//         }
+//         error!(
+//             "{id} done dropping BaoFileHandleInner for hash {}",
+//             self.hash.to_hex()
+//         );
+//     }
+// }
 
 /// A reader for a bao file, reading just the data.
 #[derive(Debug)]

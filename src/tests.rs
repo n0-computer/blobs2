@@ -6,7 +6,6 @@ use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
 use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
 use tempfile::TempDir;
-use test_strategy::proptest;
 use testresult::TestResult;
 use tokio::{
     select,
@@ -17,10 +16,7 @@ use tracing_test::traced_test;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
-    api::{
-        Store,
-        blobs::{Bitfield, ExportRangesOptions},
-    },
+    api::{Store, blobs::Bitfield},
     downloader::{DownloadRequest, Downloader},
     get,
     hashseq::HashSeq,
@@ -93,8 +89,8 @@ async fn two_nodes_blobs_downloader_progress() -> TestResult<()> {
 }
 
 #[tokio::test]
-#[traced_test]
 async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
+    // tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
     let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -131,6 +127,7 @@ async fn three_nodes_blobs_downloader_switch() -> TestResult<()> {
 
 #[tokio::test]
 async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
+    // tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
     let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -176,8 +173,7 @@ async fn three_nodes_blobs_downloader_range_switch() -> TestResult<()> {
 }
 
 #[tokio::test]
-#[traced_test]
-async fn three_nodes_hash_seq_downloader_switch() -> TestResult<()> {
+async fn threee_nodes_hash_seq_downloader_switch() -> TestResult<()> {
     let testdir = tempfile::tempdir()?;
     let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
     let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -432,11 +428,11 @@ async fn check_presence(store: &Store, sizes: &[usize]) -> TestResult<()> {
     Ok(())
 }
 
-async fn node_test_setup(db_path: PathBuf) -> TestResult<(Router, FsStore, PathBuf)> {
+pub async fn node_test_setup(db_path: PathBuf) -> TestResult<(Router, FsStore, PathBuf)> {
     node_test_setup_with_events(db_path, None).await
 }
 
-async fn node_test_setup_with_events(
+pub async fn node_test_setup_with_events(
     db_path: PathBuf,
     events: Option<mpsc::Sender<Event>>,
 ) -> TestResult<(Router, FsStore, PathBuf)> {

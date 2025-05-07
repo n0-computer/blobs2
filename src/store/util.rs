@@ -20,7 +20,6 @@ use range_collections::{RangeSetRef, range_set::RangeSetEntry};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub use sparse_mem_file::SparseMemFile;
-use tracing::trace;
 pub mod observer;
 mod size_info;
 pub use size_info::SizeInfo;
@@ -215,6 +214,7 @@ pub fn write_checksummed<P: AsRef<Path>, T: Serialize>(path: P, data: &T) -> io:
     // Write all at once
     let mut file = File::create(&path)?;
     file.write_all(&buffer)?;
+    file.sync_all()?;
 
     Ok(())
 }
@@ -230,7 +230,6 @@ pub fn read_checksummed_and_truncate<T: DeserializeOwned>(path: impl AsRef<Path>
     file.read_to_end(&mut buffer)?;
     file.set_len(0)?;
     file.sync_all()?;
-    trace!("{} {}", path.display(), hex::encode(&buffer));
 
     if buffer.is_empty() {
         return Err(io::Error::new(
