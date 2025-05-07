@@ -91,7 +91,7 @@ use irpc::channel::spsc;
 use meta::{Snapshot, list_blobs};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
-use range_collections::{RangeSet2, range_set::RangeSetRange};
+use range_collections::range_set::RangeSetRange;
 use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{error, instrument, trace};
 
@@ -308,17 +308,19 @@ impl HashContext {
         if hash == Hash::EMPTY {
             return Ok(self.ctx.empty.clone());
         }
+        // let id = symbol_string(&(Arc::as_ptr(&self.slot.0) as usize).to_le_bytes());
         let res = self
             .slot
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.map_err(io::Error::other)?;
-                match res {
+                let res = match res {
                     Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
                     None => Ok(BaoFileHandle::new_partial_mem(
                         hash,
                         self.ctx.options.clone(),
                     )),
-                }
+                };
+                res
             })
             .await
             .map_err(api::Error::from);
@@ -375,7 +377,7 @@ pub(crate) struct Slot(Arc<tokio::sync::Mutex<Option<BaoFileHandleWeak>>>);
 impl Slot {
     pub async fn is_live(&self) -> bool {
         let slot = self.0.lock().await;
-        slot.as_ref().map(|weak| weak.is_live()).unwrap_or(false)
+        slot.as_ref().map(|weak| !weak.is_dead()).unwrap_or(false)
     }
 
     /// Get the handle if it exists and is still alive, otherwise load it from the database.
@@ -450,7 +452,7 @@ impl Actor {
             if let Some(slot) = self.handles.remove(&hash) {
                 // do a quick check if the handle has become alive in the meantime, and reinsert it
                 let guard = slot.0.lock().await;
-                let is_live = guard.as_ref().map(|x| x.is_live()).unwrap_or_default();
+                let is_live = guard.as_ref().map(|x| !x.is_dead()).unwrap_or_default();
                 if is_live {
                     drop(guard);
                     self.handles.insert(hash, slot);
