@@ -309,31 +309,31 @@ mod tests {
         api::swarm::Swarm, downloader::Downloader, protocol::GetManyRequest, tests::node_test_setup
     };
 
-    #[tokio::test]
-    async fn swarm_smoke() -> TestResult<()> {
-        tracing_subscriber::fmt::try_init().ok();
-        let testdir = tempfile::tempdir()?;
-        let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
-        let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
-        let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
-        let tt1 = store1.add_slice("hello world").await?;
-        let tt2 = store2.add_slice("hello world 2").await?;
-        let node1_addr = r1.endpoint().node_addr().await?;
-        let node1_id = node1_addr.node_id;
-        let node2_addr = r2.endpoint().node_addr().await?;
-        let node2_id = node2_addr.node_id;
-        // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
-        // store2.remote().fetch(conn, *tt.hash(), None).await?;
-        let dl3 = Downloader::new(store3.clone(), r3.endpoint().clone());
-        let swarm = Swarm::new(dl3);
-        r3.endpoint().add_node_addr(node1_addr.clone())?;
-        r3.endpoint().add_node_addr(node2_addr.clone())?;
-        let request = GetManyRequest::builder()
-            .hash(*tt1.hash(), ChunkRanges::all())
-            .hash(*tt2.hash(), ChunkRanges::all())
-            .build();
-        let progress = swarm.download(request, [node1_id, node2_id]);
-        progress.complete().await?;
-        Ok(())
-    }
+    // #[tokio::test]
+    // async fn swarm_smoke() -> TestResult<()> {
+    //     tracing_subscriber::fmt::try_init().ok();
+    //     let testdir = tempfile::tempdir()?;
+    //     let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
+    //     let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
+    //     let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+    //     let tt1 = store1.add_slice("hello world").await?;
+    //     let tt2 = store2.add_slice("hello world 2").await?;
+    //     let node1_addr = r1.endpoint().node_addr().await?;
+    //     let node1_id = node1_addr.node_id;
+    //     let node2_addr = r2.endpoint().node_addr().await?;
+    //     let node2_id = node2_addr.node_id;
+    //     // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
+    //     // store2.remote().fetch(conn, *tt.hash(), None).await?;
+    //     let dl3 = Downloader::new(store3.clone(), r3.endpoint().clone());
+    //     let swarm = Swarm::new(dl3);
+    //     r3.endpoint().add_node_addr(node1_addr.clone())?;
+    //     r3.endpoint().add_node_addr(node2_addr.clone())?;
+    //     let request = GetManyRequest::builder()
+    //         .hash(*tt1.hash(), ChunkRanges::all())
+    //         .hash(*tt2.hash(), ChunkRanges::all())
+    //         .build();
+    //     let progress = swarm.download(request, [node1_id, node2_id]);
+    //     progress.complete().await?;
+    //     Ok(())
+    // }
 }

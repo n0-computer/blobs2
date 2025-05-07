@@ -223,19 +223,19 @@ struct NonRawLocalInfo {
     bitfields: BTreeMap<Hash, Bitfield>,
 }
 
-fn iter_without_gaps<'a, T: Copy + 'a>(
-    iter: impl IntoIterator<Item = &'a (u64, T)> + 'a,
-) -> impl Iterator<Item = (u64, Option<T>)> + 'a {
-    let mut prev = 0;
-    iter.into_iter().flat_map(move |(i, hash)| {
-        let start = prev + 1;
-        let curr = *i;
-        prev = *i;
-        (start..curr)
-            .map(|i| (i, None))
-            .chain(std::iter::once((curr, Some(*hash))))
-    })
-}
+// fn iter_without_gaps<'a, T: Copy + 'a>(
+//     iter: impl IntoIterator<Item = &'a (u64, T)> + 'a,
+// ) -> impl Iterator<Item = (u64, Option<T>)> + 'a {
+//     let mut prev = 0;
+//     iter.into_iter().flat_map(move |(i, hash)| {
+//         let start = prev + 1;
+//         let curr = *i;
+//         prev = *i;
+//         (start..curr)
+//             .map(|i| (i, None))
+//             .chain(std::iter::once((curr, Some(*hash))))
+//     })
+// }
 
 impl Remote {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
@@ -966,7 +966,6 @@ mod tests {
     #[tokio::test]
     async fn test_local_info_complex_request() -> TestResult<()> {
         let sizes = INTERESTING_SIZES;
-        let total_size = sizes.iter().map(|x| *x as u64).sum::<u64>();
         let hash_seq_size = (sizes.len() as u64) * 32;
         let td = tempfile::tempdir()?;
         let store = FsStore::load(td.path().join("blobs.db")).await?;
