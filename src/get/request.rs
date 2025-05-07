@@ -121,7 +121,7 @@ async fn get_blob_impl(
     hash: &Hash,
     co: &Co<GetBlobItem>,
 ) -> GetResult<()> {
-    let request = GetRequest::single(*hash);
+    let request = GetRequest::blob(*hash);
     let request = fsm::start(connection.clone(), request);
     let connected = request.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
