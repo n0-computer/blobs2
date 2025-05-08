@@ -152,7 +152,7 @@ mod nodelta {
             }
         }
 
-        pub fn is_raw(&self) -> bool {
+        pub fn is_blob(&self) -> bool {
             match self.as_single() {
                 Some((0, _)) => true,
                 _ => false,

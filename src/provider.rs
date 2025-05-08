@@ -528,7 +528,7 @@ pub async fn handle_push(
             .import_bao_quinn(hash, root_ranges.clone(), &mut reader.inner)
             .await?;
     }
-    if request.ranges.is_raw() {
+    if request.ranges.is_blob() {
         debug!("push request complete");
         return Ok(());
     }

@@ -373,11 +373,12 @@
 //! a large existing system that has demonstrated performance issues.
 //!
 //! If in doubt, just use multiple requests and multiple connections.
-use std::io;
+use std::{collections::BTreeSet, io};
 
 use builder::GetRequestBuilder;
 use derive_more::From;
 use iroh::endpoint::VarInt;
+use n0_future::io::empty;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 mod range_spec;
@@ -484,6 +485,17 @@ impl GetRequest {
         GetRequestBuilder::default()
     }
 
+    pub fn content(&self) -> HashAndFormat {
+        HashAndFormat {
+            hash: self.hash,
+            format: if self.ranges.is_blob() {
+                BlobFormat::Raw
+            } else {
+                BlobFormat::HashSeq
+            },
+        }
+    }
+
     /// Request a blob or collection with specified ranges
     pub fn new(hash: Hash, ranges: ChunkRangesSeq) -> Self {
         Self { hash, ranges }
@@ -551,6 +563,22 @@ pub struct GetManyRequest {
     /// There is no range request for the parent, since we just sent the hashes
     /// and therefore have the parent already.
     pub ranges: ChunkRangesSeq,
+}
+
+impl<I: Into<Hash>> FromIterator<I> for GetManyRequest {
+    fn from_iter<T: IntoIterator<Item = I>>(iter: T) -> Self {
+        let mut res = iter.into_iter().map(Into::into).collect::<Vec<Hash>>();
+        res.sort();
+        res.dedup();
+        let n = res.len() as u64;
+        Self {
+            hashes: res,
+            ranges: ChunkRangesSeq(smallvec::smallvec![
+                (0, ChunkRanges::all()),
+                (n, ChunkRanges::empty())
+            ]),
+        }
+    }
 }
 
 impl GetManyRequest {
@@ -731,7 +759,6 @@ pub mod builder {
     }
 
     impl GetRequestBuilder {
-
         /// Add a range to the request.
         pub fn offset(mut self, offset: u64, ranges: impl Into<ChunkRanges>) -> Self {
             self.builder = self.builder.offset(offset, ranges);

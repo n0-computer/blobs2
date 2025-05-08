@@ -49,7 +49,10 @@ use iroh_metrics::inc;
 use n0_future::{Stream, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{mpsc::{self, OwnedPermit}, oneshot},
+    sync::{
+        mpsc::{self, OwnedPermit},
+        oneshot,
+    },
     task::JoinSet,
 };
 use tokio_util::{either::Either, sync::CancellationToken, time::delay_queue};
@@ -265,7 +268,7 @@ impl From<GetRequest> for DownloadKind {
 
 impl From<DownloadKind> for HashAndFormat {
     fn from(value: DownloadKind) -> Self {
-        let format = if value.0.ranges.is_raw() {
+        let format = if value.0.ranges.is_blob() {
             BlobFormat::Raw
         } else {
             BlobFormat::HashSeq
@@ -359,7 +362,11 @@ impl Future for DownloadHandle {
         // make it easier on holders of the handle to poll the result, removing the receiver error
         // from the middle
         match std::pin::Pin::new(&mut self.receiver).poll(cx) {
-            Ready(Ok(result)) => Ready(result),
+            Ready(Ok(result)) => {
+                // no need to cancel the download anymore
+                self.cancel_permit = None;
+                Ready(result)
+            }
             Ready(Err(_recv_err)) => Ready(Err(DownloadError::ActorClosed)),
             Pending => Pending,
         }

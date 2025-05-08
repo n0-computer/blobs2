@@ -253,7 +253,7 @@ impl Remote {
         let request = request.into();
         let root = request.hash;
         let bitfield = self.store().observe(root).await?;
-        let children = if !request.ranges.is_raw() {
+        let children = if !request.ranges.is_blob() {
             let bao = self.store().export_bao(root, bitfield.ranges.clone());
             let mut by_index = BTreeMap::new();
             let mut stream = bao.hashes_with_index();
@@ -394,7 +394,7 @@ impl Remote {
                 .write_quinn_with_progress(&mut writer, &root, 0)
                 .await?;
         }
-        if request.ranges.is_raw() {
+        if request.ranges.is_blob() {
             // we are done
             writer.inner.finish()?;
             return Ok(Default::default());

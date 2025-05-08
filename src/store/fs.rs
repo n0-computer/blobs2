@@ -1018,13 +1018,15 @@ async fn export_bao_impl(
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
     let ExportBaoRequest { ranges, hash } = cmd;
-    trace!(
-        "exporting bao: {hash} {ranges:?} size={}",
-        handle.current_size()?
-    );
     debug_assert!(handle.hash() == hash, "hash mismatch");
-    let data = handle.data_reader();
     let outboard = handle.outboard()?;
+    let size = outboard.tree.size();
+    if size == 0 && hash != Hash::EMPTY {
+        // we have no data whatsoever, so we stop here
+        return Ok(());
+    }
+    trace!("exporting bao: {hash} {ranges:?} size={size}",);
+    let data = handle.data_reader();
     let tx = BaoTreeSender::new(tx);
     traverse_ranges_validated(data, outboard, &ranges, tx).await?;
     Ok(())
