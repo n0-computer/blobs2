@@ -321,9 +321,9 @@ impl Remote {
             return Ok(Default::default());
         }
         let request = local.missing();
-        println!("request: {request:?}");
+        let conn = conn.connection().await?;
         let stats = self
-            .execute(conn.connection().await?, request, progress)
+            .execute(conn, request, progress)
             .await?;
         Ok(stats)
     }
@@ -431,7 +431,7 @@ impl Remote {
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
-        let start = crate::get::fsm::start(conn, request);
+        let start = crate::get::fsm::start(conn, request, Default::default());
         let connected = start.next().await?;
         let mut progress = DownloadProgress::new(progress);
         trace!("Getting header");
@@ -502,7 +502,7 @@ impl Remote {
     ) -> GetResult<Stats> {
         let store = self.store();
         let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
-        let next_child = crate::get::fsm::start_get_many(conn, request).await?;
+        let next_child = crate::get::fsm::start_get_many(conn, request, Default::default()).await?;
         let mut progress = DownloadProgress::new(progress);
         // read all children.
         let at_closing = match next_child {

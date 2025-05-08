@@ -122,7 +122,7 @@ async fn get_blob_impl(
     co: &Co<GetBlobItem>,
 ) -> GetResult<()> {
     let request = GetRequest::blob(*hash);
-    let request = fsm::start(connection.clone(), request);
+    let request = fsm::start(connection.clone(), request, Default::default());
     let connected = request.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
         unreachable!("expected start root");
@@ -157,7 +157,7 @@ pub async fn get_unverified_size(connection: &Connection, hash: &Hash) -> GetRes
         *hash,
         ChunkRangesSeq::from_ranges(vec![ChunkRanges::last_chunk()]),
     );
-    let request = fsm::start(connection.clone(), request);
+    let request = fsm::start(connection.clone(), request, Default::default());
     let connected = request.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
         unreachable!("expected start root");
@@ -178,7 +178,7 @@ pub async fn get_verified_size(connection: &Connection, hash: &Hash) -> GetResul
         *hash,
         ChunkRangesSeq::from_ranges(vec![ChunkRanges::last_chunk()]),
     );
-    let request = fsm::start(connection.clone(), request);
+    let request = fsm::start(connection.clone(), request, Default::default());
     let connected = request.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
         unreachable!("expected start root");
@@ -227,7 +227,7 @@ pub async fn get_hash_seq_and_sizes(
         *hash,
         ChunkRangesSeq::from_ranges_infinite([ChunkRanges::all(), ChunkRanges::last_chunk()]),
     );
-    let at_start = fsm::start(connection.clone(), request);
+    let at_start = fsm::start(connection.clone(), request, Default::default());
     let at_connected = at_start.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = at_connected.next().await? else {
         unreachable!("query includes root");
@@ -285,7 +285,7 @@ pub async fn get_chunk_probe(
     let ranges = ChunkRanges::from(chunk..chunk + 1);
     let ranges = ChunkRangesSeq::from_ranges([ranges]);
     let request = GetRequest::new(*hash, ranges);
-    let request = fsm::start(connection.clone(), request);
+    let request = fsm::start(connection.clone(), request, Default::default());
     let connected = request.next().await?;
     let fsm::ConnectedNext::StartRoot(start) = connected.next().await? else {
         unreachable!("query includes root");

@@ -24,6 +24,7 @@ use std::{
 
 use anyhow::Result;
 use bao_tree::{ChunkNum, io::fsm::BaoContentItem};
+use fsm::RequestCounters;
 use iroh::endpoint::{self, RecvStream, SendStream};
 use iroh_io::TokioStreamReader;
 use serde::{Deserialize, Serialize};
@@ -38,14 +39,12 @@ pub use error::{GetError, GetResult};
 type WrappedRecvStream = TokioStreamReader<RecvStream>;
 
 /// Stats about the transfer.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut)]
 pub struct Stats {
-    /// The number of bytes written
-    pub bytes_written: u64,
-    /// The number of useful bytes read
-    pub payload_bytes_read: u64,
-    /// The number of other bytes read (size and hash pairs)
-    pub other_bytes_read: u64,
+    /// Counters
+    #[deref]
+    #[deref_mut]
+    pub counters: RequestCounters,
     /// The time it took to transfer the data
     pub elapsed: Duration,
 }
@@ -91,14 +90,15 @@ pub mod fsm {
     }
 
     /// The entry point of the get response machine
-    pub fn start(connection: Connection, request: GetRequest) -> AtInitial {
-        AtInitial::new(connection, request)
+    pub fn start(connection: Connection, request: GetRequest, counters: RequestCounters) -> AtInitial {
+        AtInitial::new(connection, request, counters)
     }
 
     /// Start with a get many request. Todo: turn this into distinct states.
     pub async fn start_get_many(
         connection: Connection,
         request: GetManyRequest,
+        counters: RequestCounters,
     ) -> std::result::Result<Result<AtStartChild, AtClosing>, GetError> {
         let start = Instant::now();
         let (mut writer, reader) = connection.open_bi().await?;
@@ -114,10 +114,8 @@ pub mod fsm {
         let mut ranges_iter = RangesIter::new(request.ranges.clone());
         let first_item = ranges_iter.next();
         let misc = Box::new(Misc {
+            counters,
             start,
-            bytes_written: request_bytes.len() as u64,
-            payload_bytes_read: 0,
-            other_bytes_read: 0,
             ranges_iter,
         });
         Ok(match first_item {
@@ -170,6 +168,7 @@ pub mod fsm {
     pub struct AtInitial {
         connection: Connection,
         request: GetRequest,
+        counters: RequestCounters,
     }
 
     impl AtInitial {
@@ -177,10 +176,11 @@ pub mod fsm {
         ///
         /// `connection` is an existing connection
         /// `request` is the request to be sent
-        pub fn new(connection: Connection, request: GetRequest) -> Self {
+        pub fn new(connection: Connection, request: GetRequest, counters: RequestCounters) -> Self {
             Self {
                 connection,
                 request,
+                counters,
             }
         }
 
@@ -194,6 +194,7 @@ pub mod fsm {
                 reader,
                 writer,
                 request: self.request,
+                counters: self.counters,
             })
         }
     }
@@ -205,6 +206,7 @@ pub mod fsm {
         reader: WrappedRecvStream,
         writer: SendStream,
         request: GetRequest,
+        counters: RequestCounters,
     }
 
     /// Possible next states after the handshake has been sent
@@ -276,9 +278,10 @@ pub mod fsm {
                 reader,
                 mut writer,
                 mut request,
+                mut counters,
             } = self;
             // 1. Send Request
-            let bytes_written = {
+            counters.other_bytes_written += {
                 debug!("sending request");
                 let wrapped = Request::Get(request);
                 let request_bytes =
@@ -307,10 +310,8 @@ pub mod fsm {
             let ranges_iter = RangesIter::new(request.ranges);
             // this is in a box so we don't have to memcpy it on every state transition
             let mut misc = Box::new(Misc {
+                counters,
                 start,
-                bytes_written,
-                payload_bytes_read: 0,
-                other_bytes_read: 0,
                 ranges_iter,
             });
             Ok(match misc.ranges_iter.next() {
@@ -707,9 +708,7 @@ pub mod fsm {
         /// Current stats
         pub fn stats(&self) -> Stats {
             Stats {
-                bytes_written: self.misc.bytes_written,
-                payload_bytes_read: self.misc.payload_bytes_read,
-                other_bytes_read: self.misc.other_bytes_read,
+                counters: self.misc.counters,
                 elapsed: self.misc.start.elapsed(),
             }
         }
@@ -883,25 +882,33 @@ pub mod fsm {
                 reader.stop(0u8.into()).ok();
             }
             Ok(Stats {
+                counters: self.misc.counters,
                 elapsed: self.misc.start.elapsed(),
-                bytes_written: self.misc.bytes_written,
-                payload_bytes_read: self.misc.payload_bytes_read,
-                other_bytes_read: self.misc.other_bytes_read,
             })
         }
     }
 
+    #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct RequestCounters {
+        /// payload bytes written
+        pub payload_bytes_written: u64,
+        /// request, hash pair and size bytes written
+        pub other_bytes_written: u64,
+        /// payload bytes read
+        pub payload_bytes_read: u64,
+        /// hash pair and size bytes read
+        pub other_bytes_read: u64,
+    }
+
     /// Stuff we need to hold on to while going through the machine states
-    #[derive(Debug)]
+    #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
     struct Misc {
         /// start time for statistics
         start: Instant,
-        /// bytes written for statistics
-        bytes_written: u64,
-        /// payload bytes read for statistics
-        payload_bytes_read: u64,
-        /// hash pair and size bytes read
-        other_bytes_read: u64,
+        /// counters
+        #[deref]
+        #[deref_mut]
+        counters: RequestCounters,
         /// iterator over the ranges of the collection and the children
         ranges_iter: RangesIter,
     }

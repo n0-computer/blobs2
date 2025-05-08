@@ -731,7 +731,7 @@ impl IntoFuture for ImportBaoResult {
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.inner)
+        self.inner
     }
 }
 

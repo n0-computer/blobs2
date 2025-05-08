@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
-    io,
     ops::Deref,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -145,8 +144,7 @@ async fn handle_download_split_impl(
 ) -> anyhow::Result<()> {
     let providers = request.providers;
     let requests = split_request(request.request, &providers, &pool, &store)
-        .await
-        .unwrap();
+        .await?;
     // todo: this is it's own mini actor, we should probably refactor this out
     let mut n = requests.len();
     let (requests_tx, requests_rx) = mpsc::channel::<GetRequest>(n);
@@ -202,7 +200,7 @@ fn into_stream<T>(mut recv: mpsc::Receiver<T>) -> impl Stream<Item = T> {
     })
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, derive_more::From)]
 pub enum FiniteRequest {
     Get(GetRequest),
     GetMany(GetManyRequest),
@@ -210,6 +208,13 @@ pub enum FiniteRequest {
 
 pub trait SupportedRequest {
     fn into_request(self) -> FiniteRequest;
+}
+
+impl<I: Into<Hash>, T: IntoIterator<Item = I>> SupportedRequest for T {
+    fn into_request(self) -> FiniteRequest {
+        let hashes = self.into_iter().map(Into::into).collect::<GetManyRequest>();
+        FiniteRequest::GetMany(hashes)
+    }
 }
 
 impl SupportedRequest for GetRequest {
@@ -235,6 +240,20 @@ pub struct DownloadRequest {
     pub request: FiniteRequest,
     pub providers: Arc<dyn ContentDiscovery>,
     pub strategy: SplitStrategy,
+}
+
+impl DownloadRequest {
+    pub fn new(
+        request: impl SupportedRequest,
+        providers: impl ContentDiscovery,
+        strategy: SplitStrategy,
+    ) -> Self {
+        Self {
+            request: request.into_request(),
+            providers: Arc::new(providers),
+            strategy,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -434,6 +453,18 @@ impl ConnectionPool {
     }
 }
 
+/// Execute a get request sequentially.
+///
+/// It will try each provider in order
+/// until it finds one that can fulfill the request. When trying a new provider,
+/// it takes the progress from the previous providers into account, so e.g.
+/// if the first provider had the first 10% of the data, it will only ask the next
+/// provider for the remaining 90%.
+/// 
+/// This is fully sequential, so there will only be one request in flight at a time.
+///
+/// If the request is not complete after trying all providers, it will return an error.
+/// If the provider stream never ends, it will try indefinitely.
 async fn execute_get(
     pool: &ConnectionPool,
     request: GetRequest,
@@ -450,7 +481,7 @@ async fn execute_get(
             return Ok(Stats::default());
         }
         let conn = conn.connection().await?;
-        match store.remote().execute(conn, request.clone(), None).await {
+        match remote.execute(conn, local.missing(), None).await {
             Ok(stats) => {
                 return Ok(stats);
             }
@@ -519,29 +550,20 @@ pub trait ContentDiscovery: Debug + Send + Sync + 'static {
     fn find_providers(&self, hash: HashAndFormat) -> n0_future::stream::Boxed<NodeId>;
 }
 
-impl<const N: usize> ContentDiscovery for [NodeId; N] {
-    fn find_providers(&self, _hash: HashAndFormat) -> n0_future::stream::Boxed<NodeId> {
-        let providers = self.to_vec();
-        n0_future::stream::iter(providers).boxed()
-    }
-}
-
-impl ContentDiscovery for [NodeId] {
-    fn find_providers(&self, _: HashAndFormat) -> n0_future::stream::Boxed<NodeId> {
-        let providers = self.to_vec();
-        n0_future::stream::iter(providers).boxed()
-    }
-}
-
-impl ContentDiscovery for Vec<NodeId> {
+impl<C, I> ContentDiscovery for C
+    where
+        C: Debug + Clone + IntoIterator<Item = I> + Send + Sync + 'static,
+        C::IntoIter: Send + Sync + 'static,
+        I: Into<NodeId> + Send + Sync + 'static,
+{
     fn find_providers(&self, _: HashAndFormat) -> n0_future::stream::Boxed<NodeId> {
         let providers = self.clone();
-        n0_future::stream::iter(providers).boxed()
+        n0_future::stream::iter(providers.into_iter().map(Into::into)).boxed()
     }
 }
 
 #[derive(derive_more::Debug)]
-struct Shuffled {
+pub struct Shuffled {
     nodes: Vec<NodeId>,
 }
 
@@ -567,9 +589,8 @@ mod tests {
     use crate::{
         api::{
             blobs::AddBytesOptions,
-            swarm::{Shuffled, Swarm},
+            swarm::{DownloadOptions, Shuffled, SplitStrategy, Swarm},
         },
-        downloader::{self, Downloader},
         hashseq::HashSeq,
         protocol::{GetManyRequest, GetRequest},
         tests::node_test_setup,
@@ -603,6 +624,7 @@ mod tests {
 
     #[tokio::test]
     async fn swarm_get_smoke() -> TestResult<()> {
+        // tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
         let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -618,7 +640,7 @@ mod tests {
             .await?;
         let root2 = store2
             .add_bytes_with_opts(AddBytesOptions {
-                data: hs.into(),
+                data: hs.clone().into(),
                 format: crate::BlobFormat::HashSeq,
             })
             .await?;
@@ -637,7 +659,7 @@ mod tests {
             .next(ChunkRanges::all())
             .build(*root.hash());
         if true {
-            let progress = swarm.download(request, Shuffled::new(vec![node1_id, node2_id]));
+            let progress = swarm.download_with_opts(DownloadOptions::new(request, [node1_id, node2_id], SplitStrategy::None));
             progress.complete().await?;
         }
         if false {
