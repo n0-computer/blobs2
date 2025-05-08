@@ -1,9 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-    ops::Deref,
-    sync::Arc,
-    time::{Duration, SystemTime},
+    collections::{HashMap, HashSet}, fmt::Debug, io, ops::Deref, sync::Arc, time::{Duration, SystemTime}
 };
 
 use anyhow::{Context, bail};
@@ -11,7 +7,7 @@ use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
-use n0_future::{BufferedStreamExt, Sink, Stream, StreamExt, future};
+use n0_future::{future, BufferedStreamExt, Sink, SinkExt, Stream, StreamExt};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize, de::Error};
 use tokio::{
@@ -22,11 +18,7 @@ use tracing::instrument::Instrument;
 
 use super::{Store, remote::GetConnection};
 use crate::{
-    Hash, HashAndFormat,
-    downloader::{self, DownloadError, Downloader},
-    get::{GetError, Stats},
-    protocol::{GetManyRequest, GetRequest},
-    store,
+    downloader::{self, DownloadError, Downloader}, get::{GetError, Stats}, protocol::{GetManyRequest, GetRequest}, store, util::outboard_with_progress::{NoProgress, Progress}, Hash, HashAndFormat
 };
 
 #[derive(Debug, Clone)]
@@ -99,16 +91,6 @@ impl SwarmActor {
     }
 }
 
-async fn handle_add_provider(mut downloader: Downloader, msg: AddProviderMsg) {
-    let AddProviderMsg {
-        inner: AddProviderRequest { hash, providers },
-        tx,
-        ..
-    } = msg;
-    downloader.nodes_have(hash, providers).await;
-    tx.send(()).await.ok();
-}
-
 async fn handle_download(store: Store, pool: ConnectionPool, msg: DownloadMsg) {
     let DownloadMsg { inner, mut tx, .. } = msg;
     if let Err(cause) = handle_download_impl(store, pool, inner, &mut tx).await {
@@ -126,7 +108,7 @@ async fn handle_download_impl(
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
         SplitStrategy::None => match request.request {
             FiniteRequest::Get(get) => {
-                execute_get(&pool, get, &request.providers, &store, &mut None).await?;
+                execute_get(&pool, get, &request.providers, &store, NoProgress).await?;
             }
             FiniteRequest::GetMany(_) => {
                 todo!()
@@ -146,25 +128,47 @@ async fn handle_download_split_impl(
     let requests = split_request(request.request, &providers, &pool, &store).await?;
     // todo: this is it's own mini actor, we should probably refactor this out
     let mut n = requests.len();
-    let (requests_tx, requests_rx) = mpsc::channel::<GetRequest>(n);
+    let (requests_tx, requests_rx) = mpsc::channel(n);
     let permits = requests_tx.reserve_many(n).await.unwrap();
-    for (request, permit) in requests.into_iter().zip(permits) {
-        permit.send(request);
+    for (id, (request, permit)) in requests.into_iter().zip(permits).enumerate() {
+        permit.send((request, id));
     }
+    let (progress_tx, progress_rx) = mpsc::channel(32);
     let mut futs = into_stream(requests_rx)
-        .map(|request| {
+        .map(|(request, id)| {
             let pool = pool.clone();
             let providers = providers.clone();
             let store = store.clone();
+            let progress_tx = progress_tx.clone();
             async move {
                 let hash = request.hash;
-                let res = execute_get(&pool, request, &providers, &store, &mut None).await;
+                let (tx, rx) = mpsc::channel(32);
+                progress_tx.send(rx).await.ok();
+                let sink = Box::pin(tokio_util::sync::PollSender::new(tx)
+                    .sink_map_err(|e| io::Error::other(e))
+                    .with(|x| async move { Ok((id, x)) }));
+                let res = execute_get(&pool, request, &providers, &store, sink).await;
                 (hash, res)
             }
         })
         .buffered_unordered(32);
+    let forward_progress = async {
+        let mut stream = into_stream(progress_rx)
+            .map(|x| into_stream(x))
+            .flatten();
+        let mut offsets = HashMap::new();
+        while let Some((id, offset)) = stream.next().await {
+            offsets.insert(id, offset);
+            println!("Got progress: {:#?}", offsets);
+        }
+    };
+    tokio::pin!(forward_progress);
     loop {
         tokio::select! {
+            _ = &mut forward_progress => {
+                // The progress stream has ended, we should stop processing.
+                break;
+            },
             res = futs.next() => {
                 println!("Got result: {:?}", res);
                 n -= 1;
@@ -375,7 +379,7 @@ async fn split_request(
                 return Ok(vec![]);
             };
             let first = GetRequest::blob(req.hash);
-            execute_get(pool, first, providers, store, &mut None).await?;
+            execute_get(pool, first, providers, store, NoProgress).await?;
             let res = if req.ranges.is_infinite() {
                 // todo: just leave the last one open
                 vec![req]
@@ -469,7 +473,7 @@ async fn execute_get(
     request: GetRequest,
     providers: &Arc<dyn ContentDiscovery>,
     store: &Store,
-    progress: &mut Option<&mut spsc::Sender<u64>>,
+    mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
 ) -> anyhow::Result<Stats> {
     let mut last_error = None;
     let remote = store.remote();
@@ -482,7 +486,7 @@ async fn execute_get(
         }
         let conn = conn.connection().await?;
         match remote
-            .execute_with_opts(conn, local.missing(), Default::default(), progress)
+            .execute_with_opts(conn, local.missing(), Default::default(), &mut progress)
             .await
         {
             Ok(stats) => {
@@ -632,8 +636,8 @@ mod tests {
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
         let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
         let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
-        let tt1 = store1.add_slice("hello world").await?;
-        let tt2 = store2.add_slice("hello world 2").await?;
+        let tt1 = store1.add_slice(vec![1;10000000]).await?;
+        let tt2 = store2.add_slice(vec![2;10000000]).await?;
         let hs = [*tt1.hash(), *tt2.hash()].into_iter().collect::<HashSeq>();
         let root = store1
             .add_bytes_with_opts(AddBytesOptions {
@@ -665,7 +669,7 @@ mod tests {
             let progress = swarm.download_with_opts(DownloadOptions::new(
                 request,
                 [node1_id, node2_id],
-                SplitStrategy::None,
+                SplitStrategy::Split,
             ));
             progress.complete().await?;
         }

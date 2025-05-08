@@ -145,11 +145,31 @@ pub mod outboard_with_progress {
 
     pub struct NoProgress;
 
+    impl<Item> n0_future::Sink<Item> for NoProgress {
+        type Error = anyhow::Error;
+    
+        fn poll_ready(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(anyhow::Result::Ok(()))
+        }
+    
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
+            anyhow::Result::Ok(())
+        }
+    
+        fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(anyhow::Result::Ok(()))
+        }
+    
+        fn poll_close(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(anyhow::Result::Ok(()))
+        }
+    }
+
     impl Progress for NoProgress {
         type Error = io::Error;
 
         async fn progress(&mut self, _offset: ChunkNum) -> std::result::Result<(), Self::Error> {
-            Ok(())
+            io::Result::Ok(())
         }
     }
 

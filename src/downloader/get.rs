@@ -9,8 +9,8 @@ use super::{
     progress::BroadcastProgressSender,
 };
 use crate::{
-    api::{Store, remote::LocalInfo},
-    get::GetError,
+    api::{remote::LocalInfo, Store},
+    get::GetError, util::outboard_with_progress::NoProgress,
 };
 
 impl From<GetError> for FailureAction {
@@ -53,7 +53,7 @@ impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
                     conn,
                     self.info.missing(),
                     Default::default(),
-                    &mut Some(&mut progress),
+                    NoProgress,
                 )
                 .await;
             #[cfg(feature = "metrics")]

@@ -4,7 +4,7 @@ use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
-use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
+use n0_future::{pin, task::AbortOnDropHandle, SinkExt, StreamExt};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{
@@ -15,22 +15,12 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
-    api::{Store, blobs::Bitfield},
-    downloader::{DownloadRequest, Downloader},
-    get,
-    hashseq::HashSeq,
-    net_protocol::Blobs,
-    protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest},
-    provider::Event,
-    store::{
+    api::{blobs::Bitfield, Store}, downloader::{DownloadRequest, Downloader}, get, hashseq::HashSeq, net_protocol::Blobs, protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest}, provider::Event, store::{
         fs::{
-            FsStore,
-            tests::{INTERESTING_SIZES, create_n0_bao, test_data},
+            tests::{create_n0_bao, test_data, INTERESTING_SIZES}, FsStore
         },
         util::observer::Combine,
-    },
-    util::ChunkRangesExt,
+    }, util::{outboard_with_progress::NoProgress, ChunkRangesExt}, BlobFormat, Hash, HashAndFormat
 };
 
 #[tokio::test]
@@ -232,7 +222,7 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        store2.remote().fetch(conn.clone(), hash, None).await?;
+        store2.remote().fetch(conn.clone(), hash, NoProgress).await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
     }
@@ -292,7 +282,7 @@ async fn two_nodes_get_many() -> TestResult<()> {
         .execute_get_many(
             conn,
             GetManyRequest::new(hashes, ChunkRangesSeq::all()),
-            &mut None,
+            NoProgress,
         )
         .await?;
     for size in sizes {
@@ -473,7 +463,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = [1];
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    store2.remote().fetch(conn, root, None).await?;
+    store2.remote().fetch(conn, root, NoProgress).await?;
     check_presence(&store2, &sizes).await?;
     Ok(())
 }
@@ -486,8 +476,9 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    let (mut tx, rx) = spsc::channel::<u64>(16);
-    let res = store2.remote().fetch(conn, root, Some(&mut tx));
+    let (tx, rx) = spsc::channel::<u64>(16);
+    let p = tx.into_sink().sink_map_err(|e| e.into());
+    let res = store2.remote().fetch(conn, root, Box::pin(p));
     pin!(rx);
     pin!(res);
     loop {

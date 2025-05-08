@@ -2,19 +2,19 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
-use n0_future::{Stream, StreamExt, TryFutureExt, io};
+use n0_future::{io, Sink, Stream, StreamExt, TryFutureExt};
 use quinn::SendStream;
 use ref_cast::RefCast;
+use n0_future::SinkExt;
 
 use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
     get::{
-        GetError, GetResult, Stats,
-        fsm::{DecodeError, RequestCounters},
+        fsm::{DecodeError, RequestCounters}, GetError, GetResult, Stats
     },
     protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
-    provider::{EventSender, ProgressWriter, StreamContext},
+    provider::{EventSender, ProgressWriter, StreamContext}, util::outboard_with_progress::NoProgress,
 };
 
 /// API to compute request and to download from remote nodes.
@@ -316,7 +316,7 @@ impl Remote {
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
-        mut progress: Option<&mut spsc::Sender<u64>>,
+        progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
     ) -> anyhow::Result<Stats> {
         let content = content.into();
         let local = self.local(content).await?;
@@ -326,7 +326,7 @@ impl Remote {
         let request = local.missing();
         let conn = conn.connection().await?;
         let stats = self
-            .execute_with_opts(conn, request, Default::default(), &mut progress)
+            .execute_with_opts(conn, request, Default::default(), progress)
             .await?;
         Ok(stats)
     }
@@ -418,7 +418,7 @@ impl Remote {
     }
 
     pub async fn execute(&self, conn: Connection, request: GetRequest) -> GetResult<Stats> {
-        self.execute_with_opts(conn, request, Default::default(), &mut None)
+        self.execute_with_opts(conn, request, Default::default(), NoProgress)
             .await
     }
 
@@ -435,7 +435,7 @@ impl Remote {
         conn: Connection,
         request: GetRequest,
         counters: RequestCounters,
-        progress: &mut Option<&mut spsc::Sender<u64>>,
+        mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
@@ -446,7 +446,7 @@ impl Remote {
         let next_child = match connected.next().await? {
             ConnectedNext::StartRoot(at_start_root) => {
                 let header = at_start_root.next();
-                let end = get_blob_ranges_impl(header, root, store, progress).await?;
+                let end = get_blob_ranges_impl(header, root, store, &mut progress).await?;
                 match end.next() {
                     EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                     EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -478,7 +478,7 @@ impl Remote {
                     };
                     trace!("getting child {offset} {}", hash.fmt_short());
                     let header = at_start_child.next(hash);
-                    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
+                    let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
                     next_child = match end.next() {
                         EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                         EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -505,7 +505,7 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetManyRequest,
-        progress: &mut Option<&mut spsc::Sender<u64>>,
+        mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
     ) -> GetResult<Stats> {
         let store = self.store();
         let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
@@ -526,7 +526,7 @@ impl Remote {
                     };
                     trace!("getting child {offset} {}", hash.fmt_short());
                     let header = at_start_child.next(hash);
-                    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
+                    let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
                     next_child = match end.next() {
                         EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                         EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -654,7 +654,7 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-    progress: &mut Option<&mut spsc::Sender<u64>>,
+    mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
 ) -> GetResult<AtEndBlob> {
     let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {
@@ -677,9 +677,9 @@ async fn get_blob_ranges_impl(
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res?;
-                    if let Some(progress) = progress {
-                        progress.try_send(next.stats().payload_bytes_read).await?;
-                    }
+                    progress.send(next.stats().payload_bytes_read).await.map_err(|e| {
+                        GetError::LocalFailure(e.into())
+                    })?;
                     tx.send(item).await?;
                     content = next;
                 }
