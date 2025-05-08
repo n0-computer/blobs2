@@ -9,7 +9,10 @@ use ref_cast::RefCast;
 use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
-    get::{GetError, GetResult, Stats, fsm::DecodeError},
+    get::{
+        GetError, GetResult, Stats,
+        fsm::{DecodeError, RequestCounters},
+    },
     protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
     provider::{EventSender, ProgressWriter, StreamContext},
 };
@@ -313,7 +316,7 @@ impl Remote {
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
-        progress: Option<&mut spsc::Sender<u64>>,
+        mut progress: Option<&mut spsc::Sender<u64>>,
     ) -> anyhow::Result<Stats> {
         let content = content.into();
         let local = self.local(content).await?;
@@ -323,7 +326,7 @@ impl Remote {
         let request = local.missing();
         let conn = conn.connection().await?;
         let stats = self
-            .execute(conn, request, progress)
+            .execute_with_opts(conn, request, Default::default(), &mut progress)
             .await?;
         Ok(stats)
     }
@@ -414,6 +417,11 @@ impl Remote {
         Ok(Default::default())
     }
 
+    pub async fn execute(&self, conn: Connection, request: GetRequest) -> GetResult<Stats> {
+        self.execute_with_opts(conn, request, Default::default(), &mut None)
+            .await
+    }
+
     /// Execute a get request *without* taking the locally available ranges into account.
     ///
     /// You can provide a progress channel to get updates on the download progress. This progress
@@ -422,22 +430,23 @@ impl Remote {
     /// This will download the data again even if the data is locally present.
     ///
     /// This will return the stats of the download.
-    pub async fn execute(
+    pub async fn execute_with_opts(
         &self,
         conn: Connection,
         request: GetRequest,
-        mut progress: Option<&mut spsc::Sender<u64>>,
+        counters: RequestCounters,
+        progress: &mut Option<&mut spsc::Sender<u64>>,
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
-        let start = crate::get::fsm::start(conn, request, Default::default());
+        let start = crate::get::fsm::start(conn, request, counters);
         let connected = start.next().await?;
         trace!("Getting header");
         // read the header
         let next_child = match connected.next().await? {
             ConnectedNext::StartRoot(at_start_root) => {
                 let header = at_start_root.next();
-                let end = get_blob_ranges_impl(header, root, store, &mut progress).await?;
+                let end = get_blob_ranges_impl(header, root, store, progress).await?;
                 match end.next() {
                     EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                     EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -469,7 +478,7 @@ impl Remote {
                     };
                     trace!("getting child {offset} {}", hash.fmt_short());
                     let header = at_start_child.next(hash);
-                    let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
+                    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
                     next_child = match end.next() {
                         EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                         EndBlobNext::Closing(at_closing) => Err(at_closing),

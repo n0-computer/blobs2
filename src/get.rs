@@ -39,7 +39,17 @@ pub use error::{GetError, GetResult};
 type WrappedRecvStream = TokioStreamReader<RecvStream>;
 
 /// Stats about the transfer.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+)]
 pub struct Stats {
     /// Counters
     #[deref]
@@ -90,7 +100,11 @@ pub mod fsm {
     }
 
     /// The entry point of the get response machine
-    pub fn start(connection: Connection, request: GetRequest, counters: RequestCounters) -> AtInitial {
+    pub fn start(
+        connection: Connection,
+        request: GetRequest,
+        counters: RequestCounters,
+    ) -> AtInitial {
         AtInitial::new(connection, request, counters)
     }
 

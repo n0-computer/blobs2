@@ -49,10 +49,11 @@ impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
             let mut progress = self.progress.add_offset(local_bytes);
             let res = store
                 .remote()
-                .execute(
+                .execute_with_opts(
                     conn,
                     self.info.missing(),
-                    Some(&mut progress),
+                    Default::default(),
+                    &mut Some(&mut progress),
                 )
                 .await;
             #[cfg(feature = "metrics")]
