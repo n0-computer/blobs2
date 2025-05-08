@@ -313,7 +313,7 @@ impl Remote {
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
-        progress: Option<spsc::Sender<u64>>,
+        progress: Option<&mut spsc::Sender<u64>>,
     ) -> anyhow::Result<Stats> {
         let content = content.into();
         let local = self.local(content).await?;
@@ -368,7 +368,6 @@ impl Remote {
     ) -> anyhow::Result<Stats> {
         let hash = request.hash;
         debug!(%hash, "pushing");
-        let mut _progress = DownloadProgress::new(progress);
         let (send, mut recv) = conn.open_bi().await?;
         let mut writer = ProgressWriter {
             inner: send,
@@ -427,13 +426,12 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetRequest,
-        progress: Option<spsc::Sender<u64>>,
+        mut progress: Option<&mut spsc::Sender<u64>>,
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
         let start = crate::get::fsm::start(conn, request, Default::default());
         let connected = start.next().await?;
-        let mut progress = DownloadProgress::new(progress);
         trace!("Getting header");
         // read the header
         let next_child = match connected.next().await? {
@@ -498,12 +496,11 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetManyRequest,
-        progress: Option<spsc::Sender<u64>>,
+        progress: &mut Option<&mut spsc::Sender<u64>>,
     ) -> GetResult<Stats> {
         let store = self.store();
         let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
         let next_child = crate::get::fsm::start_get_many(conn, request, Default::default()).await?;
-        let mut progress = DownloadProgress::new(progress);
         // read all children.
         let at_closing = match next_child {
             Ok(at_start_child) => {
@@ -520,7 +517,7 @@ impl Remote {
                     };
                     trace!("getting child {offset} {}", hash.fmt_short());
                     let header = at_start_child.next(hash);
-                    let end = get_blob_ranges_impl(header, hash, store, &mut progress).await?;
+                    let end = get_blob_ranges_impl(header, hash, store, progress).await?;
                     next_child = match end.next() {
                         EndBlobNext::MoreChildren(at_start_child) => Ok(at_start_child),
                         EndBlobNext::Closing(at_closing) => Err(at_closing),
@@ -644,28 +641,11 @@ fn get_buffer_size(size: NonZeroU64) -> usize {
     (size.get() / (IROH_BLOCK_SIZE.bytes() as u64) + 2).min(64) as usize
 }
 
-struct DownloadProgress {
-    sender: Option<spsc::Sender<u64>>,
-}
-
-impl DownloadProgress {
-    pub fn new(sender: Option<spsc::Sender<u64>>) -> Self {
-        Self { sender }
-    }
-
-    pub async fn send(&mut self, total: u64) -> std::result::Result<(), SendError> {
-        if let Some(sender) = self.sender.as_mut() {
-            sender.try_send(total).await?;
-        }
-        Ok(())
-    }
-}
-
 async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-    progress: &mut DownloadProgress,
+    progress: &mut Option<&mut spsc::Sender<u64>>,
 ) -> GetResult<AtEndBlob> {
     let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {
@@ -688,7 +668,9 @@ async fn get_blob_ranges_impl(
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res?;
-                    progress.send(next.stats().payload_bytes_read).await?;
+                    if let Some(progress) = progress {
+                        progress.try_send(next.stats().payload_bytes_read).await?;
+                    }
                     tx.send(item).await?;
                     content = next;
                 }

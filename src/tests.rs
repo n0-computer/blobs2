@@ -292,7 +292,7 @@ async fn two_nodes_get_many() -> TestResult<()> {
         .execute_get_many(
             conn,
             GetManyRequest::new(hashes, ChunkRangesSeq::all()),
-            None,
+            &mut None,
         )
         .await?;
     for size in sizes {
@@ -486,8 +486,8 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    let (tx, rx) = spsc::channel::<u64>(16);
-    let res = store2.remote().fetch(conn, root, Some(tx));
+    let (mut tx, rx) = spsc::channel::<u64>(16);
+    let res = store2.remote().fetch(conn, root, Some(&mut tx));
     pin!(rx);
     pin!(res);
     loop {

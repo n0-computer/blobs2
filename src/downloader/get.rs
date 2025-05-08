@@ -46,12 +46,13 @@ impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
         let store = self.store.clone();
         let local_bytes = self.info.local_bytes();
         Box::pin(async move {
+            let mut progress = self.progress.add_offset(local_bytes);
             let res = store
                 .remote()
                 .execute(
                     conn,
                     self.info.missing(),
-                    Some(self.progress.add_offset(local_bytes)),
+                    Some(&mut progress),
                 )
                 .await;
             #[cfg(feature = "metrics")]
