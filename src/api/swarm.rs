@@ -11,7 +11,7 @@ use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
-use n0_future::{BufferedStreamExt, Stream, StreamExt, future};
+use n0_future::{BufferedStreamExt, Sink, Stream, StreamExt, future};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize, de::Error};
 use tokio::{
@@ -126,7 +126,7 @@ async fn handle_download_impl(
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
         SplitStrategy::None => match request.request {
             FiniteRequest::Get(get) => {
-                execute_get(&pool, get, &request.providers, &store).await?;
+                execute_get(&pool, get, &request.providers, &store, &mut None).await?;
             }
             FiniteRequest::GetMany(_) => {
                 todo!()
@@ -143,8 +143,7 @@ async fn handle_download_split_impl(
     tx: &mut spsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     let providers = request.providers;
-    let requests = split_request(request.request, &providers, &pool, &store)
-        .await?;
+    let requests = split_request(request.request, &providers, &pool, &store).await?;
     // todo: this is it's own mini actor, we should probably refactor this out
     let mut n = requests.len();
     let (requests_tx, requests_rx) = mpsc::channel::<GetRequest>(n);
@@ -159,7 +158,7 @@ async fn handle_download_split_impl(
             let store = store.clone();
             async move {
                 let hash = request.hash;
-                let res = execute_get(&pool, request, &providers, &store).await;
+                let res = execute_get(&pool, request, &providers, &store, &mut None).await;
                 (hash, res)
             }
         })
@@ -376,7 +375,7 @@ async fn split_request(
                 return Ok(vec![]);
             };
             let first = GetRequest::blob(req.hash);
-            execute_get(pool, first, providers, store).await?;
+            execute_get(pool, first, providers, store, &mut None).await?;
             let res = if req.ranges.is_infinite() {
                 // todo: just leave the last one open
                 vec![req]
@@ -460,7 +459,7 @@ impl ConnectionPool {
 /// it takes the progress from the previous providers into account, so e.g.
 /// if the first provider had the first 10% of the data, it will only ask the next
 /// provider for the remaining 90%.
-/// 
+///
 /// This is fully sequential, so there will only be one request in flight at a time.
 ///
 /// If the request is not complete after trying all providers, it will return an error.
@@ -470,6 +469,7 @@ async fn execute_get(
     request: GetRequest,
     providers: &Arc<dyn ContentDiscovery>,
     store: &Store,
+    progress: &mut Option<&mut spsc::Sender<u64>>,
 ) -> anyhow::Result<Stats> {
     let mut last_error = None;
     let remote = store.remote();
@@ -481,7 +481,10 @@ async fn execute_get(
             return Ok(Stats::default());
         }
         let conn = conn.connection().await?;
-        match remote.execute(conn, local.missing(), None).await {
+        match remote
+            .execute_with_opts(conn, local.missing(), Default::default(), progress)
+            .await
+        {
             Ok(stats) => {
                 return Ok(stats);
             }
@@ -551,10 +554,10 @@ pub trait ContentDiscovery: Debug + Send + Sync + 'static {
 }
 
 impl<C, I> ContentDiscovery for C
-    where
-        C: Debug + Clone + IntoIterator<Item = I> + Send + Sync + 'static,
-        C::IntoIter: Send + Sync + 'static,
-        I: Into<NodeId> + Send + Sync + 'static,
+where
+    C: Debug + Clone + IntoIterator<Item = I> + Send + Sync + 'static,
+    C::IntoIter: Send + Sync + 'static,
+    I: Into<NodeId> + Send + Sync + 'static,
 {
     fn find_providers(&self, _: HashAndFormat) -> n0_future::stream::Boxed<NodeId> {
         let providers = self.clone();
@@ -659,7 +662,11 @@ mod tests {
             .next(ChunkRanges::all())
             .build(*root.hash());
         if true {
-            let progress = swarm.download_with_opts(DownloadOptions::new(request, [node1_id, node2_id], SplitStrategy::None));
+            let progress = swarm.download_with_opts(DownloadOptions::new(
+                request,
+                [node1_id, node2_id],
+                SplitStrategy::None,
+            ));
             progress.complete().await?;
         }
         if false {
@@ -671,7 +678,6 @@ mod tests {
                     GetRequest::builder()
                         .root(ChunkRanges::all())
                         .build(*root.hash()),
-                    None,
                 )
                 .await?;
             let h1 = remote.execute(
@@ -679,14 +685,12 @@ mod tests {
                 GetRequest::builder()
                     .child(0, ChunkRanges::all())
                     .build(*root.hash()),
-                None,
             );
             let h2 = remote.execute(
                 conn.clone(),
                 GetRequest::builder()
                     .child(1, ChunkRanges::all())
                     .build(*root.hash()),
-                None,
             );
             h1.await?;
             h2.await?;
