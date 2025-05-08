@@ -342,10 +342,10 @@ async fn get_import_source(
 #[repr(transparent)]
 struct OutboardProgress(spsc::Sender<AddProgressItem>);
 
-impl Progress for OutboardProgress {
+impl Progress<ChunkNum> for OutboardProgress {
     type Error = irpc::channel::SendError;
 
-    async fn progress(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {
+    async fn send(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {
         // if offset.0 % 1024 != 0 {
         //     return Ok(());
         // }

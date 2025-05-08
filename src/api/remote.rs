@@ -316,7 +316,7 @@ impl Remote {
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
-        progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
+        progress: impl Sink<u64, Error = io::Error> + Unpin,
     ) -> anyhow::Result<Stats> {
         let content = content.into();
         let local = self.local(content).await?;
@@ -435,7 +435,7 @@ impl Remote {
         conn: Connection,
         request: GetRequest,
         counters: RequestCounters,
-        mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
+        mut progress: impl Sink<u64, Error = io::Error> + Unpin,
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
@@ -505,7 +505,7 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetManyRequest,
-        mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
+        mut progress: impl Sink<u64, Error = io::Error> + Unpin,
     ) -> GetResult<Stats> {
         let store = self.store();
         let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
@@ -654,7 +654,7 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-    mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
+    mut progress: impl Sink<u64, Error = io::Error> + Unpin,
 ) -> GetResult<AtEndBlob> {
     let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {

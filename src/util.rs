@@ -121,7 +121,7 @@ where
 pub mod outboard_with_progress {
     use std::{
         future::Future,
-        io::{self, BufReader, Read},
+        io::{self, BufReader, Read}, sync::mpsc,
     };
 
     use bao_tree::{
@@ -135,40 +135,85 @@ pub mod outboard_with_progress {
     use blake3::guts::parent_cv;
     use smallvec::SmallVec;
 
-    pub trait Progress {
+    pub trait Progress<Item> {
         type Error;
-        fn progress(
+        fn send(
             &mut self,
-            offset: ChunkNum,
+            value: Item,
         ) -> impl Future<Output = std::result::Result<(), Self::Error>>;
+
+        fn with_map<F, U>(
+            self,
+            f: F,
+        ) -> WithMap<Self, F>
+        where
+            Self: Sized,
+            F: Fn(Item) -> U + Send + 'static,
+        {
+            WithMap {
+                inner: self,
+                f,
+            }
+        }
+    }
+
+    impl<T> Progress<T> for tokio::sync::mpsc::Sender<T> {
+        type Error = tokio::sync::mpsc::error::SendError<T>;
+
+        async fn send(
+            &mut self,
+            value: T,
+        ) -> std::result::Result<(), Self::Error> {
+            tokio::sync::mpsc::Sender::send(self, value).await
+        }
+    }
+
+    pub struct WithMap<P, F> {
+        inner: P,
+        f: F,
+    }
+
+    impl<P, F, T, U> Progress<T> for WithMap<P, F>
+    where
+        P: Progress<U>,
+        F: Fn(T) -> U + Send + 'static,
+    {
+        type Error = P::Error;
+
+        async fn send(
+            &mut self,
+            value: T,
+        ) -> std::result::Result<(), Self::Error> {
+            self.inner.send((self.f)(value)).await
+        }
     }
 
     pub struct NoProgress;
 
     impl<Item> n0_future::Sink<Item> for NoProgress {
-        type Error = anyhow::Error;
+        type Error = io::Error;
     
         fn poll_ready(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(anyhow::Result::Ok(()))
+            std::task::Poll::Ready(io::Result::Ok(()))
         }
     
         fn start_send(self: std::pin::Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
-            anyhow::Result::Ok(())
+            io::Result::Ok(())
         }
     
         fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(anyhow::Result::Ok(()))
+            std::task::Poll::Ready(io::Result::Ok(()))
         }
     
         fn poll_close(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(anyhow::Result::Ok(()))
+            std::task::Poll::Ready(io::Result::Ok(()))
         }
     }
 
-    impl Progress for NoProgress {
+    impl<T> Progress<T> for NoProgress {
         type Error = io::Error;
 
-        async fn progress(&mut self, _offset: ChunkNum) -> std::result::Result<(), Self::Error> {
+        async fn send(&mut self, _offset: T) -> std::result::Result<(), Self::Error> {
             io::Result::Ok(())
         }
     }
@@ -181,7 +226,7 @@ pub mod outboard_with_progress {
     where
         W: WriteAt,
         R: Read,
-        P: Progress,
+        P: Progress<ChunkNum>,
     {
         // wrap the reader in a buffered reader, so we read in large chunks
         // this reduces the number of io ops
@@ -203,7 +248,7 @@ pub mod outboard_with_progress {
     ) -> io::Result<std::result::Result<(), P::Error>>
     where
         W: WriteAt,
-        P: Progress,
+        P: Progress<ChunkNum>,
     {
         // do not allocate for small trees
         let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
@@ -223,7 +268,7 @@ pub mod outboard_with_progress {
                     start_chunk,
                     ..
                 } => {
-                    if let Err(err) = progress.progress(start_chunk).await {
+                    if let Err(err) = progress.send(start_chunk).await {
                         return Ok(Err(err));
                     }
                     let buf = &mut buffer[..size];

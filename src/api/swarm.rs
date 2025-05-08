@@ -157,9 +157,13 @@ async fn handle_download_split_impl(
             .map(|x| into_stream(x))
             .flatten();
         let mut offsets = HashMap::new();
+        let mut total = 0;
         while let Some((id, offset)) = stream.next().await {
-            offsets.insert(id, offset);
-            println!("Got progress: {:#?}", offsets);
+            total += offset;
+            if let Some(prev) = offsets.insert(id, offset) {
+                total -= prev;
+            }
+            println!("Progress: {total}");
         }
     };
     tokio::pin!(forward_progress);
@@ -473,7 +477,7 @@ async fn execute_get(
     request: GetRequest,
     providers: &Arc<dyn ContentDiscovery>,
     store: &Store,
-    mut progress: impl Sink<u64, Error = anyhow::Error> + Unpin,
+    mut progress: impl Sink<u64, Error = io::Error> + Unpin,
 ) -> anyhow::Result<Stats> {
     let mut last_error = None;
     let remote = store.remote();
