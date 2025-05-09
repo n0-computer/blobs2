@@ -137,16 +137,11 @@ async fn handle_download_split_impl(
     request: DownloadRequest,
     tx: &mut spsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
-    println!("Handling download split");
     let providers = request.providers;
     let requests = split_request(&request.request, &providers, &pool, &store, Drain).await?;
-    let requests = requests.collect::<Vec<_>>();
-    println!("Split into {:?} requests", requests);
-    // todo: this is it's own mini actor, we should probably refactor this out
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let mut futs = stream::iter(requests.into_iter().enumerate())
         .map(|(id, request)| {
-            println!("Spawning download fut for request {id} {request:?}");
             let pool = pool.clone();
             let providers = providers.clone();
             let store = store.clone();
@@ -610,7 +605,7 @@ pub struct Shuffled {
 }
 
 impl Shuffled {
-    fn new(nodes: Vec<NodeId>) -> Self {
+    pub fn new(nodes: Vec<NodeId>) -> Self {
         Self { nodes }
     }
 }

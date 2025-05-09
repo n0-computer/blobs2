@@ -19,8 +19,8 @@ use bao_tree::{
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::spsc;
-use tokio::sync::watch;
-use tracing::{Span, error, trace};
+use tokio::sync::{oneshot, watch};
+use tracing::{Span, debug, error, trace};
 
 use super::{
     BaoFilePart,
@@ -29,10 +29,16 @@ use super::{
     options::{Options, PathOptions},
 };
 use crate::{
-    api::{blobs::Bitfield, proto::bitfield::BitfieldState},
+    api::{
+        blobs::Bitfield,
+        proto::bitfield::{self, BitfieldState},
+    },
     store::{
         Hash, IROH_BLOCK_SIZE,
-        fs::{TaskContext, meta::raw_outboard_size},
+        fs::{
+            TaskContext,
+            meta::{Set, raw_outboard_size},
+        },
         util::{
             DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
             read_checksummed_and_truncate, write_checksummed,
@@ -199,12 +205,11 @@ impl PartialFileStorage {
 
     fn into_complete(
         self,
-        state: &BitfieldState,
-        ctx: &TaskContext,
+        size: u64,
+        options: &Options,
     ) -> io::Result<(CompleteStorage, EntryState<Bytes>)> {
-        let size = state.validated_size.unwrap();
         let outboard_size = raw_outboard_size(size);
-        let (data, data_location) = if ctx.options.is_inlined_data(size) {
+        let (data, data_location) = if options.is_inlined_data(size) {
             let data = read_to_end(&self.data, 0, size as usize)?;
             (MemOrFile::Mem(data.clone()), DataLocation::Inline(data))
         } else {
@@ -213,7 +218,7 @@ impl PartialFileStorage {
                 DataLocation::Owned(size),
             )
         };
-        let (outboard, outboard_location) = if ctx.options.is_inlined_outboard(outboard_size) {
+        let (outboard, outboard_location) = if options.is_inlined_outboard(outboard_size) {
             if outboard_size == 0 {
                 (MemOrFile::empty(), OutboardLocation::NotNeeded)
             } else {
@@ -434,7 +439,8 @@ impl BaoFileStorage {
                     let changes = fs.bitfield.update(bitfield);
                     let new = changes.new_state();
                     if new.complete {
-                        let (cs, update) = fs.into_complete(new, ctx)?;
+                        let size = new.validated_size.unwrap();
+                        let (cs, update) = fs.into_complete(size, &ctx.options)?;
                         (cs.into(), Some(update))
                     } else {
                         let update = EntryState::Partial {
@@ -449,7 +455,8 @@ impl BaoFileStorage {
                 let changes = fs.bitfield.update(bitfield);
                 let new = changes.new_state();
                 if new.complete {
-                    let (cs, update) = fs.into_complete(new, ctx)?;
+                    let size = new.validated_size.unwrap();
+                    let (cs, update) = fs.into_complete(size, &ctx.options)?;
                     (cs.into(), Some(update))
                 } else if changes.was_validated() {
                     // we are still partial, but now we know the size
@@ -668,8 +675,32 @@ impl BaoFileHandle {
     }
 
     /// Create a new bao file handle with a partial file.
-    pub fn new_partial_file(hash: Hash, options: Arc<Options>) -> io::Result<Self> {
-        let storage = PartialFileStorage::load(&hash, &options.path)?.into();
+    pub(super) async fn new_partial_file(hash: Hash, ctx: &TaskContext) -> io::Result<Self> {
+        let options = ctx.options.clone();
+        let storage = PartialFileStorage::load(&hash, &options.path)?;
+        let storage = if storage.bitfield.is_complete() {
+            let size = storage.bitfield.size;
+            let (storage, entry_state) = storage.into_complete(size, &options)?;
+            debug!("File was reconstructed as complete");
+            let (tx, rx) = crate::util::channel::oneshot::channel();
+            ctx.db
+                .sender
+                .send(
+                    Set {
+                        hash,
+                        state: entry_state,
+                        tx,
+                        span: Span::current(),
+                    }
+                    .into(),
+                )
+                .await
+                .map_err(|_| io::Error::other("send update"))?;
+            rx.await.map_err(|_| io::Error::other("receive update"))??;
+            storage.into()
+        } else {
+            storage.into()
+        };
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: watch::Sender::new(storage),
             hash,

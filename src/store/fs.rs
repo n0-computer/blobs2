@@ -314,7 +314,7 @@ impl HashContext {
             .get_or_create(|| async {
                 let res = self.db().get(hash).await.map_err(io::Error::other)?;
                 let res = match res {
-                    Some(state) => open_bao_file(&hash, state, self.ctx.options.clone()),
+                    Some(state) => open_bao_file(&hash, state, &self.ctx).await,
                     None => Ok(BaoFileHandle::new_partial_mem(
                         hash,
                         self.ctx.options.clone(),
@@ -330,11 +330,12 @@ impl HashContext {
     }
 }
 
-fn open_bao_file(
+async fn open_bao_file(
     hash: &Hash,
     state: EntryState<Bytes>,
-    options: Arc<Options>,
+    ctx: &TaskContext,
 ) -> io::Result<BaoFileHandle> {
+    let options = &ctx.options;
     Ok(match state {
         EntryState::Complete {
             data_location,
@@ -366,7 +367,7 @@ fn open_bao_file(
             };
             BaoFileHandle::new_complete(*hash, data, outboard)
         }
-        EntryState::Partial { .. } => BaoFileHandle::new_partial_file(*hash, options.clone())?,
+        EntryState::Partial { .. } => BaoFileHandle::new_partial_file(*hash, ctx).await?,
     })
 }
 
