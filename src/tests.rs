@@ -32,7 +32,7 @@ use crate::{
     },
     util::{
         ChunkRangesExt,
-        sink::{IrpcSenderSink, Drain},
+        sink::{Drain, IrpcSenderSink},
     },
 };
 
@@ -235,10 +235,7 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        store2
-            .remote()
-            .fetch(conn.clone(), hash, Drain)
-            .await?;
+        store2.remote().fetch(conn.clone(), hash, Drain).await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
     }

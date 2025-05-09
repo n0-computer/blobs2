@@ -4,6 +4,7 @@
 //! with a remote store via rpc calls.
 use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
+use iroh::Endpoint;
 use irpc::rpc::{Handler, listen};
 use proto::{Request, ShutdownRequest, SyncDbRequest};
 use ref_cast::RefCast;
@@ -204,6 +205,15 @@ impl Store {
     /// API for getting blobs from a *single* remote node.
     pub fn remote(&self) -> &remote::Remote {
         remote::Remote::ref_from_sender(&self.client)
+    }
+
+    /// Create a downloader for more complex downloads.
+    ///
+    /// Unlike the other APIs, this creates an object that has internal state,
+    /// so don't create it ad hoc but store it somewhere if you need it multiple
+    /// times.
+    pub fn downloader(&self, endpoint: &Endpoint) -> downloader::Downloader {
+        downloader::Downloader::new(&self, endpoint)
     }
 
     /// Connect to a remote store as a rpc client.

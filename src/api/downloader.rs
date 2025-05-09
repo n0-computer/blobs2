@@ -25,20 +25,20 @@ use super::{Store, remote::GetConnection};
 use crate::{
     Hash, HashAndFormat,
     protocol::{GetManyRequest, GetRequest},
-    util::sink::{IrpcSenderRefSink, Drain, Sink, TokioMpscSenderSink},
+    util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
 };
 
 #[derive(Debug, Clone)]
-pub struct Swarm {
-    client: irpc::Client<SwarmMsg, SwarmProtocol, SwarmService>,
+pub struct Downloader {
+    client: irpc::Client<SwarmMsg, SwarmProtocol, DownloaderService>,
 }
 
 #[derive(Debug, Clone)]
-pub struct SwarmService;
+pub struct DownloaderService;
 
-impl irpc::Service for SwarmService {}
+impl irpc::Service for DownloaderService {}
 
-#[rpc_requests(SwarmService, message = SwarmMsg, alias = "Msg")]
+#[rpc_requests(DownloaderService, message = SwarmMsg, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
 enum SwarmProtocol {
     #[rpc(tx = spsc::Sender<DownloadProgessItem>)]
@@ -336,7 +336,7 @@ impl IntoFuture for DownloadProgress {
     }
 }
 
-impl Swarm {
+impl Downloader {
     pub fn new(store: &Store, endpoint: &Endpoint) -> Self {
         let (tx, rx) = mpsc::channel::<SwarmMsg>(32);
         let actor = SwarmActor::new(store.clone(), endpoint.clone());
@@ -614,7 +614,7 @@ mod tests {
     use crate::{
         api::{
             blobs::AddBytesOptions,
-            downloader::{DownloadOptions, Shuffled, SplitStrategy, Swarm},
+            downloader::{DownloadOptions, Downloader, Shuffled, SplitStrategy},
         },
         hashseq::HashSeq,
         protocol::{GetManyRequest, GetRequest},
@@ -635,7 +635,7 @@ mod tests {
         let node2_id = node2_addr.node_id;
         // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
         // store2.remote().fetch(conn, *tt.hash(), None).await?;
-        let swarm = Swarm::new(&store3, r3.endpoint());
+        let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetManyRequest::builder()
@@ -679,7 +679,7 @@ mod tests {
         let node2_id = node2_addr.node_id;
         // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
         // store2.remote().fetch(conn, *tt.hash(), None).await?;
-        let swarm = Swarm::new(&store3, r3.endpoint());
+        let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetRequest::builder()
@@ -751,7 +751,7 @@ mod tests {
         let node2_id = node2_addr.node_id;
         // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
         // store2.remote().fetch(conn, *tt.hash(), None).await?;
-        let swarm = Swarm::new(&store3, r3.endpoint());
+        let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetRequest::all(*root.hash());
