@@ -23,7 +23,10 @@ use tracing::instrument::Instrument;
 
 use super::{Store, remote::GetConnection};
 use crate::{
-    protocol::{GetManyRequest, GetRequest}, util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink}, BlobFormat, Hash, HashAndFormat
+    BlobFormat, Hash, HashAndFormat,
+    get::request,
+    protocol::{GetManyRequest, GetRequest},
+    util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
 };
 
 #[derive(Debug, Clone)]
@@ -134,12 +137,16 @@ async fn handle_download_split_impl(
     request: DownloadRequest,
     tx: &mut spsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
+    println!("Handling download split");
     let providers = request.providers;
     let requests = split_request(&request.request, &providers, &pool, &store, Drain).await?;
+    let requests = requests.collect::<Vec<_>>();
+    println!("Split into {:?} requests", requests);
     // todo: this is it's own mini actor, we should probably refactor this out
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let mut futs = stream::iter(requests.into_iter().enumerate())
         .map(|(id, request)| {
+            println!("Spawning download fut for request {id} {request:?}");
             let pool = pool.clone();
             let providers = providers.clone();
             let store = store.clone();
@@ -178,7 +185,6 @@ async fn handle_download_split_impl(
                 tx.send(item).await?;
             },
             res = futs.next() => {
-                println!("Got result: {:?}", res);
                 match res {
                     Some((hash, Ok(()))) => {
                     }
@@ -245,7 +251,8 @@ impl SupportedRequest for HashAndFormat {
         (match self.format {
             BlobFormat::Raw => GetRequest::blob(self.hash),
             BlobFormat::HashSeq => GetRequest::all(self.hash),
-        }).into()
+        })
+        .into()
     }
 }
 
@@ -387,7 +394,7 @@ async fn split_request<'a>(
 ) -> anyhow::Result<Box<dyn Iterator<Item = GetRequest> + Send + 'a>> {
     Ok(match request {
         FiniteRequest::Get(req) => {
-            let Some(first) = req.ranges.iter().next() else {
+            let Some(first) = req.ranges.iter_infinite().next() else {
                 return Ok(Box::new(std::iter::empty()));
             };
             let first = GetRequest::blob(req.hash);
@@ -397,7 +404,7 @@ async fn split_request<'a>(
             let n = size / 32;
             Box::new(
                 req.ranges
-                    .iter()
+                    .iter_infinite()
                     .take(n as usize + 1)
                     .enumerate()
                     .filter_map(|(i, ranges)| {

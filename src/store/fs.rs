@@ -320,12 +320,13 @@ impl HashContext {
                         self.ctx.options.clone(),
                     )),
                 };
-                res
+                Ok((res?, ()))
             })
             .await
             .map_err(api::Error::from);
         trace!("{res:?}");
-        res
+        let (res, _) = res?;
+        Ok(res)
     }
 }
 
@@ -384,19 +385,20 @@ impl Slot {
     /// If there is nothing in the database, create a new in-memory handle.
     ///
     /// `make` will be called if the a live handle does not exist.
-    pub async fn get_or_create<F, Fut>(&self, make: F) -> io::Result<BaoFileHandle>
+    pub async fn get_or_create<F, Fut, T>(&self, make: F) -> io::Result<(BaoFileHandle, T)>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = io::Result<BaoFileHandle>>,
+        Fut: std::future::Future<Output = io::Result<(BaoFileHandle, T)>>,
+        T: Default,
     {
         let mut slot = self.0.lock().await;
         if let Some(weak) = &*slot {
             if let Some(handle) = weak.upgrade() {
-                return Ok(handle);
+                return Ok((handle, Default::default()));
             }
         }
         let handle = make().await;
-        if let Ok(handle) = &handle {
+        if let Ok((handle, _)) = &handle {
             *slot = Some(handle.downgrade());
         }
         handle
