@@ -23,9 +23,7 @@ use tracing::instrument::Instrument;
 
 use super::{Store, remote::GetConnection};
 use crate::{
-    Hash, HashAndFormat,
-    protocol::{GetManyRequest, GetRequest},
-    util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
+    protocol::{GetManyRequest, GetRequest}, util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink}, BlobFormat, Hash, HashAndFormat
 };
 
 #[derive(Debug, Clone)]
@@ -45,7 +43,7 @@ enum SwarmProtocol {
     Download(DownloadRequest),
 }
 
-struct SwarmActor {
+struct DownloaderActor {
     store: Store,
     pool: ConnectionPool,
     tasks: JoinSet<()>,
@@ -71,7 +69,7 @@ pub enum DownloadProgessItem {
     DownloadError,
 }
 
-impl SwarmActor {
+impl DownloaderActor {
     fn new(store: Store, endpoint: Endpoint) -> Self {
         Self {
             store,
@@ -226,13 +224,28 @@ impl<I: Into<Hash>, T: IntoIterator<Item = I>> SupportedRequest for T {
 
 impl SupportedRequest for GetRequest {
     fn into_request(self) -> FiniteRequest {
-        FiniteRequest::Get(self)
+        self.into()
     }
 }
 
 impl SupportedRequest for GetManyRequest {
     fn into_request(self) -> FiniteRequest {
-        FiniteRequest::GetMany(self)
+        self.into()
+    }
+}
+
+impl SupportedRequest for Hash {
+    fn into_request(self) -> FiniteRequest {
+        GetRequest::blob(self).into()
+    }
+}
+
+impl SupportedRequest for HashAndFormat {
+    fn into_request(self) -> FiniteRequest {
+        (match self.format {
+            BlobFormat::Raw => GetRequest::blob(self.hash),
+            BlobFormat::HashSeq => GetRequest::all(self.hash),
+        }).into()
     }
 }
 
@@ -339,7 +352,7 @@ impl IntoFuture for DownloadProgress {
 impl Downloader {
     pub fn new(store: &Store, endpoint: &Endpoint) -> Self {
         let (tx, rx) = mpsc::channel::<SwarmMsg>(32);
-        let actor = SwarmActor::new(store.clone(), endpoint.clone());
+        let actor = DownloaderActor::new(store.clone(), endpoint.clone());
         tokio::spawn(actor.run(rx));
         Self { client: tx.into() }
     }
