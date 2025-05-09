@@ -11,7 +11,7 @@ use super::{
 use crate::{
     api::{Store, remote::LocalInfo},
     get::GetError,
-    util::outboard_with_progress::{NoProgress, Sink},
+    util::sink::{Drain, Sink},
 };
 
 impl From<GetError> for FailureAction {

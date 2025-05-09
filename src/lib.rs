@@ -12,7 +12,7 @@ pub mod net_protocol;
 pub mod protocol;
 pub mod provider;
 pub mod ticket;
-mod util;
+pub mod util;
 
 #[cfg(test)]
 mod tests;

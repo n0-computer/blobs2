@@ -15,12 +15,25 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::{
-    api::{blobs::Bitfield, Store}, downloader::{DownloadRequest, Downloader}, get, hashseq::HashSeq, net_protocol::Blobs, protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest}, provider::Event, store::{
+    BlobFormat, Hash, HashAndFormat,
+    api::{Store, blobs::Bitfield},
+    downloader::{DownloadRequest, Downloader},
+    get,
+    hashseq::HashSeq,
+    net_protocol::Blobs,
+    protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest},
+    provider::Event,
+    store::{
         fs::{
-            tests::{create_n0_bao, test_data, INTERESTING_SIZES}, FsStore
+            FsStore,
+            tests::{INTERESTING_SIZES, create_n0_bao, test_data},
         },
         util::observer::Combine,
-    }, util::{outboard_with_progress::{IrpcSenderSink, NoProgress}, ChunkRangesExt}, BlobFormat, Hash, HashAndFormat
+    },
+    util::{
+        ChunkRangesExt,
+        sink::{IrpcSenderSink, Drain},
+    },
 };
 
 #[tokio::test]
@@ -224,7 +237,7 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
         store2
             .remote()
-            .fetch(conn.clone(), hash, NoProgress)
+            .fetch(conn.clone(), hash, Drain)
             .await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
@@ -285,7 +298,7 @@ async fn two_nodes_get_many() -> TestResult<()> {
         .execute_get_many(
             conn,
             GetManyRequest::new(hashes, ChunkRangesSeq::all()),
-            NoProgress,
+            Drain,
         )
         .await?;
     for size in sizes {
@@ -466,7 +479,7 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     let sizes = [1];
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
-    store2.remote().fetch(conn, root, NoProgress).await?;
+    store2.remote().fetch(conn, root, Drain).await?;
     check_presence(&store2, &sizes).await?;
     Ok(())
 }
@@ -480,7 +493,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let (tx, rx) = spsc::channel::<u64>(16);
-    use crate::util::outboard_with_progress::Sink;
+    use crate::util::sink::Sink;
     let p = IrpcSenderSink(tx).with_map_err(|e| e.into());
     let res = store2.remote().fetch(conn, root, p);
     pin!(rx);

@@ -9,13 +9,10 @@ use ref_cast::RefCast;
 use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
-    get::{
-        GetError, GetResult, Stats,
-        fsm::DecodeError,
-    },
+    get::{GetError, GetResult, Stats, fsm::DecodeError},
     protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
     provider::{EventSender, ProgressWriter, StreamContext},
-    util::outboard_with_progress::{NoProgress, Sink},
+    util::sink::{Drain, Sink},
 };
 
 /// API to compute request and to download from remote nodes.
@@ -417,7 +414,7 @@ impl Remote {
     }
 
     pub async fn execute(&self, conn: Connection, request: GetRequest) -> GetResult<Stats> {
-        self.execute_with_opts(conn, request, NoProgress).await
+        self.execute_with_opts(conn, request, Drain).await
     }
 
     /// Execute a get request *without* taking the locally available ranges into account.

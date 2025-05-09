@@ -137,6 +137,111 @@ pub mod outboard_with_progress {
     use irpc::RpcMessage;
     use smallvec::SmallVec;
 
+    use super::sink::Sink;
+
+    pub async fn init_outboard<R, W, P>(
+        data: R,
+        outboard: &mut PreOrderOutboard<W>,
+        progress: &mut P,
+    ) -> std::io::Result<std::result::Result<(), P::Error>>
+    where
+        W: WriteAt,
+        R: Read,
+        P: Sink<ChunkNum>,
+    {
+        // wrap the reader in a buffered reader, so we read in large chunks
+        // this reduces the number of io ops
+        let size = usize::try_from(outboard.tree.size()).unwrap_or(usize::MAX);
+        let read_buf_size = size.min(1024 * 1024);
+        let chunk_buf_size = size.min(outboard.tree.block_size().bytes());
+        let reader = BufReader::with_capacity(read_buf_size, data);
+        let mut buffer = SmallVec::<[u8; 128]>::from_elem(0u8, chunk_buf_size);
+        let res = init_impl(outboard.tree, reader, outboard, &mut buffer, progress).await?;
+        Ok(res)
+    }
+
+    async fn init_impl<W, P>(
+        tree: BaoTree,
+        mut data: impl Read,
+        outboard: &mut PreOrderOutboard<W>,
+        buffer: &mut [u8],
+        progress: &mut P,
+    ) -> io::Result<std::result::Result<(), P::Error>>
+    where
+        W: WriteAt,
+        P: Sink<ChunkNum>,
+    {
+        // do not allocate for small trees
+        let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
+        // debug_assert!(buffer.len() == tree.chunk_group_bytes());
+        for item in tree.post_order_chunks_iter() {
+            match item {
+                BaoChunk::Parent { is_root, node, .. } => {
+                    let right_hash = stack.pop().unwrap();
+                    let left_hash = stack.pop().unwrap();
+                    outboard.save(node, &(left_hash, right_hash))?;
+                    let parent = parent_cv(&left_hash, &right_hash, is_root);
+                    stack.push(parent);
+                }
+                BaoChunk::Leaf {
+                    size,
+                    is_root,
+                    start_chunk,
+                    ..
+                } => {
+                    if let Err(err) = progress.send(start_chunk).await {
+                        return Ok(Err(err));
+                    }
+                    let buf = &mut buffer[..size];
+                    data.read_exact(buf)?;
+                    let hash = bao_tree::hash_subtree(start_chunk.0, buf, is_root);
+                    stack.push(hash);
+                }
+            }
+        }
+        debug_assert_eq!(stack.len(), 1);
+        outboard.root = stack.pop().unwrap();
+        Ok(Ok(()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use bao_tree::{
+            BaoTree, blake3,
+            io::{outboard::PreOrderOutboard, sync::CreateOutboard},
+        };
+        use testresult::TestResult;
+
+        use crate::{
+            store::{IROH_BLOCK_SIZE, fs::tests::test_data},
+            util::{outboard_with_progress::init_outboard, sink::Drain},
+        };
+
+        #[tokio::test]
+        async fn init_outboard_with_progress() -> TestResult<()> {
+            for size in [1024 * 18 + 1] {
+                let data = test_data(size);
+                let mut o1 = PreOrderOutboard::<Vec<u8>> {
+                    tree: BaoTree::new(data.len() as u64, IROH_BLOCK_SIZE),
+                    ..Default::default()
+                };
+                let mut o2 = o1.clone();
+                o1.init_from(data.as_ref())?;
+                init_outboard(data.as_ref(), &mut o2, &mut Drain).await??;
+                assert_eq!(o1.root, blake3::hash(&data));
+                assert_eq!(o1.root, o2.root);
+                assert_eq!(o1.data, o2.data);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub mod sink {
+    use std::io;
+
+    use irpc::RpcMessage;
+
     /// Our version of a sink, that can be mapped etc.
     pub trait Sink<Item> {
         type Error;
@@ -249,139 +354,13 @@ pub mod outboard_with_progress {
         }
     }
 
-    pub struct NoProgress;
+    pub struct Drain;
 
-    impl<Item> n0_future::Sink<Item> for NoProgress {
-        type Error = io::Error;
-
-        fn poll_ready(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(io::Result::Ok(()))
-        }
-
-        fn start_send(self: std::pin::Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
-            io::Result::Ok(())
-        }
-
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(io::Result::Ok(()))
-        }
-
-        fn poll_close(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(io::Result::Ok(()))
-        }
-    }
-
-    impl<T> Sink<T> for NoProgress {
+    impl<T> Sink<T> for Drain {
         type Error = io::Error;
 
         async fn send(&mut self, _offset: T) -> std::result::Result<(), Self::Error> {
             io::Result::Ok(())
-        }
-    }
-
-    pub async fn init_outboard<R, W, P>(
-        data: R,
-        outboard: &mut PreOrderOutboard<W>,
-        progress: &mut P,
-    ) -> std::io::Result<std::result::Result<(), P::Error>>
-    where
-        W: WriteAt,
-        R: Read,
-        P: Sink<ChunkNum>,
-    {
-        // wrap the reader in a buffered reader, so we read in large chunks
-        // this reduces the number of io ops
-        let size = usize::try_from(outboard.tree.size()).unwrap_or(usize::MAX);
-        let read_buf_size = size.min(1024 * 1024);
-        let chunk_buf_size = size.min(outboard.tree.block_size().bytes());
-        let reader = BufReader::with_capacity(read_buf_size, data);
-        let mut buffer = SmallVec::<[u8; 128]>::from_elem(0u8, chunk_buf_size);
-        let res = init_impl(outboard.tree, reader, outboard, &mut buffer, progress).await?;
-        Ok(res)
-    }
-
-    async fn init_impl<W, P>(
-        tree: BaoTree,
-        mut data: impl Read,
-        outboard: &mut PreOrderOutboard<W>,
-        buffer: &mut [u8],
-        progress: &mut P,
-    ) -> io::Result<std::result::Result<(), P::Error>>
-    where
-        W: WriteAt,
-        P: Sink<ChunkNum>,
-    {
-        // do not allocate for small trees
-        let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
-        // debug_assert!(buffer.len() == tree.chunk_group_bytes());
-        for item in tree.post_order_chunks_iter() {
-            match item {
-                BaoChunk::Parent { is_root, node, .. } => {
-                    let right_hash = stack.pop().unwrap();
-                    let left_hash = stack.pop().unwrap();
-                    outboard.save(node, &(left_hash, right_hash))?;
-                    let parent = parent_cv(&left_hash, &right_hash, is_root);
-                    stack.push(parent);
-                }
-                BaoChunk::Leaf {
-                    size,
-                    is_root,
-                    start_chunk,
-                    ..
-                } => {
-                    if let Err(err) = progress.send(start_chunk).await {
-                        return Ok(Err(err));
-                    }
-                    let buf = &mut buffer[..size];
-                    data.read_exact(buf)?;
-                    let hash = bao_tree::hash_subtree(start_chunk.0, buf, is_root);
-                    stack.push(hash);
-                }
-            }
-        }
-        debug_assert_eq!(stack.len(), 1);
-        outboard.root = stack.pop().unwrap();
-        Ok(Ok(()))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use bao_tree::{
-            BaoTree, blake3,
-            io::{outboard::PreOrderOutboard, sync::CreateOutboard},
-        };
-        use testresult::TestResult;
-
-        use crate::{
-            store::{IROH_BLOCK_SIZE, fs::tests::test_data},
-            util::outboard_with_progress::{NoProgress, init_outboard},
-        };
-
-        #[tokio::test]
-        async fn init_outboard_with_progress() -> TestResult<()> {
-            for size in [1024 * 18 + 1] {
-                let data = test_data(size);
-                let mut o1 = PreOrderOutboard::<Vec<u8>> {
-                    tree: BaoTree::new(data.len() as u64, IROH_BLOCK_SIZE),
-                    ..Default::default()
-                };
-                let mut o2 = o1.clone();
-                o1.init_from(data.as_ref())?;
-                init_outboard(data.as_ref(), &mut o2, &mut NoProgress).await??;
-                assert_eq!(o1.root, blake3::hash(&data));
-                assert_eq!(o1.root, o2.root);
-                assert_eq!(o1.data, o2.data);
-            }
-            Ok(())
         }
     }
 }

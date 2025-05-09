@@ -46,7 +46,7 @@ use crate::{
         IROH_BLOCK_SIZE,
         util::{DD, MemOrFile},
     },
-    util::outboard_with_progress::{Sink, init_outboard},
+    util::{outboard_with_progress::init_outboard, sink::Sink},
 };
 
 /// An import source.

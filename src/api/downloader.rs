@@ -23,7 +23,9 @@ use tracing::instrument::Instrument;
 
 use super::{Store, remote::GetConnection};
 use crate::{
-    protocol::{GetManyRequest, GetRequest}, util::outboard_with_progress::{IrpcSenderRefSink, NoProgress, Sink, TokioMpscSenderSink}, Hash, HashAndFormat
+    Hash, HashAndFormat,
+    protocol::{GetManyRequest, GetRequest},
+    util::sink::{IrpcSenderRefSink, Drain, Sink, TokioMpscSenderSink},
 };
 
 #[derive(Debug, Clone)]
@@ -135,7 +137,7 @@ async fn handle_download_split_impl(
     tx: &mut spsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     let providers = request.providers;
-    let requests = split_request(&request.request, &providers, &pool, &store, NoProgress).await?;
+    let requests = split_request(&request.request, &providers, &pool, &store, Drain).await?;
     // todo: this is it's own mini actor, we should probably refactor this out
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let mut futs = stream::iter(requests.into_iter().enumerate())
@@ -159,8 +161,9 @@ async fn handle_download_split_impl(
     let mut progress_stream = {
         let mut offsets = HashMap::new();
         let mut total = 0;
-        into_stream(progress_rx).flat_map(|x| into_stream(x)).map(move |(id, item)| {
-            match item {
+        into_stream(progress_rx)
+            .flat_map(|x| into_stream(x))
+            .map(move |(id, item)| match item {
                 DownloadProgessItem::Progress(offset) => {
                     total += offset;
                     if let Some(prev) = offsets.insert(id, offset) {
@@ -168,9 +171,8 @@ async fn handle_download_split_impl(
                     }
                     DownloadProgessItem::Progress(total)
                 }
-                x => x
-            }
-        })
+                x => x,
+            })
     };
     loop {
         tokio::select! {
@@ -301,7 +303,9 @@ impl DownloadProgress {
         Self { fut }
     }
 
-    pub async fn stream(self) -> Result<impl Stream<Item = DownloadProgessItem> + Unpin, irpc::Error> {
+    pub async fn stream(
+        self,
+    ) -> Result<impl Stream<Item = DownloadProgessItem> + Unpin, irpc::Error> {
         let rx = self.fut.await?;
         Ok(Box::pin(rx.into_stream().map(|item| match item {
             Ok(item) => item,
@@ -375,26 +379,33 @@ async fn split_request<'a>(
             };
             let first = GetRequest::blob(req.hash);
             execute_get(pool, Arc::new(first), providers, store, progress).await?;
-            let size  = store.observe(req.hash).await?.size();
+            let size = store.observe(req.hash).await?.size();
             anyhow::ensure!(size % 32 == 0, "Size is not a multiple of 32");
             let n = size / 32;
-            Box::new(req.ranges.iter().take(n as usize + 1).enumerate().filter_map(|(i, ranges)| {
-                if i != 0 && !ranges.is_empty() {
-                    Some(
-                        GetRequest::builder()
-                            .offset(i as u64, ranges.clone())
-                            .build(req.hash),
-                    )
-                } else {
-                    None
-                }
-            }))
+            Box::new(
+                req.ranges
+                    .iter()
+                    .take(n as usize + 1)
+                    .enumerate()
+                    .filter_map(|(i, ranges)| {
+                        if i != 0 && !ranges.is_empty() {
+                            Some(
+                                GetRequest::builder()
+                                    .offset(i as u64, ranges.clone())
+                                    .build(req.hash),
+                            )
+                        } else {
+                            None
+                        }
+                    }),
+            )
         }
-        FiniteRequest::GetMany(req) => Box::new(req
-            .hashes
-            .iter()
-            .enumerate()
-            .map(|(i, hash)| GetRequest::blob_ranges(*hash, req.ranges[i as u64].clone())))
+        FiniteRequest::GetMany(req) => Box::new(
+            req.hashes
+                .iter()
+                .enumerate()
+                .map(|(i, hash)| GetRequest::blob_ranges(*hash, req.ranges[i as u64].clone())),
+        ),
     })
 }
 
@@ -465,10 +476,12 @@ async fn execute_get(
     let remote = store.remote();
     let mut providers = providers.find_providers(request.content());
     while let Some(provider) = providers.next().await {
-        progress.send(DownloadProgessItem::TryProvider {
-            id: provider,
-            request: request.clone(),
-        }).await?;
+        progress
+            .send(DownloadProgessItem::TryProvider {
+                id: provider,
+                request: request.clone(),
+            })
+            .await?;
         let mut conn = pool.dial(provider);
         let local = remote.local_for_request(request.clone()).await?;
         if local.is_complete() {
@@ -485,16 +498,20 @@ async fn execute_get(
             .await
         {
             Ok(stats) => {
-                progress.send(DownloadProgessItem::PartComplete {
-                    request: request.clone(),
-                }).await?;
+                progress
+                    .send(DownloadProgessItem::PartComplete {
+                        request: request.clone(),
+                    })
+                    .await?;
                 return Ok(());
             }
             Err(cause) => {
-                progress.send(DownloadProgessItem::ProviderFailed {
-                    id: provider,
-                    request: request.clone(),
-                }).await?;
+                progress
+                    .send(DownloadProgessItem::ProviderFailed {
+                        id: provider,
+                        request: request.clone(),
+                    })
+                    .await?;
                 continue;
             }
         }
@@ -625,12 +642,18 @@ mod tests {
             .hash(*tt1.hash(), ChunkRanges::all())
             .hash(*tt2.hash(), ChunkRanges::all())
             .build();
-        let mut progress = swarm.download(request, Shuffled::new(vec![node1_id, node2_id])).stream().await?;
+        let mut progress = swarm
+            .download(request, Shuffled::new(vec![node1_id, node2_id]))
+            .stream()
+            .await?;
         while let Some(item) = progress.next().await {
             println!("Got item: {:?}", item);
         }
         assert_eq!(store3.get_bytes(*tt1.hash()).await?.deref(), b"hello world");
-        assert_eq!(store3.get_bytes(*tt2.hash()).await?.deref(), b"hello world 2");
+        assert_eq!(
+            store3.get_bytes(*tt2.hash()).await?.deref(),
+            b"hello world 2"
+        );
         Ok(())
     }
 
@@ -665,11 +688,14 @@ mod tests {
             .next(ChunkRanges::all())
             .build(*root.hash());
         if true {
-            let mut progress = swarm.download_with_opts(DownloadOptions::new(
-                request,
-                [node1_id, node2_id],
-                SplitStrategy::Split,
-            )).stream().await?;
+            let mut progress = swarm
+                .download_with_opts(DownloadOptions::new(
+                    request,
+                    [node1_id, node2_id],
+                    SplitStrategy::Split,
+                ))
+                .stream()
+                .await?;
             while let Some(item) = progress.next().await {
                 println!("Got item: {:?}", item);
             }
@@ -730,11 +756,14 @@ mod tests {
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetRequest::all(*root.hash());
         if true {
-            let mut progress = swarm.download_with_opts(DownloadOptions::new(
-                request,
-                [node1_id, node2_id],
-                SplitStrategy::Split,
-            )).stream().await?;
+            let mut progress = swarm
+                .download_with_opts(DownloadOptions::new(
+                    request,
+                    [node1_id, node2_id],
+                    SplitStrategy::Split,
+                ))
+                .stream()
+                .await?;
             while let Some(item) = progress.next().await {
                 println!("Got item: {:?}", item);
             }

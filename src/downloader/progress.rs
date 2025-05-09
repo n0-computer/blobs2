@@ -5,7 +5,7 @@ use n0_future::io;
 use tokio::sync::mpsc;
 
 use super::DownloadKind;
-use crate::util::outboard_with_progress::Sink;
+use crate::util::sink::Sink;
 
 /// The channel that can be used to subscribe to progress updates.
 pub type ProgressSubscriber = mpsc::Sender<u64>;
