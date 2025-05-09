@@ -9,8 +9,9 @@ use super::{
     progress::BroadcastProgressSender,
 };
 use crate::{
-    api::{remote::LocalInfo, Store},
-    get::GetError, util::outboard_with_progress::NoProgress,
+    api::{Store, remote::LocalInfo},
+    get::GetError,
+    util::outboard_with_progress::{NoProgress, Sink},
 };
 
 impl From<GetError> for FailureAction {
@@ -46,15 +47,10 @@ impl NeedsConn<endpoint::Connection> for GetStateNeedsConn {
         let store = self.store.clone();
         let local_bytes = self.info.local_bytes();
         Box::pin(async move {
-            let mut progress = self.progress.add_offset(local_bytes);
+            let progress = self.progress.with_map(move |x| x + local_bytes);
             let res = store
                 .remote()
-                .execute_with_opts(
-                    conn,
-                    self.info.missing(),
-                    Default::default(),
-                    NoProgress,
-                )
+                .execute_with_opts(conn, self.info.missing(), progress)
                 .await;
             #[cfg(feature = "metrics")]
             track_metrics(&res);

@@ -46,7 +46,7 @@ use crate::{
         IROH_BLOCK_SIZE,
         util::{DD, MemOrFile},
     },
-    util::outboard_with_progress::{Progress, init_outboard},
+    util::outboard_with_progress::{Sink, init_outboard},
 };
 
 /// An import source.
@@ -342,7 +342,7 @@ async fn get_import_source(
 #[repr(transparent)]
 struct OutboardProgress(spsc::Sender<AddProgressItem>);
 
-impl Progress<ChunkNum> for OutboardProgress {
+impl Sink<ChunkNum> for OutboardProgress {
     type Error = irpc::channel::SendError;
 
     async fn send(&mut self, offset: ChunkNum) -> std::result::Result<(), Self::Error> {

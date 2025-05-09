@@ -69,6 +69,14 @@ impl Stats {
     pub fn total_bytes_read(&self) -> u64 {
         self.payload_bytes_read + self.other_bytes_read
     }
+
+    pub fn combine(&mut self, that: &Stats) {
+        self.payload_bytes_written += that.payload_bytes_written;
+        self.other_bytes_written += that.other_bytes_written;
+        self.payload_bytes_read += that.payload_bytes_read;
+        self.other_bytes_read += that.other_bytes_read;
+        self.elapsed += that.elapsed;
+    }
 }
 
 /// Finite state machine for get responses.

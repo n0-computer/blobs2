@@ -1,13 +1,18 @@
 use std::{
-    collections::{HashMap, HashSet}, fmt::Debug, io, ops::Deref, sync::Arc, time::{Duration, SystemTime}
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    io,
+    ops::Deref,
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
-use irpc::channel::{oneshot, spsc};
+use irpc::channel::spsc;
 use irpc_derive::rpc_requests;
-use n0_future::{future, BufferedStreamExt, Sink, SinkExt, Stream, StreamExt};
+use n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize, de::Error};
 use tokio::{
@@ -18,7 +23,7 @@ use tracing::instrument::Instrument;
 
 use super::{Store, remote::GetConnection};
 use crate::{
-    downloader::{self, DownloadError, Downloader}, get::{GetError, Stats}, protocol::{GetManyRequest, GetRequest}, store, util::outboard_with_progress::{NoProgress, Progress}, Hash, HashAndFormat
+    protocol::{GetManyRequest, GetRequest}, util::outboard_with_progress::{IrpcSenderRefSink, NoProgress, Sink, TokioMpscSenderSink}, Hash, HashAndFormat
 };
 
 #[derive(Debug, Clone)]
@@ -36,8 +41,6 @@ impl irpc::Service for SwarmService {}
 enum SwarmProtocol {
     #[rpc(tx = spsc::Sender<DownloadProgessItem>)]
     Download(DownloadRequest),
-    #[rpc(tx = oneshot::Sender<()>)]
-    AddProvider(AddProviderRequest),
 }
 
 struct SwarmActor {
@@ -51,10 +54,19 @@ struct SwarmActor {
 pub enum DownloadProgessItem {
     #[serde(skip)]
     Error(anyhow::Error),
-    DownloadError,
-    PartComplete {
-        hash: Hash,
+    TryProvider {
+        id: NodeId,
+        request: Arc<GetRequest>,
     },
+    ProviderFailed {
+        id: NodeId,
+        request: Arc<GetRequest>,
+    },
+    PartComplete {
+        request: Arc<GetRequest>,
+    },
+    Progress(u64),
+    DownloadError,
 }
 
 impl SwarmActor {
@@ -76,9 +88,6 @@ impl SwarmActor {
                         self.pool.clone(),
                         request,
                     ));
-                }
-                SwarmMsg::AddProvider(request) => {
-                    todo!()
                 }
             }
         }
@@ -108,10 +117,11 @@ async fn handle_download_impl(
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
         SplitStrategy::None => match request.request {
             FiniteRequest::Get(get) => {
-                execute_get(&pool, get, &request.providers, &store, NoProgress).await?;
+                let sink = IrpcSenderRefSink(tx).with_map_err(|e| io::Error::other(e));
+                execute_get(&pool, Arc::new(get), &request.providers, &store, sink).await?;
             }
             FiniteRequest::GetMany(_) => {
-                todo!()
+                handle_download_split_impl(store, pool, request, tx).await?
             }
         },
     }
@@ -125,69 +135,57 @@ async fn handle_download_split_impl(
     tx: &mut spsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     let providers = request.providers;
-    let requests = split_request(request.request, &providers, &pool, &store).await?;
+    let requests = split_request(&request.request, &providers, &pool, &store, NoProgress).await?;
     // todo: this is it's own mini actor, we should probably refactor this out
-    let mut n = requests.len();
-    let (requests_tx, requests_rx) = mpsc::channel(n);
-    let permits = requests_tx.reserve_many(n).await.unwrap();
-    for (id, (request, permit)) in requests.into_iter().zip(permits).enumerate() {
-        permit.send((request, id));
-    }
     let (progress_tx, progress_rx) = mpsc::channel(32);
-    let mut futs = into_stream(requests_rx)
-        .map(|(request, id)| {
+    let mut futs = stream::iter(requests.into_iter().enumerate())
+        .map(|(id, request)| {
             let pool = pool.clone();
             let providers = providers.clone();
             let store = store.clone();
             let progress_tx = progress_tx.clone();
             async move {
                 let hash = request.hash;
-                let (tx, rx) = mpsc::channel(32);
+                let (tx, rx) = mpsc::channel::<(usize, DownloadProgessItem)>(16);
                 progress_tx.send(rx).await.ok();
-                let sink = Box::pin(tokio_util::sync::PollSender::new(tx)
-                    .sink_map_err(|e| io::Error::other(e))
-                    .with(|x| async move { Ok((id, x)) }));
-                let res = execute_get(&pool, request, &providers, &store, sink).await;
+                let sink = TokioMpscSenderSink(tx)
+                    .with_map_err(|e| io::Error::other(e))
+                    .with_map(move |x| (id, x));
+                let res = execute_get(&pool, Arc::new(request), &providers, &store, sink).await;
                 (hash, res)
             }
         })
         .buffered_unordered(32);
-    let forward_progress = async {
-        let mut stream = into_stream(progress_rx)
-            .map(|x| into_stream(x))
-            .flatten();
+    let mut progress_stream = {
         let mut offsets = HashMap::new();
         let mut total = 0;
-        while let Some((id, offset)) = stream.next().await {
-            total += offset;
-            if let Some(prev) = offsets.insert(id, offset) {
-                total -= prev;
+        into_stream(progress_rx).flat_map(|x| into_stream(x)).map(move |(id, item)| {
+            match item {
+                DownloadProgessItem::Progress(offset) => {
+                    total += offset;
+                    if let Some(prev) = offsets.insert(id, offset) {
+                        total -= prev;
+                    }
+                    DownloadProgessItem::Progress(total)
+                }
+                x => x
             }
-            println!("Progress: {total}");
-        }
+        })
     };
-    tokio::pin!(forward_progress);
     loop {
         tokio::select! {
-            _ = &mut forward_progress => {
-                // The progress stream has ended, we should stop processing.
-                break;
+            Some(item) = progress_stream.next() => {
+                tx.send(item).await?;
             },
             res = futs.next() => {
                 println!("Got result: {:?}", res);
-                n -= 1;
                 match res {
-                    Some((hash, Ok(stats))) => {
-                        tx.send(DownloadProgessItem::PartComplete { hash }).await?;
+                    Some((hash, Ok(()))) => {
                     }
                     Some((hash, Err(e))) => {
                         tx.send(DownloadProgessItem::DownloadError).await?;
                     }
                     None => break,
-                }
-                if n == 0 {
-                    // All requests have been processed.
-                    break;
                 }
             }
             _ = tx.closed() => {
@@ -303,12 +301,12 @@ impl DownloadProgress {
         Self { fut }
     }
 
-    pub async fn stream(self) -> Result<impl Stream<Item = DownloadProgessItem>, irpc::Error> {
+    pub async fn stream(self) -> Result<impl Stream<Item = DownloadProgessItem> + Unpin, irpc::Error> {
         let rx = self.fut.await?;
-        Ok(rx.into_stream().map(|item| match item {
+        Ok(Box::pin(rx.into_stream().map(|item| match item {
             Ok(item) => item,
             Err(e) => DownloadProgessItem::Error(e.into()),
-        }))
+        })))
     }
 
     async fn complete(self) -> anyhow::Result<()> {
@@ -360,58 +358,43 @@ impl Swarm {
         let fut = self.client.server_streaming(options, 32);
         DownloadProgress::new(Box::pin(fut))
     }
-
-    pub async fn add_provider(&self, hash: Hash, provider: NodeId) -> Result<(), irpc::Error> {
-        let request = AddProviderRequest {
-            hash,
-            providers: vec![provider],
-        };
-        self.client.rpc(request).await
-    }
 }
 
 /// Split a request into multiple requests that can be run in parallel.
-async fn split_request(
-    request: FiniteRequest,
+async fn split_request<'a>(
+    request: &'a FiniteRequest,
     providers: &Arc<dyn ContentDiscovery>,
     pool: &ConnectionPool,
     store: &Store,
-) -> anyhow::Result<Vec<GetRequest>> {
+    progress: impl Sink<DownloadProgessItem, Error = io::Error>,
+) -> anyhow::Result<Box<dyn Iterator<Item = GetRequest> + Send + 'a>> {
     Ok(match request {
         FiniteRequest::Get(req) => {
             let Some(first) = req.ranges.iter().next() else {
-                return Ok(vec![]);
+                return Ok(Box::new(std::iter::empty()));
             };
             let first = GetRequest::blob(req.hash);
-            execute_get(pool, first, providers, store, NoProgress).await?;
-            let res = if req.ranges.is_infinite() {
-                // todo: just leave the last one open
-                vec![req]
-            } else {
-                req.ranges
-                    .iter_non_empty_infinite()
-                    .filter_map(|(i, ranges)| {
-                        if i != 0 {
-                            Some(
-                                GetRequest::builder()
-                                    .offset(i, ranges.clone())
-                                    .build(req.hash),
-                            )
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-            println!("Split request: {:?}", res);
-            res
+            execute_get(pool, Arc::new(first), providers, store, progress).await?;
+            let size  = store.observe(req.hash).await?.size();
+            anyhow::ensure!(size % 32 == 0, "Size is not a multiple of 32");
+            let n = size / 32;
+            Box::new(req.ranges.iter().take(n as usize + 1).enumerate().filter_map(|(i, ranges)| {
+                if i != 0 && !ranges.is_empty() {
+                    Some(
+                        GetRequest::builder()
+                            .offset(i as u64, ranges.clone())
+                            .build(req.hash),
+                    )
+                } else {
+                    None
+                }
+            }))
         }
-        FiniteRequest::GetMany(req) => req
+        FiniteRequest::GetMany(req) => Box::new(req
             .hashes
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(i, hash)| GetRequest::blob_ranges(hash, req.ranges[i as u64].clone()))
-            .collect(),
+            .map(|(i, hash)| GetRequest::blob_ranges(*hash, req.ranges[i as u64].clone())))
     })
 }
 
@@ -460,7 +443,7 @@ impl ConnectionPool {
     }
 }
 
-/// Execute a get request sequentially.
+/// Execute a get request sequentially for multiple providers.
 ///
 /// It will try each provider in order
 /// until it finds one that can fulfill the request. When trying a new provider,
@@ -474,38 +457,49 @@ impl ConnectionPool {
 /// If the provider stream never ends, it will try indefinitely.
 async fn execute_get(
     pool: &ConnectionPool,
-    request: GetRequest,
+    request: Arc<GetRequest>,
     providers: &Arc<dyn ContentDiscovery>,
     store: &Store,
-    mut progress: impl Sink<u64, Error = io::Error> + Unpin,
-) -> anyhow::Result<Stats> {
-    let mut last_error = None;
+    mut progress: impl Sink<DownloadProgessItem, Error = io::Error>,
+) -> anyhow::Result<()> {
     let remote = store.remote();
     let mut providers = providers.find_providers(request.content());
     while let Some(provider) = providers.next().await {
+        progress.send(DownloadProgessItem::TryProvider {
+            id: provider,
+            request: request.clone(),
+        }).await?;
         let mut conn = pool.dial(provider);
         let local = remote.local_for_request(request.clone()).await?;
         if local.is_complete() {
-            return Ok(Stats::default());
+            return Ok(());
         }
+        let local_bytes = local.local_bytes();
         let conn = conn.connection().await?;
         match remote
-            .execute_with_opts(conn, local.missing(), Default::default(), &mut progress)
+            .execute_with_opts(
+                conn,
+                local.missing(),
+                (&mut progress).with_map(move |x| DownloadProgessItem::Progress(x + local_bytes)),
+            )
             .await
         {
             Ok(stats) => {
-                return Ok(stats);
+                progress.send(DownloadProgessItem::PartComplete {
+                    request: request.clone(),
+                }).await?;
+                return Ok(());
             }
             Err(cause) => {
-                last_error = Some(cause);
+                progress.send(DownloadProgessItem::ProviderFailed {
+                    id: provider,
+                    request: request.clone(),
+                }).await?;
                 continue;
             }
         }
     }
-    if let Some(error) = last_error {
-        return Err(error.into());
-    }
-    bail!("No providers found for hash: {}", request.hash);
+    bail!("Unable to download {}", request.hash);
 }
 
 struct DialNode {
@@ -594,13 +588,16 @@ impl ContentDiscovery for Shuffled {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use bao_tree::ChunkRanges;
+    use n0_future::StreamExt;
     use testresult::TestResult;
 
     use crate::{
         api::{
             blobs::AddBytesOptions,
-            swarm::{DownloadOptions, Shuffled, SplitStrategy, Swarm},
+            downloader::{DownloadOptions, Shuffled, SplitStrategy, Swarm},
         },
         hashseq::HashSeq,
         protocol::{GetManyRequest, GetRequest},
@@ -628,8 +625,12 @@ mod tests {
             .hash(*tt1.hash(), ChunkRanges::all())
             .hash(*tt2.hash(), ChunkRanges::all())
             .build();
-        let progress = swarm.download(request, Shuffled::new(vec![node1_id, node2_id]));
-        progress.complete().await?;
+        let mut progress = swarm.download(request, Shuffled::new(vec![node1_id, node2_id])).stream().await?;
+        while let Some(item) = progress.next().await {
+            println!("Got item: {:?}", item);
+        }
+        assert_eq!(store3.get_bytes(*tt1.hash()).await?.deref(), b"hello world");
+        assert_eq!(store3.get_bytes(*tt2.hash()).await?.deref(), b"hello world 2");
         Ok(())
     }
 
@@ -640,16 +641,10 @@ mod tests {
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
         let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
         let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
-        let tt1 = store1.add_slice(vec![1;10000000]).await?;
-        let tt2 = store2.add_slice(vec![2;10000000]).await?;
+        let tt1 = store1.add_slice(vec![1; 10000000]).await?;
+        let tt2 = store2.add_slice(vec![2; 10000000]).await?;
         let hs = [*tt1.hash(), *tt2.hash()].into_iter().collect::<HashSeq>();
         let root = store1
-            .add_bytes_with_opts(AddBytesOptions {
-                data: hs.clone().into(),
-                format: crate::BlobFormat::HashSeq,
-            })
-            .await?;
-        let root2 = store2
             .add_bytes_with_opts(AddBytesOptions {
                 data: hs.clone().into(),
                 format: crate::BlobFormat::HashSeq,
@@ -670,12 +665,79 @@ mod tests {
             .next(ChunkRanges::all())
             .build(*root.hash());
         if true {
-            let progress = swarm.download_with_opts(DownloadOptions::new(
+            let mut progress = swarm.download_with_opts(DownloadOptions::new(
                 request,
                 [node1_id, node2_id],
                 SplitStrategy::Split,
-            ));
-            progress.complete().await?;
+            )).stream().await?;
+            while let Some(item) = progress.next().await {
+                println!("Got item: {:?}", item);
+            }
+        }
+        if false {
+            let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;
+            let remote = store3.remote();
+            let rh = remote
+                .execute(
+                    conn.clone(),
+                    GetRequest::builder()
+                        .root(ChunkRanges::all())
+                        .build(*root.hash()),
+                )
+                .await?;
+            let h1 = remote.execute(
+                conn.clone(),
+                GetRequest::builder()
+                    .child(0, ChunkRanges::all())
+                    .build(*root.hash()),
+            );
+            let h2 = remote.execute(
+                conn.clone(),
+                GetRequest::builder()
+                    .child(1, ChunkRanges::all())
+                    .build(*root.hash()),
+            );
+            h1.await?;
+            h2.await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn swarm_get_all() -> TestResult<()> {
+        // tracing_subscriber::fmt::try_init().ok();
+        let testdir = tempfile::tempdir()?;
+        let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
+        let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
+        let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+        let tt1 = store1.add_slice(vec![1; 10000000]).await?;
+        let tt2 = store2.add_slice(vec![2; 10000000]).await?;
+        let hs = [*tt1.hash(), *tt2.hash()].into_iter().collect::<HashSeq>();
+        let root = store1
+            .add_bytes_with_opts(AddBytesOptions {
+                data: hs.clone().into(),
+                format: crate::BlobFormat::HashSeq,
+            })
+            .await?;
+        let node1_addr = r1.endpoint().node_addr().await?;
+        let node1_id = node1_addr.node_id;
+        let node2_addr = r2.endpoint().node_addr().await?;
+        let node2_id = node2_addr.node_id;
+        // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
+        // store2.remote().fetch(conn, *tt.hash(), None).await?;
+        let swarm = Swarm::new(&store3, r3.endpoint());
+        r3.endpoint().add_node_addr(node1_addr.clone())?;
+        r3.endpoint().add_node_addr(node2_addr.clone())?;
+        let request = GetRequest::all(*root.hash());
+        if true {
+            let mut progress = swarm.download_with_opts(DownloadOptions::new(
+                request,
+                [node1_id, node2_id],
+                SplitStrategy::Split,
+            )).stream().await?;
+            while let Some(item) = progress.next().await {
+                println!("Got item: {:?}", item);
+            }
         }
         if false {
             let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;

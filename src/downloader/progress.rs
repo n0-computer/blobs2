@@ -1,9 +1,11 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
+use n0_future::io;
 use tokio::sync::mpsc;
 
 use super::DownloadKind;
+use crate::util::outboard_with_progress::Sink;
 
 /// The channel that can be used to subscribe to progress updates.
 pub type ProgressSubscriber = mpsc::Sender<u64>;
@@ -163,16 +165,19 @@ impl irpc::channel::spsc::DynSender<u64> for OffsetProgressSender {
 }
 
 impl BroadcastProgressSender {
-    pub fn add_offset(self, offset: u64) -> irpc::channel::spsc::Sender<u64> {
-        irpc::channel::spsc::Sender::Boxed(Box::new(OffsetProgressSender {
-            inner: self,
-            offset,
-        }))
-    }
-
     #[cfg(test)]
     pub async fn send(&self, progress: u64) {
         let mut guard = self.shared.lock().await;
         guard.send(progress).await;
+    }
+}
+
+impl Sink<u64> for BroadcastProgressSender {
+    type Error = io::Error;
+
+    async fn send(&mut self, progress: u64) -> Result<(), Self::Error> {
+        let mut guard = self.shared.lock().await;
+        guard.send(progress).await;
+        Ok(())
     }
 }

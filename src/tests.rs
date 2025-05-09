@@ -4,7 +4,7 @@ use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
-use n0_future::{pin, task::AbortOnDropHandle, SinkExt, StreamExt};
+use n0_future::{SinkExt, StreamExt, pin, task::AbortOnDropHandle};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{
@@ -20,7 +20,7 @@ use crate::{
             tests::{create_n0_bao, test_data, INTERESTING_SIZES}, FsStore
         },
         util::observer::Combine,
-    }, util::{outboard_with_progress::NoProgress, ChunkRangesExt}, BlobFormat, Hash, HashAndFormat
+    }, util::{outboard_with_progress::{IrpcSenderSink, NoProgress}, ChunkRangesExt}, BlobFormat, Hash, HashAndFormat
 };
 
 #[tokio::test]
@@ -222,7 +222,10 @@ async fn two_nodes_get_blobs() -> TestResult<()> {
     for size in sizes {
         let hash = Hash::new(test_data(size));
         // let data = get::request::get_blob(conn.clone(), hash).bytes().await?;
-        store2.remote().fetch(conn.clone(), hash, NoProgress).await?;
+        store2
+            .remote()
+            .fetch(conn.clone(), hash, NoProgress)
+            .await?;
         let actual = store2.get_bytes(hash).await?;
         assert_eq!(actual, test_data(size));
     }
@@ -477,8 +480,9 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let root = add_test_hash_seq(&store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let (tx, rx) = spsc::channel::<u64>(16);
-    let p = tx.into_sink().sink_map_err(|e| e.into());
-    let res = store2.remote().fetch(conn, root, Box::pin(p));
+    use crate::util::outboard_with_progress::Sink;
+    let p = IrpcSenderSink(tx).with_map_err(|e| e.into());
+    let res = store2.remote().fetch(conn, root, p);
     pin!(rx);
     pin!(res);
     loop {

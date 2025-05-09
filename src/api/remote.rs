@@ -2,19 +2,20 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
-use n0_future::{io, Sink, Stream, StreamExt, TryFutureExt};
+use n0_future::{Stream, StreamExt, TryFutureExt, io};
 use quinn::SendStream;
 use ref_cast::RefCast;
-use n0_future::SinkExt;
 
 use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
     get::{
-        fsm::{DecodeError, RequestCounters}, GetError, GetResult, Stats
+        GetError, GetResult, Stats,
+        fsm::DecodeError,
     },
     protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
-    provider::{EventSender, ProgressWriter, StreamContext}, util::outboard_with_progress::NoProgress,
+    provider::{EventSender, ProgressWriter, StreamContext},
+    util::outboard_with_progress::{NoProgress, Sink},
 };
 
 /// API to compute request and to download from remote nodes.
@@ -316,7 +317,7 @@ impl Remote {
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
-        progress: impl Sink<u64, Error = io::Error> + Unpin,
+        progress: impl Sink<u64, Error = io::Error>,
     ) -> anyhow::Result<Stats> {
         let content = content.into();
         let local = self.local(content).await?;
@@ -325,9 +326,7 @@ impl Remote {
         }
         let request = local.missing();
         let conn = conn.connection().await?;
-        let stats = self
-            .execute_with_opts(conn, request, Default::default(), progress)
-            .await?;
+        let stats = self.execute_with_opts(conn, request, progress).await?;
         Ok(stats)
     }
 
@@ -418,8 +417,7 @@ impl Remote {
     }
 
     pub async fn execute(&self, conn: Connection, request: GetRequest) -> GetResult<Stats> {
-        self.execute_with_opts(conn, request, Default::default(), NoProgress)
-            .await
+        self.execute_with_opts(conn, request, NoProgress).await
     }
 
     /// Execute a get request *without* taking the locally available ranges into account.
@@ -434,12 +432,11 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetRequest,
-        counters: RequestCounters,
-        mut progress: impl Sink<u64, Error = io::Error> + Unpin,
+        mut progress: impl Sink<u64, Error = io::Error>,
     ) -> GetResult<Stats> {
         let store = self.store();
         let root = request.hash;
-        let start = crate::get::fsm::start(conn, request, counters);
+        let start = crate::get::fsm::start(conn, request, Default::default());
         let connected = start.next().await?;
         trace!("Getting header");
         // read the header
@@ -505,7 +502,7 @@ impl Remote {
         &self,
         conn: Connection,
         request: GetManyRequest,
-        mut progress: impl Sink<u64, Error = io::Error> + Unpin,
+        mut progress: impl Sink<u64, Error = io::Error>,
     ) -> GetResult<Stats> {
         let store = self.store();
         let hash_seq = request.hashes.iter().copied().collect::<HashSeq>();
@@ -654,7 +651,7 @@ async fn get_blob_ranges_impl(
     header: AtBlobHeader,
     hash: Hash,
     store: &Store,
-    mut progress: impl Sink<u64, Error = io::Error> + Unpin,
+    mut progress: impl Sink<u64, Error = io::Error>,
 ) -> GetResult<AtEndBlob> {
     let (mut content, size) = header.next().await?;
     let Some(size) = NonZeroU64::new(size) else {
@@ -677,9 +674,10 @@ async fn get_blob_ranges_impl(
             match content.next().await {
                 BlobContentNext::More((next, res)) => {
                     let item = res?;
-                    progress.send(next.stats().payload_bytes_read).await.map_err(|e| {
-                        GetError::LocalFailure(e.into())
-                    })?;
+                    progress
+                        .send(next.stats().payload_bytes_read)
+                        .await
+                        .map_err(|e| GetError::LocalFailure(e.into()))?;
                     tx.send(item).await?;
                     content = next;
                 }

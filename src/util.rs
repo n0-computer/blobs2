@@ -121,7 +121,8 @@ where
 pub mod outboard_with_progress {
     use std::{
         future::Future,
-        io::{self, BufReader, Read}, sync::mpsc,
+        io::{self, BufReader, Read},
+        sync::mpsc,
     };
 
     use bao_tree::{
@@ -133,38 +134,101 @@ pub mod outboard_with_progress {
         iter::BaoChunk,
     };
     use blake3::guts::parent_cv;
+    use irpc::RpcMessage;
     use smallvec::SmallVec;
 
-    pub trait Progress<Item> {
+    /// Our version of a sink, that can be mapped etc.
+    pub trait Sink<Item> {
         type Error;
         fn send(
             &mut self,
             value: Item,
         ) -> impl Future<Output = std::result::Result<(), Self::Error>>;
 
-        fn with_map<F, U>(
-            self,
-            f: F,
-        ) -> WithMap<Self, F>
+        fn with_map_err<F, U>(self, f: F) -> WithMapErr<Self, F>
         where
             Self: Sized,
-            F: Fn(Item) -> U + Send + 'static,
+            F: Fn(Self::Error) -> U + Send + 'static,
         {
-            WithMap {
-                inner: self,
-                f,
-            }
+            WithMapErr { inner: self, f }
+        }
+
+        fn with_map<F, U>(self, f: F) -> WithMap<Self, F>
+        where
+            Self: Sized,
+            F: Fn(U) -> Item + Send + 'static,
+        {
+            WithMap { inner: self, f }
         }
     }
 
-    impl<T> Progress<T> for tokio::sync::mpsc::Sender<T> {
+    impl<I, T> Sink<T> for &mut I
+    where
+        I: Sink<T>,
+    {
+        type Error = I::Error;
+
+        async fn send(&mut self, value: T) -> std::result::Result<(), Self::Error> {
+            (*self).send(value).await
+        }
+    }
+
+    pub struct IrpcSenderSink<T>(pub irpc::channel::spsc::Sender<T>);
+
+    impl<T> Sink<T> for IrpcSenderSink<T>
+    where
+        T: RpcMessage,
+    {
+        type Error = irpc::channel::SendError;
+
+        async fn send(&mut self, value: T) -> std::result::Result<(), Self::Error> {
+            self.0.send(value).await
+        }
+    }
+
+    pub struct IrpcSenderRefSink<'a, T>(pub &'a mut irpc::channel::spsc::Sender<T>);
+
+    impl<'a, T> Sink<T> for IrpcSenderRefSink<'a, T>
+    where
+        T: RpcMessage,
+    {
+        type Error = irpc::channel::SendError;
+
+        async fn send(&mut self, value: T) -> std::result::Result<(), Self::Error> {
+            self.0.send(value).await
+        }
+    }
+
+    pub struct TokioMpscSenderSink<T>(pub tokio::sync::mpsc::Sender<T>);
+
+    impl<T> Sink<T> for TokioMpscSenderSink<T> {
         type Error = tokio::sync::mpsc::error::SendError<T>;
 
-        async fn send(
-            &mut self,
-            value: T,
-        ) -> std::result::Result<(), Self::Error> {
-            tokio::sync::mpsc::Sender::send(self, value).await
+        async fn send(&mut self, value: T) -> std::result::Result<(), Self::Error> {
+            self.0.send(value).await
+        }
+    }
+
+    pub struct WithMapErr<P, F> {
+        inner: P,
+        f: F,
+    }
+
+    impl<P, F, E, U> Sink<U> for WithMapErr<P, F>
+    where
+        P: Sink<U>,
+        F: Fn(P::Error) -> E + Send + 'static,
+    {
+        type Error = E;
+
+        async fn send(&mut self, value: U) -> std::result::Result<(), Self::Error> {
+            match self.inner.send(value).await {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    let err = (self.f)(err);
+                    Err(err)
+                }
+            }
         }
     }
 
@@ -173,17 +237,14 @@ pub mod outboard_with_progress {
         f: F,
     }
 
-    impl<P, F, T, U> Progress<T> for WithMap<P, F>
+    impl<P, F, T, U> Sink<T> for WithMap<P, F>
     where
-        P: Progress<U>,
+        P: Sink<U>,
         F: Fn(T) -> U + Send + 'static,
     {
         type Error = P::Error;
 
-        async fn send(
-            &mut self,
-            value: T,
-        ) -> std::result::Result<(), Self::Error> {
+        async fn send(&mut self, value: T) -> std::result::Result<(), Self::Error> {
             self.inner.send((self.f)(value)).await
         }
     }
@@ -192,25 +253,34 @@ pub mod outboard_with_progress {
 
     impl<Item> n0_future::Sink<Item> for NoProgress {
         type Error = io::Error;
-    
-        fn poll_ready(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(io::Result::Ok(()))
         }
-    
+
         fn start_send(self: std::pin::Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
             io::Result::Ok(())
         }
-    
-        fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(io::Result::Ok(()))
         }
-    
-        fn poll_close(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(io::Result::Ok(()))
         }
     }
 
-    impl<T> Progress<T> for NoProgress {
+    impl<T> Sink<T> for NoProgress {
         type Error = io::Error;
 
         async fn send(&mut self, _offset: T) -> std::result::Result<(), Self::Error> {
@@ -226,7 +296,7 @@ pub mod outboard_with_progress {
     where
         W: WriteAt,
         R: Read,
-        P: Progress<ChunkNum>,
+        P: Sink<ChunkNum>,
     {
         // wrap the reader in a buffered reader, so we read in large chunks
         // this reduces the number of io ops
@@ -248,7 +318,7 @@ pub mod outboard_with_progress {
     ) -> io::Result<std::result::Result<(), P::Error>>
     where
         W: WriteAt,
-        P: Progress<ChunkNum>,
+        P: Sink<ChunkNum>,
     {
         // do not allocate for small trees
         let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
