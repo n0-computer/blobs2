@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Handle downloading blobs and collections concurrently and from nodes.
 //!
 //! The [`Downloader`] interacts with four main components to this end.
