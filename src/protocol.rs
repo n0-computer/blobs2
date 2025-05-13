@@ -373,12 +373,11 @@
 //! a large existing system that has demonstrated performance issues.
 //!
 //! If in doubt, just use multiple requests and multiple connections.
-use std::{collections::BTreeSet, io};
+use std::io;
 
 use builder::GetRequestBuilder;
 use derive_more::From;
 use iroh::endpoint::VarInt;
-use n0_future::io::empty;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 mod range_spec;

@@ -1,6 +1,6 @@
 use std::{collections::HashSet, io, ops::Range, path::PathBuf};
 
-use bao_tree::{ChunkNum, ChunkRanges};
+use bao_tree::ChunkRanges;
 use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
@@ -12,7 +12,6 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
@@ -20,7 +19,7 @@ use crate::{
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
-    protocol::{ChunkRangesSeq, GetManyRequest, GetRequest, ObserveRequest, PushRequest},
+    protocol::{ChunkRangesSeq, GetManyRequest, ObserveRequest, PushRequest},
     provider::Event,
     store::{
         fs::{
@@ -29,10 +28,7 @@ use crate::{
         },
         util::observer::Combine,
     },
-    util::{
-        ChunkRangesExt,
-        sink::{Drain, IrpcSenderSink},
-    },
+    util::sink::{Drain, IrpcSenderSink},
 };
 
 // #[tokio::test]

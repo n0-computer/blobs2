@@ -1502,7 +1502,7 @@ pub mod tests {
         {
             let store = FsStore::load(&db_dir).await?;
             let data = test_data(100000);
-            let ranges = ChunkRanges::chunks((16)..(32));
+            let ranges = ChunkRanges::chunks(16..32);
             let (hash, bao) = create_n0_bao(&data, &ranges)?;
             store
                 .import_bao_bytes(hash, ranges.clone(), bao.clone())

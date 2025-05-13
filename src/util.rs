@@ -119,11 +119,7 @@ where
 }
 
 pub mod outboard_with_progress {
-    use std::{
-        future::Future,
-        io::{self, BufReader, Read},
-        sync::mpsc,
-    };
+    use std::io::{self, BufReader, Read};
 
     use bao_tree::{
         BaoTree, ChunkNum, blake3,
@@ -134,7 +130,7 @@ pub mod outboard_with_progress {
         iter::BaoChunk,
     };
     use blake3::guts::parent_cv;
-    use irpc::RpcMessage;
+    
     use smallvec::SmallVec;
 
     use super::sink::Sink;

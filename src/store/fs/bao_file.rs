@@ -19,7 +19,7 @@ use bao_tree::{
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::spsc;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tracing::{Span, debug, error, trace};
 
 use super::{
@@ -29,10 +29,7 @@ use super::{
     options::{Options, PathOptions},
 };
 use crate::{
-    api::{
-        blobs::Bitfield,
-        proto::bitfield::{self, BitfieldState},
-    },
+    api::blobs::Bitfield,
     store::{
         Hash, IROH_BLOCK_SIZE,
         fs::{

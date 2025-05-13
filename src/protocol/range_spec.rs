@@ -1003,7 +1003,7 @@ mod tests {
                 ",
             ),
             (
-                RangeSpec::new(ChunkRanges::chunks(..(64))),
+                RangeSpec::new(ChunkRanges::chunks(..64)),
                 r"
                     02 # length prefix - 2 elements
                     00 # span width - 0. everything stating from 0 is included
@@ -1011,7 +1011,7 @@ mod tests {
                 ",
             ),
             (
-                RangeSpec::new(&ChunkRanges::chunks((1)..(3)) | &ChunkRanges::chunks((9)..(13))),
+                RangeSpec::new(&ChunkRanges::chunks(1..3) | &ChunkRanges::chunks(9..13)),
                 r"
                     04 # length prefix - 4 elements
                     01 # span width - 1
@@ -1042,8 +1042,8 @@ mod tests {
             ),
             (
                 ChunkRangesSeq::from_ranges([
-                    ChunkRanges::chunks((1)..(3)),
-                    ChunkRanges::chunks((7)..(13)),
+                    ChunkRanges::chunks(1..3),
+                    ChunkRanges::chunks(7..13),
                 ]),
                 r"
                     03 # 3 tuples in total

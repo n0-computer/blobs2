@@ -569,7 +569,7 @@ use bao_tree::{
     io::{BaoContentItem, Leaf},
 };
 use iroh::{Endpoint, NodeAddr, endpoint::Connection};
-use irpc::channel::{SendError, spsc};
+use irpc::channel::spsc;
 use tracing::{debug, trace};
 
 use crate::{

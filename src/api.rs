@@ -213,7 +213,7 @@ impl Store {
     /// so don't create it ad hoc but store it somewhere if you need it multiple
     /// times.
     pub fn downloader(&self, endpoint: &Endpoint) -> downloader::Downloader {
-        downloader::Downloader::new(&self, endpoint)
+        downloader::Downloader::new(self, endpoint)
     }
 
     /// Connect to a remote store as a rpc client.

@@ -24,7 +24,6 @@ use tracing::instrument::Instrument;
 use super::{Store, remote::GetConnection};
 use crate::{
     BlobFormat, Hash, HashAndFormat,
-    get::request,
     protocol::{GetManyRequest, GetRequest},
     util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
 };
@@ -120,7 +119,7 @@ async fn handle_download_impl(
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
         SplitStrategy::None => match request.request {
             FiniteRequest::Get(get) => {
-                let sink = IrpcSenderRefSink(tx).with_map_err(|e| io::Error::other(e));
+                let sink = IrpcSenderRefSink(tx).with_map_err(io::Error::other);
                 execute_get(&pool, Arc::new(get), &request.providers, &store, sink).await?;
             }
             FiniteRequest::GetMany(_) => {
@@ -151,7 +150,7 @@ async fn handle_download_split_impl(
                 let (tx, rx) = mpsc::channel::<(usize, DownloadProgessItem)>(16);
                 progress_tx.send(rx).await.ok();
                 let sink = TokioMpscSenderSink(tx)
-                    .with_map_err(|e| io::Error::other(e))
+                    .with_map_err(io::Error::other)
                     .with_map(move |x| (id, x));
                 let res = execute_get(&pool, Arc::new(request), &providers, &store, sink).await;
                 (hash, res)
@@ -162,7 +161,7 @@ async fn handle_download_split_impl(
         let mut offsets = HashMap::new();
         let mut total = 0;
         into_stream(progress_rx)
-            .flat_map(|x| into_stream(x))
+            .flat_map(into_stream)
             .map(move |(id, item)| match item {
                 DownloadProgessItem::Progress(offset) => {
                     total += offset;
