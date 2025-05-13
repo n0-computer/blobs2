@@ -130,7 +130,6 @@ pub mod outboard_with_progress {
         iter::BaoChunk,
     };
     use blake3::guts::parent_cv;
-    
     use smallvec::SmallVec;
 
     use super::sink::Sink;

@@ -363,7 +363,7 @@ impl Remote {
         &self,
         conn: Connection,
         request: PushRequest,
-        progress: Option<spsc::Sender<u64>>,
+        _progress: Option<spsc::Sender<u64>>,
     ) -> anyhow::Result<Stats> {
         let hash = request.hash;
         debug!(%hash, "pushing");

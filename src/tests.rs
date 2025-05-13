@@ -4,7 +4,7 @@ use bao_tree::ChunkRanges;
 use bytes::Bytes;
 use iroh::{Endpoint, NodeId, protocol::Router};
 use irpc::{RpcMessage, channel::spsc};
-use n0_future::{SinkExt, StreamExt, pin, task::AbortOnDropHandle};
+use n0_future::{StreamExt, pin, task::AbortOnDropHandle};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::{
@@ -208,6 +208,7 @@ use crate::{
 //     Ok(())
 // }
 
+#[allow(dead_code)]
 async fn drain<T: RpcMessage>(mut rx: mpsc::Receiver<T>) -> Vec<T> {
     let mut items = Vec::new();
     while let Some(item) = rx.recv().await {

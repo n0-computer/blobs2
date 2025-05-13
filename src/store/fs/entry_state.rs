@@ -38,6 +38,7 @@ impl<I: AsRef<[u8]>, E: Debug> DataLocation<I, E> {
 }
 
 impl<X> DataLocation<X, u64> {
+    #[allow(clippy::result_large_err)]
     fn union(self, that: DataLocation<X, u64>) -> ActorResult<Self> {
         Ok(match (self, that) {
             (
@@ -215,6 +216,7 @@ impl<I: AsRef<[u8]>> EntryState<I> {
 }
 
 impl EntryState {
+    #[allow(clippy::result_large_err)]
     pub fn union(old: Self, new: Self) -> ActorResult<Self> {
         match (old, new) {
             (

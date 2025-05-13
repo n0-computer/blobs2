@@ -153,6 +153,7 @@ mod nodelta {
         }
 
         pub fn is_blob(&self) -> bool {
+            #[allow(clippy::match_like_matches_macro)]
             match self.as_single() {
                 Some((0, _)) => true,
                 _ => false,
@@ -305,20 +306,18 @@ mod nodelta {
         type Item = &'a ChunkRanges;
 
         fn next(&mut self) -> Option<Self::Item> {
-            loop {
-                match self.remaining.peek()? {
-                    (offset, _) if self.offset < *offset => {
-                        // emit current value until we reach the next offset
-                        self.offset += 1;
-                        return Some(self.current);
-                    }
-                    (_, ranges) => {
-                        // get next current value, new count, and set remaining
-                        self.current = ranges;
-                        self.remaining.next();
-                        self.offset += 1;
-                        return Some(self.current);
-                    }
+            match self.remaining.peek()? {
+                (offset, _) if self.offset < *offset => {
+                    // emit current value until we reach the next offset
+                    self.offset += 1;
+                    Some(self.current)
+                }
+                (_, ranges) => {
+                    // get next current value, new count, and set remaining
+                    self.current = ranges;
+                    self.remaining.next();
+                    self.offset += 1;
+                    Some(self.current)
                 }
             }
         }
@@ -623,6 +622,7 @@ mod delta {
         }
 
         pub fn is_raw(&self) -> bool {
+            #[allow(clippy::match_like_matches_macro)]
             match self.as_single() {
                 Some((0, _)) => true,
                 _ => false,
@@ -705,7 +705,7 @@ mod delta {
             let before_all = ChunkRanges::empty();
             for v in children.into_iter() {
                 let prev = res.last().map(|(_count, spec)| spec).unwrap_or(&before_all);
-                if &v == prev {
+                if v == prev {
                     count += 1;
                 } else {
                     res.push((count, v.clone()));

@@ -180,9 +180,9 @@ async fn handle_download_split_impl(
             },
             res = futs.next() => {
                 match res {
-                    Some((hash, Ok(()))) => {
+                    Some((_hash, Ok(()))) => {
                     }
-                    Some((hash, Err(e))) => {
+                    Some((_hash, Err(_e))) => {
                         tx.send(DownloadProgessItem::DownloadError).await?;
                     }
                     None => break,
@@ -388,7 +388,7 @@ async fn split_request<'a>(
 ) -> anyhow::Result<Box<dyn Iterator<Item = GetRequest> + Send + 'a>> {
     Ok(match request {
         FiniteRequest::Get(req) => {
-            let Some(first) = req.ranges.iter_infinite().next() else {
+            let Some(_first) = req.ranges.iter_infinite().next() else {
                 return Ok(Box::new(std::iter::empty()));
             };
             let first = GetRequest::blob(req.hash);
@@ -437,6 +437,7 @@ enum SlotState {
     Initial,
     Connected(Connection),
     AttemptFailed(SystemTime),
+    #[allow(dead_code)]
     Evil(String),
 }
 
@@ -457,11 +458,13 @@ impl ConnectionPool {
         }
     }
 
+    #[allow(dead_code)]
     async fn mark_evil(&self, id: NodeId, reason: String) {
         let slot = self.connections.lock().await.entry(id).or_default().clone();
         *slot.lock().await = SlotState::Evil(reason)
     }
 
+    #[allow(dead_code)]
     async fn mark_closed(&self, id: NodeId) {
         let slot = self.connections.lock().await.entry(id).or_default().clone();
         *slot.lock().await = SlotState::Initial
@@ -511,7 +514,7 @@ async fn execute_get(
             )
             .await
         {
-            Ok(stats) => {
+            Ok(_stats) => {
                 progress
                     .send(DownloadProgessItem::PartComplete {
                         request: request.clone(),
@@ -519,7 +522,7 @@ async fn execute_get(
                     .await?;
                 return Ok(());
             }
-            Err(cause) => {
+            Err(_cause) => {
                 progress
                     .send(DownloadProgessItem::ProviderFailed {
                         id: provider,
@@ -717,7 +720,7 @@ mod tests {
         if false {
             let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;
             let remote = store3.remote();
-            let rh = remote
+            let _rh = remote
                 .execute(
                     conn.clone(),
                     GetRequest::builder()
@@ -785,7 +788,7 @@ mod tests {
         if false {
             let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;
             let remote = store3.remote();
-            let rh = remote
+            let _rh = remote
                 .execute(
                     conn.clone(),
                     GetRequest::builder()

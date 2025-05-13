@@ -258,6 +258,7 @@ impl CombineInPlace for Bitfield {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateResult {
     NoChange(BitfieldState),
