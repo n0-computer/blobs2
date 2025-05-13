@@ -1,9 +1,8 @@
-pub mod store;
-
 mod hash;
+pub mod store;
 pub use hash::{BlobFormat, Hash, HashAndFormat};
 pub mod api;
-pub(crate) mod downloader;
+
 pub mod format;
 pub mod get;
 pub mod hashseq;
