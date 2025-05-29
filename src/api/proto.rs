@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "proto-docs"), doc(hidden))]
+#![cfg_attr(feature = "hide-proto-docs", doc(hidden))]
 //! The protocol that a store implementation needs to implement.
 //!
 //! A store needs to handle [`Request`]s. It is fine to just return an error for some

@@ -1,4 +1,4 @@
-//! Blobs API
+//! API to interact with a local blob store
 //!
 //! This API is for local interactions with the blob store, such as importing
 //! and exporting blobs, observing the bitfield of a blob, and deleting blobs.
@@ -24,14 +24,11 @@ use bao_tree::{
 use bytes::Bytes;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
-use irpc::{
-    Request,
-    channel::{oneshot, spsc},
-};
+use irpc::channel::{oneshot, spsc};
 use n0_future::{Stream, StreamExt, future};
 use range_collections::{RangeSet2, range_set::RangeSetRange};
 use ref_cast::RefCast;
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio::io::AsyncWriteExt;
 use tracing::trace;
 
 // Public reexports from the proto module.
@@ -88,7 +85,7 @@ impl Blobs {
         Self::ref_cast(sender)
     }
 
-    pub async fn batch(&self) -> super::RpcResult<Batch<'_>> {
+    pub async fn batch(&self) -> irpc::Result<Batch<'_>> {
         let msg = BatchRequest;
         trace!("{msg:?}");
         let (tx, rx) = self.client.client_streaming(msg, 32).await?;
@@ -222,9 +219,13 @@ impl Blobs {
         )
     }
 
-    pub fn export_bao_with_opts(&self, options: ExportBaoOptions) -> ExportBaoProgress {
+    pub fn export_bao_with_opts(
+        &self,
+        options: ExportBaoOptions,
+        local_update_cap: usize,
+    ) -> ExportBaoProgress {
         trace!("{options:?}");
-        ExportBaoProgress::new(self.client.server_streaming(options, 32))
+        ExportBaoProgress::new(self.client.server_streaming(options, local_update_cap))
     }
 
     pub fn export_bao(
@@ -232,10 +233,13 @@ impl Blobs {
         hash: impl Into<Hash>,
         ranges: impl Into<ChunkRanges>,
     ) -> ExportBaoProgress {
-        self.export_bao_with_opts(ExportBaoRequest {
-            hash: hash.into(),
-            ranges: ranges.into(),
-        })
+        self.export_bao_with_opts(
+            ExportBaoRequest {
+                hash: hash.into(),
+                ranges: ranges.into(),
+            },
+            32,
+        )
     }
 
     /// Export a single chunk from the given hash, at the given offset.
@@ -299,43 +303,40 @@ impl Blobs {
         self.export_with_opts(options)
     }
 
-    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
-    pub fn import_bao_with_opts(
+    /// Import BaoContentItems from a stream.
+    ///
+    /// The store assumes that these are already verified and in the correct order.
+    #[cfg_attr(feature = "hide-proto-docs", doc(hidden))]
+    pub async fn import_bao(
         &self,
-        mut data: spsc::Receiver<BaoContentItem>,
-        options: ImportBaoOptions,
-    ) -> ImportBaoResult {
-        trace!("{:?}", options);
-        let request = self.client.request();
-        ImportBaoResult::new(async move {
-            let rx = match request.await? {
-                Request::Local(c) => {
-                    let (tx, rx) = oneshot::channel();
-                    c.send((options, tx, data)).await?;
-                    rx
-                }
-                Request::Remote(r) => {
-                    let (tx, rx) = r.write(options).await?;
-                    let mut tx: spsc::Sender<_> = tx.into();
-                    while let Some(item) = data.recv().await? {
-                        tx.send(item).await?;
-                    }
-                    rx.into()
-                }
-            };
-            rx.await??;
-            Ok(())
-        })
+        hash: impl Into<Hash>,
+        size: NonZeroU64,
+        local_update_cap: usize,
+    ) -> irpc::Result<ImportBaoHandle> {
+        let options = ImportBaoRequest {
+            hash: hash.into(),
+            size,
+        };
+        self.import_bao_with_opts(options, local_update_cap).await
     }
 
-    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
+    #[cfg_attr(feature = "hide-proto-docs", doc(hidden))]
+    pub async fn import_bao_with_opts(
+        &self,
+        options: ImportBaoOptions,
+        local_update_cap: usize,
+    ) -> irpc::Result<ImportBaoHandle> {
+        trace!("{:?}", options);
+        ImportBaoHandle::new(self.client.client_streaming(options, local_update_cap)).await
+    }
+
+    #[cfg_attr(feature = "hide-proto-docs", doc(hidden))]
     async fn import_bao_reader<R: AsyncStreamReader>(
         &self,
         hash: Hash,
         ranges: ChunkRanges,
         mut reader: R,
     ) -> RequestResult<R> {
-        let (mut tx, rx) = spsc::channel(32);
         let size = u64::from_le_bytes(reader.read::<8>().await.map_err(super::Error::other)?);
         let Some(size) = NonZeroU64::new(size) else {
             return if hash == Hash::EMPTY {
@@ -346,45 +347,28 @@ impl Blobs {
         };
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
-        let inner = ImportBaoRequest { hash, size };
-        let fut = self.import_bao_with_opts(rx, inner);
+        let options = ImportBaoOptions { hash, size };
+        let mut handle = self.import_bao_with_opts(options, 32).await?;
         let driver = async move {
             let reader = loop {
                 match decoder.next().await {
                     ResponseDecoderNext::More((rest, item)) => {
-                        tx.send(item?).await?;
+                        handle.tx.send(item?).await?;
                         decoder = rest;
                     }
                     ResponseDecoderNext::Done(reader) => break reader,
                 };
             };
-            drop(tx);
+            drop(handle.tx);
             io::Result::Ok(reader)
         };
+        let fut = async move { handle.rx.await.map_err(|e| io::Error::other(e))? };
         let (reader, res) = tokio::join!(driver, fut);
         res?;
         Ok(reader?)
     }
 
-    /// Import BaoContentItems from a stream.
-    ///
-    /// The store assumes that these are already verified and in the correct order.
-    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
-    pub fn import_bao(
-        &self,
-        hash: impl Into<Hash>,
-        size: NonZeroU64,
-        data: mpsc::Receiver<BaoContentItem>,
-    ) -> ImportBaoResult {
-        let options = ImportBaoRequest {
-            hash: hash.into(),
-            size,
-        };
-        // todo: we must expose the second future
-        self.import_bao_with_opts(data.into(), options)
-    }
-
-    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
+    #[cfg_attr(feature = "hide-proto-docs", doc(hidden))]
     pub async fn import_bao_quinn(
         &self,
         hash: Hash,
@@ -396,7 +380,7 @@ impl Blobs {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "proto-docs"), doc(hidden))]
+    #[cfg_attr(feature = "hide-proto-docs", doc(hidden))]
     pub async fn import_bao_bytes(
         &self,
         hash: Hash,
@@ -413,13 +397,13 @@ impl Blobs {
         BlobsListProgress::new(client.server_streaming(msg, 32))
     }
 
-    pub async fn status(&self, hash: impl Into<Hash>) -> super::RpcResult<BlobStatus> {
+    pub async fn status(&self, hash: impl Into<Hash>) -> irpc::Result<BlobStatus> {
         let hash = hash.into();
         let msg = BlobStatusRequest { hash };
         self.client.rpc(msg).await
     }
 
-    pub async fn has(&self, hash: impl Into<Hash>) -> super::RpcResult<bool> {
+    pub async fn has(&self, hash: impl Into<Hash>) -> irpc::Result<bool> {
         match self.status(hash).await? {
             BlobStatus::Complete { .. } => Ok(true),
             _ => Ok(false),
@@ -509,7 +493,7 @@ impl<'a> Batch<'a> {
         }))
     }
 
-    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
+    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> irpc::Result<TempTag> {
         let value = value.into();
         let msg = CreateTempTagRequest {
             scope: self.scope,
@@ -539,7 +523,7 @@ pub struct AddPathOptions {
 /// If you want access to the stream, you can use the [`AddResult::stream`] method.
 pub struct AddProgress<'a> {
     blobs: &'a Blobs,
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<AddProgressItem>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<AddProgressItem>>>,
 }
 
 impl<'a> IntoFuture for AddProgress<'a> {
@@ -555,7 +539,7 @@ impl<'a> IntoFuture for AddProgress<'a> {
 impl<'a> AddProgress<'a> {
     fn new(
         blobs: &'a Blobs,
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<AddProgressItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<AddProgressItem>>> + Send + 'static,
     ) -> Self {
         Self {
             blobs,
@@ -620,7 +604,7 @@ impl<'a> AddProgress<'a> {
 /// Calling [`ObserveProgress::aggregated`] will return a stream of states,
 /// where each state is the current state at the time of the update.
 pub struct ObserveProgress {
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<Bitfield>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<Bitfield>>>,
 }
 
 impl IntoFuture for ObserveProgress {
@@ -641,7 +625,7 @@ impl IntoFuture for ObserveProgress {
 
 impl ObserveProgress {
     fn new(
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<Bitfield>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<Bitfield>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -662,7 +646,7 @@ impl ObserveProgress {
     /// current state, and the following bitfields are updates.
     ///
     /// Once a blob is complete, there will be no more updates.
-    pub async fn stream(self) -> super::RpcResult<impl Stream<Item = Bitfield>> {
+    pub async fn stream(self) -> irpc::Result<impl Stream<Item = Bitfield>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -683,7 +667,7 @@ impl ObserveProgress {
 /// It also implements [`IntoFuture`], so you can await it to get the size of the
 /// exported blob.
 pub struct ExportProgress {
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<ExportProgressItem>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<ExportProgressItem>>>,
 }
 
 impl IntoFuture for ExportProgress {
@@ -698,7 +682,7 @@ impl IntoFuture for ExportProgress {
 
 impl ExportProgress {
     fn new(
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportProgressItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<ExportProgressItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -739,40 +723,35 @@ impl ExportProgress {
     }
 }
 
-/// Result of importing a stream of bao items.
-///
-/// This future will resolve once the import is complete, but *must* be polled even before!
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ImportBaoResult {
-    inner: future::Boxed<RequestResult<()>>,
+/// A handle for an ongoing bao import operation.
+pub struct ImportBaoHandle {
+    pub tx: spsc::Sender<BaoContentItem>,
+    pub rx: oneshot::Receiver<super::Result<()>>,
 }
 
-impl ImportBaoResult {
-    fn new(fut: impl Future<Output = RequestResult<()>> + Send + 'static) -> Self {
-        Self {
-            inner: Box::pin(fut),
-        }
-    }
-}
-
-impl IntoFuture for ImportBaoResult {
-    type Output = RequestResult<()>;
-
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        self.inner
+impl ImportBaoHandle {
+    pub(crate) async fn new(
+        fut: impl Future<
+            Output = irpc::Result<(
+                spsc::Sender<BaoContentItem>,
+                oneshot::Receiver<super::Result<()>>,
+            )>,
+        > + Send
+        + 'static,
+    ) -> irpc::Result<Self> {
+        let (tx, rx) = fut.await?;
+        Ok(Self { tx, rx })
     }
 }
 
 /// A progress handle for a blobs list operation.
 pub struct BlobsListProgress {
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<super::Result<Hash>>>>,
 }
 
 impl BlobsListProgress {
     fn new(
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<super::Result<Hash>>>>
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<super::Result<Hash>>>>
         + Send
         + 'static,
     ) -> Self {
@@ -790,7 +769,7 @@ impl BlobsListProgress {
         Ok(hashes)
     }
 
-    pub async fn stream(self) -> super::RpcResult<impl Stream<Item = super::Result<Hash>>> {
+    pub async fn stream(self) -> irpc::Result<impl Stream<Item = super::Result<Hash>>> {
         let mut rx = self.inner.await?;
         Ok(Gen::new(|co| async move {
             while let Ok(Some(item)) = rx.recv().await {
@@ -809,13 +788,13 @@ impl BlobsListProgress {
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportRangesProgress {
     ranges: RangeSet2<u64>,
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<ExportRangesItem>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<ExportRangesItem>>>,
 }
 
 impl ExportRangesProgress {
     fn new(
         ranges: RangeSet2<u64>,
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<ExportRangesItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<ExportRangesItem>>> + Send + 'static,
     ) -> Self {
         Self {
             ranges,
@@ -889,12 +868,12 @@ impl ExportRangesProgress {
 ///
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportBaoProgress {
-    inner: future::Boxed<super::RpcResult<spsc::Receiver<EncodedItem>>>,
+    inner: future::Boxed<irpc::Result<spsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoProgress {
     fn new(
-        fut: impl Future<Output = super::RpcResult<spsc::Receiver<EncodedItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),

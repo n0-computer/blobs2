@@ -20,10 +20,6 @@ pub use crate::{store::util::Tag, util::temp_tag::TempTag};
 
 pub(crate) type ApiClient = irpc::Client<proto::Command, proto::Request, proto::StoreService>;
 
-/// Error for all rpc interactions.
-pub type RpcError = irpc::Error;
-pub type RpcResult<T> = std::result::Result<T, RpcError>;
-
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     /// Request failed due to rpc error.
@@ -92,13 +88,13 @@ impl From<ExportBaoError> for Error {
     }
 }
 
-impl From<RpcError> for ExportBaoError {
-    fn from(e: RpcError) -> Self {
+impl From<irpc::Error> for ExportBaoError {
+    fn from(e: irpc::Error) -> Self {
         match e {
-            RpcError::Recv(e) => Self::Recv(e),
-            RpcError::Send(e) => Self::Send(e),
-            RpcError::Request(e) => Self::Request(e),
-            RpcError::Write(e) => Self::Io(e.into()),
+            irpc::Error::Recv(e) => Self::Recv(e),
+            irpc::Error::Send(e) => Self::Send(e),
+            irpc::Error::Request(e) => Self::Request(e),
+            irpc::Error::Write(e) => Self::Io(e.into()),
         }
     }
 }
@@ -127,8 +123,8 @@ impl Error {
     }
 }
 
-impl From<RpcError> for Error {
-    fn from(e: RpcError) -> Self {
+impl From<irpc::Error> for Error {
+    fn from(e: irpc::Error) -> Self {
         Self::Io(e.into())
     }
 }
@@ -269,7 +265,7 @@ impl Store {
         Ok(())
     }
 
-    pub async fn shutdown(&self) -> RpcResult<()> {
+    pub async fn shutdown(&self) -> irpc::Result<()> {
         let msg = ShutdownRequest;
         self.client.rpc(msg).await?;
         Ok(())

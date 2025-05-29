@@ -1,8 +1,8 @@
-//! Download API
+//! API for downloading blobs from a single remote node.
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
-use n0_future::{Stream, StreamExt, TryFutureExt, io};
+use n0_future::{Stream, StreamExt, io};
 use quinn::SendStream;
 use ref_cast::RefCast;
 
@@ -579,7 +579,6 @@ use crate::{
     hashseq::{HashSeq, HashSeqIter},
     protocol::{ChunkRangesSeq, GetRequest},
     store::IROH_BLOCK_SIZE,
-    util::channel::mpsc,
 };
 
 /// Trait to lazily get a connection
@@ -661,11 +660,10 @@ async fn get_blob_ranges_impl(
     };
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
-    let (tx, rx) = mpsc::channel(buffer_size);
-    let complete = store
-        .import_bao(hash, size, rx)
-        .into_future()
-        .map_err(|e| GetError::LocalFailure(e.into()));
+    let mut handle = store
+        .import_bao(hash, size, buffer_size)
+        .await
+        .map_err(|e| GetError::LocalFailure(e.into()))?;
     let write = async move {
         GetResult::Ok(loop {
             match content.next().await {
@@ -675,14 +673,19 @@ async fn get_blob_ranges_impl(
                         .send(next.stats().payload_bytes_read)
                         .await
                         .map_err(|e| GetError::LocalFailure(e.into()))?;
-                    tx.send(item).await?;
+                    handle.tx.send(item).await?;
                     content = next;
                 }
                 BlobContentNext::Done(end) => {
-                    drop(tx);
+                    drop(handle.tx);
                     break end;
                 }
             }
+        })
+    };
+    let complete = async move {
+        handle.rx.await.map_err(|e| {
+            GetError::LocalFailure(anyhow::anyhow!("error reading from import stream: {e}"))
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;

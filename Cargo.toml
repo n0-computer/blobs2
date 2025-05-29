@@ -33,7 +33,7 @@ self_cell = "1.1.0"
 genawaiter = { version = "0.99.1", features = ["futures03"] }
 iroh-base = "0.34.1"
 reflink-copy = "0.1.24"
-irpc = { version = "0.2.3", features = ["rpc", "quinn_endpoint_setup", "message_spans", "stream"], default-features = false }
+irpc = { version = "0.2.3", features = ["rpc", "quinn_endpoint_setup", "message_spans", "stream"], default-features = false, path = "../irpc" }
 irpc-derive = { version = "0.2.3", default-features = false }
 iroh-metrics = { version = "0.32.0" }
 hashlink = "0.10.0"
@@ -54,5 +54,6 @@ tracing-test = "0.2.5"
 walkdir = "2.5.0"
 
 [features]
-proto-docs = []
+hide-proto-docs = []
 metrics = []
+default = ["hide-proto-docs"]

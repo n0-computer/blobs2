@@ -1,3 +1,4 @@
+//! API for downloads from multiple nodes.
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -307,19 +308,15 @@ impl<'de> Deserialize<'de> for DownloadRequest {
 pub type DownloadOptions = DownloadRequest;
 
 pub struct DownloadProgress {
-    fut: future::Boxed<Result<spsc::Receiver<DownloadProgessItem>, irpc::Error>>,
+    fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>,
 }
 
 impl DownloadProgress {
-    pub fn new(
-        fut: future::Boxed<Result<spsc::Receiver<DownloadProgessItem>, irpc::Error>>,
-    ) -> Self {
+    pub fn new(fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>) -> Self {
         Self { fut }
     }
 
-    pub async fn stream(
-        self,
-    ) -> Result<impl Stream<Item = DownloadProgessItem> + Unpin, irpc::Error> {
+    pub async fn stream(self) -> irpc::Result<impl Stream<Item = DownloadProgessItem> + Unpin> {
         let rx = self.fut.await?;
         Ok(Box::pin(rx.into_stream().map(|item| match item {
             Ok(item) => item,

@@ -30,7 +30,7 @@ impl Tags {
         Self::ref_cast(sender)
     }
 
-    pub async fn list_temp_tags(&self) -> super::RpcResult<impl Stream<Item = HashAndFormat>> {
+    pub async fn list_temp_tags(&self) -> irpc::Result<impl Stream<Item = HashAndFormat>> {
         let options = ListTempTagsRequest;
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
@@ -44,7 +44,7 @@ impl Tags {
     pub async fn list_with_opts(
         &self,
         options: ListOptions,
-    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
         trace!("{:?}", options);
         let res = self.client.rpc(options).await?;
         Ok(n0_future::stream::iter(res))
@@ -80,7 +80,7 @@ impl Tags {
     pub async fn list_range<R, E>(
         &self,
         range: R,
-    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>>
+    ) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>>
     where
         R: RangeBounds<E>,
         E: AsRef<[u8]>,
@@ -92,20 +92,20 @@ impl Tags {
     pub async fn list_prefix(
         &self,
         prefix: impl AsRef<[u8]>,
-    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListOptions::prefix(prefix.as_ref()))
             .await
     }
 
     /// Lists all tags.
-    pub async fn list(&self) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
+    pub async fn list(&self) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListOptions::all()).await
     }
 
     /// Lists all tags with a hash_seq format.
     pub async fn list_hash_seq(
         &self,
-    ) -> super::RpcResult<impl Stream<Item = super::Result<TagInfo>>> {
+    ) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListOptions::hash_seq()).await
     }
 
@@ -183,7 +183,7 @@ impl Tags {
         .await
     }
 
-    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
+    pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> irpc::Result<TempTag> {
         let value = value.into();
         let msg = CreateTempTagRequest {
             scope: Scope::GLOBAL,
