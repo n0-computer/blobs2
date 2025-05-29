@@ -386,10 +386,10 @@ pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub use crate::util::ChunkRangesExt;
-use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield};
+use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, provider::CountingReader};
 
 /// Maximum message size is limited to 100MiB for now.
-pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 100;
+pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// The ALPN used with quic for the iroh blobs protocol.
 pub const ALPN: &[u8] = b"/iroh-bytes/4";
@@ -435,7 +435,9 @@ pub enum RequestType {
 }
 
 impl Request {
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
+    pub async fn read_async(
+        reader: &mut CountingReader<&mut quinn::RecvStream>,
+    ) -> io::Result<Self> {
         let request_type = reader.read_u8().await?;
         let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))
             .map_err(|_| {
@@ -445,10 +447,19 @@ impl Request {
             )
         })?;
         Ok(match request_type {
-            RequestType::Get => GetRequest::read_async(reader).await?.into(),
+            RequestType::Get => reader
+                .read_to_end_as::<GetRequest>(MAX_MESSAGE_SIZE)
+                .await?
+                .into(),
+            RequestType::GetMany => reader
+                .read_to_end_as::<GetManyRequest>(MAX_MESSAGE_SIZE)
+                .await?
+                .into(),
+            RequestType::Observe => reader
+                .read_to_end_as::<ObserveRequest>(MAX_MESSAGE_SIZE)
+                .await?
+                .into(),
             RequestType::Push => PushRequest::read_async(reader).await?.into(),
-            RequestType::GetMany => GetManyRequest::read_async(reader).await?.into(),
-            RequestType::Observe => ObserveRequest::read_async(reader).await?.into(),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -588,22 +599,6 @@ impl GetManyRequest {
     pub fn builder() -> builder::GetManyRequestBuilder {
         builder::GetManyRequestBuilder::default()
     }
-
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        use irpc::util::AsyncReadVarintExt;
-        let size = reader.read_varint_u64().await?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Failed to read size of GetManyRequest",
-            )
-        })?;
-        let mut hashes = Vec::new();
-        for _ in 0..size {
-            hashes.push(Hash::read_async(&mut reader).await?);
-        }
-        let ranges = ChunkRangesSeq::read_async(&mut reader).await?;
-        Ok(Self { hashes, ranges })
-    }
 }
 
 /// A request to observe a raw blob bitfield.
@@ -621,12 +616,6 @@ impl ObserveRequest {
             hash,
             ranges: RangeSpec::all(),
         }
-    }
-
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let hash = Hash::read_async(&mut reader).await?;
-        let ranges = RangeSpec::read_async(reader).await?;
-        Ok(Self { hash, ranges })
     }
 }
 

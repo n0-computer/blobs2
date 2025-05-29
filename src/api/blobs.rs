@@ -513,7 +513,7 @@ pub struct AddPathOptions {
 
 /// A progress handle for an import operation.
 ///
-/// Internally this is a stream of [`ImportProgress`] items. Working with this
+/// Internally this is a stream of [`AddProgressItem`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
 /// methods to work with the result.
 ///
@@ -751,9 +751,7 @@ pub struct BlobsListProgress {
 
 impl BlobsListProgress {
     fn new(
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<super::Result<Hash>>>>
-        + Send
-        + 'static,
+        fut: impl Future<Output = irpc::Result<spsc::Receiver<super::Result<Hash>>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),

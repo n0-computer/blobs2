@@ -20,6 +20,7 @@ use iroh::{
 };
 use irpc::channel::oneshot;
 use n0_future::StreamExt;
+use serde::de::DeserializeOwned;
 use tokio::{io::AsyncRead, select, sync::mpsc};
 use tracing::{Instrument, debug, debug_span, error, warn};
 
@@ -427,14 +428,14 @@ async fn handle_stream(
             writer.context = reader.context;
             handle_get_many(store, request, writer).await
         }
-        Request::Push(request) => {
-            writer.inner.finish()?;
-            handle_push(store, request, reader).await
-        }
         Request::Observe(request) => {
             // we expect no more bytes after the request, so if there are more bytes, it is an invalid request.
             reader.inner.read_to_end(0).await?;
             handle_observe(store, request, writer).await
+        }
+        Request::Push(request) => {
+            writer.inner.finish()?;
+            handle_push(store, request, reader).await
         }
         _ => anyhow::bail!("unsupported request: {request:?}"),
         // Request::Push(request) => handle_push(store, request, writer).await,
@@ -718,8 +719,8 @@ impl DerefMut for ProgressReader {
 }
 
 pub struct CountingReader<R> {
-    inner: R,
-    read: u64,
+    pub inner: R,
+    pub read: u64,
 }
 
 impl<R> CountingReader<R> {
@@ -729,6 +730,20 @@ impl<R> CountingReader<R> {
 
     pub fn read(&self) -> u64 {
         self.read
+    }
+}
+
+impl CountingReader<&mut quinn::RecvStream> {
+    pub async fn read_to_end_as<T: DeserializeOwned>(&mut self, max_size: usize) -> io::Result<T> {
+        let data = self
+            .inner
+            .read_to_end(max_size)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let value = postcard::from_bytes(&data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        self.read += data.len() as u64;
+        Ok(value)
     }
 }
 

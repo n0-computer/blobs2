@@ -103,9 +103,7 @@ impl Tags {
     }
 
     /// Lists all tags with a hash_seq format.
-    pub async fn list_hash_seq(
-        &self,
-    ) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
+    pub async fn list_hash_seq(&self) -> irpc::Result<impl Stream<Item = super::Result<TagInfo>>> {
         self.list_with_opts(ListOptions::hash_seq()).await
     }
 
