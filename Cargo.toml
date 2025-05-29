@@ -38,6 +38,7 @@ irpc-derive = { version = "0.2.3", default-features = false }
 iroh-metrics = { version = "0.32.0" }
 hashlink = "0.10.0"
 futures-buffered = "0.2.11"
+irpc-schema = { path = "../irpc-schema", features = ["derive", "irpc", "bytes"], default-features = false }
 
 [dev-dependencies]
 clap = { version = "4.5.31", features = ["derive"] }

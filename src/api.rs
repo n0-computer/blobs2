@@ -6,6 +6,7 @@ use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use iroh::Endpoint;
 use irpc::rpc::{Handler, listen};
+use irpc_schema::schema;
 use proto::{Request, ShutdownRequest, SyncDbRequest};
 use ref_cast::RefCast;
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,7 @@ impl From<RpcError> for ExportBaoError {
 pub type ExportBaoResult<T> = std::result::Result<T, ExportBaoError>;
 
 #[derive(Debug, derive_more::Display, derive_more::From, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum Error {
     #[serde(with = "crate::util::serde::io_error_serde")]
     Io(io::Error),

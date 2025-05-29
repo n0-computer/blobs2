@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::{
     BlobFormat, Hash, HashAndFormat,
-    api::{Store, blobs::Bitfield},
+    api::{Store, blobs::Bitfield, proto::Request},
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
@@ -660,4 +660,11 @@ async fn test_export_ranges_smoke() -> TestResult {
         test_export_ranges(&store, hash, &data, size * 4..size * 5).await?;
     }
     Ok(())
+}
+
+#[test]
+fn print_schema() {
+    for (a, b, c) in Request::schemas() {
+        println!("{}\n{}\n{}", a, b.pretty_print(2), hex::encode(c));
+    }
 }

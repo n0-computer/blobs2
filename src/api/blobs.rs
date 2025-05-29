@@ -13,11 +13,10 @@ use std::{
     pin::Pin,
 };
 
-pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{
     BaoTree, ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
+        Leaf,
         fsm::{ResponseDecoder, ResponseDecoderNext},
     },
 };
@@ -55,8 +54,11 @@ use super::{
     tags::TagInfo,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat, api::proto::BatchRequest, provider::ProgressWriter,
-    store::IROH_BLOCK_SIZE, util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat,
+    api::proto::{BaoContentItem, BatchRequest, EncodedItem},
+    provider::ProgressWriter,
+    store::IROH_BLOCK_SIZE,
+    util::temp_tag::TempTag,
 };
 
 /// Options for adding bytes.
@@ -249,12 +251,13 @@ impl Blobs {
         let ranges = ChunkRanges::from(base..base + 1);
         let mut stream = self.export_bao(hash, ranges).stream();
         while let Some(item) = stream.next().await {
+            let item = bao_tree::io::mixed::EncodedItem::from(item);
             match item {
-                EncodedItem::Leaf(leaf) => return Ok(leaf),
-                EncodedItem::Parent(_) => {}
-                EncodedItem::Size(_) => {}
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(cause.into()),
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => return Ok(leaf),
+                bao_tree::io::mixed::EncodedItem::Parent(_) => {}
+                bao_tree::io::mixed::EncodedItem::Size(_) => {}
+                bao_tree::io::mixed::EncodedItem::Done => break,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => return Err(cause.into()),
             }
         }
         Err(io::Error::other("unexpected end of stream").into())
@@ -353,7 +356,7 @@ impl Blobs {
             let reader = loop {
                 match decoder.next().await {
                     ResponseDecoderNext::More((rest, item)) => {
-                        tx.send(item?).await?;
+                        tx.send(item?.into()).await?;
                         decoder = rest;
                     }
                     ResponseDecoderNext::Done(reader) => break reader,
@@ -883,9 +886,10 @@ impl ExportBaoProgress {
         let mut stream = self.stream();
         Gen::new(|co| async move {
             while let Some(item) = stream.next().await {
+                let item = bao_tree::io::mixed::EncodedItem::from(item);
                 let leaf = match item {
-                    EncodedItem::Leaf(leaf) => leaf,
-                    EncodedItem::Error(e) => {
+                    bao_tree::io::mixed::EncodedItem::Leaf(leaf) => leaf,
+                    bao_tree::io::mixed::EncodedItem::Error(e) => {
                         co.yield_(Err(e.into())).await;
                         continue;
                     }
@@ -925,14 +929,15 @@ impl ExportBaoProgress {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
         while let Some(item) = rx.recv().await? {
+            let item = bao_tree::io::mixed::EncodedItem::from(item);
             match item {
-                EncodedItem::Leaf(leaf) => {
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => {
                     data.push(leaf.data);
                 }
-                EncodedItem::Parent(_) => {}
-                EncodedItem::Size(_) => {}
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(cause.into()),
+                bao_tree::io::mixed::EncodedItem::Parent(_) => {}
+                bao_tree::io::mixed::EncodedItem::Size(_) => {}
+                bao_tree::io::mixed::EncodedItem::Done => break,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => return Err(cause.into()),
             }
         }
         if data.len() == 1 {
@@ -950,14 +955,15 @@ impl ExportBaoProgress {
         let mut rx = self.inner.await?;
         let mut data = Vec::new();
         while let Some(item) = rx.recv().await? {
+            let item = bao_tree::io::mixed::EncodedItem::from(item);
             match item {
-                EncodedItem::Leaf(leaf) => {
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => {
                     data.extend_from_slice(&leaf.data);
                 }
-                EncodedItem::Parent(_) => {}
-                EncodedItem::Size(_) => {}
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(cause.into()),
+                bao_tree::io::mixed::EncodedItem::Parent(_) => {}
+                bao_tree::io::mixed::EncodedItem::Size(_) => {}
+                bao_tree::io::mixed::EncodedItem::Done => break,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => return Err(cause.into()),
             }
         }
         Ok(data)
@@ -966,11 +972,12 @@ impl ExportBaoProgress {
     pub async fn write_quinn(self, target: &mut quinn::SendStream) -> super::ExportBaoResult<()> {
         let mut rx = self.inner.await?;
         while let Some(item) = rx.recv().await? {
+            let item = bao_tree::io::mixed::EncodedItem::from(item);
             match item {
-                EncodedItem::Size(size) => {
+                bao_tree::io::mixed::EncodedItem::Size(size) => {
                     target.write_u64_le(size).await?;
                 }
-                EncodedItem::Parent(parent) => {
+                bao_tree::io::mixed::EncodedItem::Parent(parent) => {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
@@ -979,14 +986,14 @@ impl ExportBaoProgress {
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
                 }
-                EncodedItem::Leaf(leaf) => {
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => {
                     target
                         .write_chunk(leaf.data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
                 }
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(cause.into()),
+                bao_tree::io::mixed::EncodedItem::Done => break,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => return Err(cause.into()),
             }
         }
         Ok(())
@@ -1001,13 +1008,14 @@ impl ExportBaoProgress {
     ) -> super::ExportBaoResult<()> {
         let mut rx = self.inner.await?;
         while let Some(item) = rx.recv().await? {
+            let item = bao_tree::io::mixed::EncodedItem::from(item);
             match item {
-                EncodedItem::Size(size) => {
+                bao_tree::io::mixed::EncodedItem::Size(size) => {
                     writer.send_transfer_started(index, hash, size).await;
                     writer.inner.write_u64_le(size).await?;
                     writer.log_other_write(8);
                 }
-                EncodedItem::Parent(parent) => {
+                bao_tree::io::mixed::EncodedItem::Parent(parent) => {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
@@ -1018,7 +1026,7 @@ impl ExportBaoProgress {
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
                     writer.log_other_write(64);
                 }
-                EncodedItem::Leaf(leaf) => {
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => {
                     let len = leaf.data.len();
                     writer
                         .inner
@@ -1027,29 +1035,32 @@ impl ExportBaoProgress {
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
                     writer.notify_payload_write(index, leaf.offset, len);
                 }
-                EncodedItem::Done => break,
-                EncodedItem::Error(cause) => return Err(cause.into()),
+                bao_tree::io::mixed::EncodedItem::Done => break,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => return Err(cause.into()),
             }
         }
         Ok(())
     }
 
     pub fn into_byte_stream(self) -> impl Stream<Item = super::Result<Bytes>> {
-        self.stream().filter_map(|item| match item {
-            EncodedItem::Size(size) => {
-                let size = size.to_le_bytes().to_vec().into();
-                Some(Ok(size))
-            }
-            EncodedItem::Parent(parent) => {
-                let mut data = vec![0u8; 64];
-                data[..32].copy_from_slice(parent.pair.0.as_bytes());
-                data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                Some(Ok(data.into()))
-            }
-            EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
-            EncodedItem::Done => None,
-            EncodedItem::Error(cause) => Some(Err(super::Error::other(cause))),
-        })
+        self.stream()
+            .filter_map(|item| match bao_tree::io::mixed::EncodedItem::from(item) {
+                bao_tree::io::mixed::EncodedItem::Size(size) => {
+                    let size = size.to_le_bytes().to_vec().into();
+                    Some(Ok(size))
+                }
+                bao_tree::io::mixed::EncodedItem::Parent(parent) => {
+                    let mut data = vec![0u8; 64];
+                    data[..32].copy_from_slice(parent.pair.0.as_bytes());
+                    data[32..].copy_from_slice(parent.pair.1.as_bytes());
+                    Some(Ok(data.into()))
+                }
+                bao_tree::io::mixed::EncodedItem::Leaf(leaf) => Some(Ok(leaf.data)),
+                bao_tree::io::mixed::EncodedItem::Done => None,
+                bao_tree::io::mixed::EncodedItem::Error(cause) => {
+                    Some(Err(super::Error::other(cause)))
+                }
+            })
     }
 
     pub fn stream(self) -> impl Stream<Item = EncodedItem> {
@@ -1057,8 +1068,11 @@ impl ExportBaoProgress {
             let mut rx = match self.inner.await {
                 Ok(rx) => rx,
                 Err(cause) => {
-                    co.yield_(EncodedItem::Error(io::Error::other(cause).into()))
-                        .await;
+                    co.yield_(
+                        bao_tree::io::mixed::EncodedItem::Error(io::Error::other(cause).into())
+                            .into(),
+                    )
+                    .await;
                     return;
                 }
             };

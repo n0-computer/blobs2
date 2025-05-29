@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, io, num::NonZeroU64};
 
 use bao_tree::{ChunkNum, ChunkRanges};
+use irpc_schema::schema;
 use range_collections::range_set::RangeSetRange;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
@@ -26,6 +27,7 @@ pub fn is_complete(size: NonZeroU64, ranges: &ChunkRanges) -> bool {
 
 /// The state of a bitfield, or an update to a bitfield
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[schema(Atom)]
 pub struct Bitfield {
     /// Possible update to the size information. can this be just a u64?
     pub(crate) size: u64,

@@ -4,6 +4,7 @@ use std::{borrow::Borrow, fmt, io, str::FromStr};
 
 use arrayvec::ArrayString;
 use bao_tree::blake3;
+use irpc_schema::schema;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -12,6 +13,7 @@ use crate::store::util::DD;
 
 /// Hash type used throughout.
 #[derive(PartialEq, Eq, Copy, Clone, Hash)]
+#[schema(Atom)]
 pub struct Hash(blake3::Hash);
 
 impl fmt::Debug for Hash {
@@ -221,6 +223,7 @@ impl MaxSize for Hash {
     Hash,
     derive_more::Display,
 )]
+#[schema(Nominal)]
 pub enum BlobFormat {
     /// Raw blob
     #[default]
@@ -252,6 +255,7 @@ impl BlobFormat {
 
 /// A hash and format pair
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, MaxSize, Hash)]
+#[schema(Structural)]
 pub struct HashAndFormat {
     /// The hash
     pub hash: Hash,

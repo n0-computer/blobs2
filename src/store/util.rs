@@ -8,13 +8,14 @@ use std::{
 };
 
 use arrayvec::ArrayString;
-use bao_tree::{blake3, io::mixed::EncodedItem};
+use bao_tree::blake3;
 use bytes::Bytes;
 use derive_more::{From, Into};
 
 mod mem_or_file;
 mod sparse_mem_file;
 use irpc::channel::spsc;
+use irpc_schema::schema;
 pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{RangeSetRef, range_set::RangeSetEntry};
 use ref_cast::RefCast;
@@ -26,8 +27,11 @@ pub use size_info::SizeInfo;
 mod partial_mem_storage;
 pub use partial_mem_storage::PartialMemStorage;
 
+use crate::api::proto::EncodedItem;
+
 /// A named, persistent tag.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+#[schema(Atom)]
 pub struct Tag(pub Bytes);
 
 impl From<&[u8]> for Tag {
@@ -382,7 +386,10 @@ impl BaoTreeSender {
 
 impl bao_tree::io::mixed::Sender for BaoTreeSender {
     type Error = irpc::channel::SendError;
-    async fn send(&mut self, item: EncodedItem) -> std::result::Result<(), Self::Error> {
-        self.0.send(item).await
+    async fn send(
+        &mut self,
+        item: bao_tree::io::mixed::EncodedItem,
+    ) -> std::result::Result<(), Self::Error> {
+        self.0.send(item.into()).await
     }
 }

@@ -17,19 +17,17 @@ use std::{
     fmt::{self, Debug},
     io,
     num::NonZeroU64,
-    ops::{Bound, RangeBounds},
+    ops::{Bound, Deref, RangeBounds},
     path::PathBuf,
     pin::Pin,
 };
 
 use arrayvec::ArrayString;
-use bao_tree::{
-    ChunkRanges,
-    io::{BaoContentItem, Leaf, mixed::EncodedItem},
-};
+use bao_tree::{ChunkRanges, io::Leaf};
 use bytes::Bytes;
 use irpc::channel::{oneshot, spsc};
 use irpc_derive::rpc_requests;
+use irpc_schema::{schema, serialize_service};
 use n0_future::Stream;
 use range_collections::RangeSet2;
 use serde::{Deserialize, Serialize};
@@ -88,8 +86,61 @@ impl HashSpecific for CreateTagMsg {
 pub struct StoreService;
 impl irpc::Service for StoreService {}
 
-#[rpc_requests(StoreService, message = Command, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Atom)]
+pub struct EncodedItem(bao_tree::io::mixed::EncodedItem);
+
+impl From<bao_tree::io::mixed::EncodedItem> for EncodedItem {
+    fn from(e: bao_tree::io::mixed::EncodedItem) -> Self {
+        Self(e)
+    }
+}
+
+impl From<EncodedItem> for bao_tree::io::mixed::EncodedItem {
+    fn from(e: EncodedItem) -> Self {
+        e.0
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[schema(Atom)]
+pub struct BaoContentItem(bao_tree::io::BaoContentItem);
+
+impl Deref for BaoContentItem {
+    type Target = bao_tree::io::BaoContentItem;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<bao_tree::io::Parent> for BaoContentItem {
+    fn from(p: bao_tree::io::Parent) -> Self {
+        Self(p.into())
+    }
+}
+
+impl From<bao_tree::io::Leaf> for BaoContentItem {
+    fn from(l: bao_tree::io::Leaf) -> Self {
+        Self(l.into())
+    }
+}
+
+impl From<bao_tree::io::BaoContentItem> for BaoContentItem {
+    fn from(e: bao_tree::io::BaoContentItem) -> Self {
+        Self(e)
+    }
+}
+
+impl From<BaoContentItem> for bao_tree::io::BaoContentItem {
+    fn from(e: BaoContentItem) -> Self {
+        e.0
+    }
+}
+
+#[derive(Debug)]
+#[rpc_requests(StoreService, message = Command, alias = "Msg")]
+#[serialize_service(StoreService)]
 pub enum Request {
     #[rpc(tx = spsc::Sender<super::Result<Hash>>)]
     ListBlobs(ListRequest),
@@ -138,26 +189,33 @@ pub enum Request {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct SyncDbRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ShutdownRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ClearProtectedRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct BlobStatusRequest {
     pub hash: Hash,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ListRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct BatchRequest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum BatchResponse {
     Drop(HashAndFormat),
     Ping,
@@ -165,6 +223,7 @@ pub enum BatchResponse {
 
 /// Options for force deletion of blobs.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct BlobDeleteRequest {
     pub hashes: Vec<Hash>,
     pub force: bool,
@@ -172,6 +231,7 @@ pub struct BlobDeleteRequest {
 
 /// Import the given bytes.
 #[derive(Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ImportBytesRequest {
     pub data: Bytes,
     pub format: BlobFormat,
@@ -189,6 +249,7 @@ impl fmt::Debug for ImportBytesRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ImportPathRequest {
     pub path: PathBuf,
     pub mode: ImportMode,
@@ -202,6 +263,7 @@ pub struct ImportPathRequest {
 /// To observe the incoming data more granularly, use the `Observe` command
 /// concurrently.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ImportBaoRequest {
     pub hash: Hash,
     pub size: NonZeroU64,
@@ -209,6 +271,7 @@ pub struct ImportBaoRequest {
 
 /// Observe the local bitfield of the given hash.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ObserveRequest {
     pub hash: Hash,
 }
@@ -217,6 +280,7 @@ pub struct ObserveRequest {
 ///
 /// The returned stream should be verified by the store.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Atom)]
 pub struct ExportBaoRequest {
     pub hash: Hash,
     pub ranges: ChunkRanges,
@@ -224,6 +288,7 @@ pub struct ExportBaoRequest {
 
 /// Export the given ranges as chunkks, without validation.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Atom)]
 pub struct ExportRangesRequest {
     pub hash: Hash,
     pub ranges: RangeSet2<u64>,
@@ -236,6 +301,7 @@ pub struct ExportRangesRequest {
 /// sparse file.
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ExportPathRequest {
     pub hash: Hash,
     pub mode: ExportMode,
@@ -243,6 +309,7 @@ pub struct ExportPathRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ImportByteStreamRequest {
     pub format: BlobFormat,
     pub data: Vec<Bytes>,
@@ -251,6 +318,7 @@ pub struct ImportByteStreamRequest {
 
 /// Options for a list operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ListTagsRequest {
     /// List tags to hash seqs
     pub hash_seq: bool,
@@ -334,6 +402,7 @@ impl ListTagsRequest {
 
 /// Information about a tag.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct TagInfo {
     /// Name of the tag
     pub name: Tag,
@@ -384,6 +453,7 @@ where
 
 /// List all temp tags
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct CreateTempTagRequest {
     pub scope: Scope,
     pub value: HashAndFormat,
@@ -391,10 +461,12 @@ pub struct CreateTempTagRequest {
 
 /// List all temp tags
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ListTempTagsRequest;
 
 /// Rename a tag atomically
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct RenameTagRequest {
     /// Old tag name
     pub from: Tag,
@@ -404,6 +476,7 @@ pub struct RenameTagRequest {
 
 /// Options for a delete operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct DeleteTagsRequest {
     /// Optional from tag (inclusive)
     pub from: Option<Tag>,
@@ -444,6 +517,7 @@ impl DeleteTagsRequest {
 
 /// Options for creating a tag or setting it to a new value.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct SetTagRequest {
     pub name: Tag,
     pub value: HashAndFormat,
@@ -451,12 +525,14 @@ pub struct SetTagRequest {
 
 /// Options for creating a tag
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct CreateTagRequest {
     pub value: HashAndFormat,
 }
 
 /// Debug tool to exit the process in the middle of a write transaction, for testing.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub struct ProcessExitRequest {
     pub code: i32,
 }
@@ -475,6 +551,7 @@ pub struct ProcessExitRequest {
 ///
 /// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum AddProgressItem {
     /// Progress copying the file into the data directory.
     ///
@@ -531,6 +608,7 @@ impl From<io::Error> for AddProgressItem {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Atom)]
 pub enum ExportRangesItem {
     /// The size of the file being exported.
     ///
@@ -552,6 +630,7 @@ pub enum ExportRangesItem {
 ///
 /// Errors can happen at any time, and will be reported as an `Error` event.
 #[derive(Debug, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum ExportProgressItem {
     /// The size of the file being exported.
     ///
@@ -597,6 +676,7 @@ impl From<super::Error> for ExportProgressItem {
 /// to copy the file into memory. Also, a disk based implementation might choose
 /// to copy small files even if the mode is `Reference`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum ImportMode {
     /// This mode will copy the file into the database before hashing.
     ///
@@ -621,6 +701,7 @@ pub enum ImportMode {
 /// to copy the file into memory. Also, a disk based implementation might choose
 /// to copy small files even if the mode is `Reference`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[schema(Nominal)]
 pub enum ExportMode {
     /// This mode will copy the file to the target directory.
     ///
@@ -641,6 +722,7 @@ pub enum ExportMode {
 
 /// Status information about a blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[schema(Nominal)]
 pub enum BlobStatus {
     /// The blob is not stored at all.
     NotFound,
@@ -660,6 +742,7 @@ pub enum BlobStatus {
 #[derive(
     Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display,
 )]
+#[schema(Nominal)]
 pub struct Scope(pub(crate) u64);
 
 impl Scope {

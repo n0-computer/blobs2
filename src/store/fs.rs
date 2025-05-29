@@ -77,8 +77,8 @@ use std::{
 use bao_tree::{
     ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        Leaf,
+        mixed::{ReadBytesAt, traverse_ranges_validated},
         sync::ReadAt,
     },
 };
@@ -99,10 +99,10 @@ use crate::{
     api::{
         ApiClient,
         proto::{
-            self, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg, ExportBaoMsg,
-            ExportBaoRequest, ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
-            ExportRangesRequest, HashSpecific, ImportBaoMsg, ImportBaoRequest, ObserveMsg, Scope,
-            bitfield::is_validated,
+            self, BaoContentItem, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg,
+            EncodedItem, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
+            ExportRangesItem, ExportRangesMsg, ExportRangesRequest, HashSpecific, ImportBaoMsg,
+            ImportBaoRequest, ObserveMsg, Scope, bitfield::is_validated,
         },
     },
     store::{
@@ -898,9 +898,10 @@ async fn import_bao_impl(
         handle.hash().fmt_short(),
         size
     );
-    let mut batch = Vec::<BaoContentItem>::new();
+    let mut batch = Vec::<bao_tree::io::BaoContentItem>::new();
     let mut ranges = ChunkRanges::empty();
     while let Some(item) = rx.recv().await? {
+        let item = bao_tree::io::BaoContentItem::from(item);
         // if the batch is not empty, the last item is a leaf and the current item is a parent, write the batch
         if !batch.is_empty() && batch[batch.len() - 1].is_leaf() && item.is_parent() {
             let bitfield = Bitfield::new_unchecked(ranges, size.into());
@@ -908,7 +909,7 @@ async fn import_bao_impl(
             batch.clear();
             ranges = ChunkRanges::empty();
         }
-        if let BaoContentItem::Leaf(leaf) = &item {
+        if let bao_tree::io::BaoContentItem::Leaf(leaf) = &item {
             let leaf_range = chunk_range(leaf);
             if is_validated(size, &leaf_range) && size.get() != leaf.offset + leaf.data.len() as u64
             {
@@ -1000,7 +1001,12 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
         Ok(handle) => {
             if let Err(cause) = export_bao_impl(cmd.inner, &mut cmd.tx, handle).await {
                 cmd.tx
-                    .send(bao_tree::io::EncodeError::Io(io::Error::other(cause)).into())
+                    .send(
+                        bao_tree::io::mixed::EncodedItem::from(bao_tree::io::EncodeError::Io(
+                            io::Error::other(cause),
+                        ))
+                        .into(),
+                    )
                     .await
                     .ok();
             }
@@ -1008,7 +1014,12 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
         Err(cause) => {
             let cause = anyhow::anyhow!("failed to open file: {cause}");
             cmd.tx
-                .send(bao_tree::io::EncodeError::Io(io::Error::other(cause)).into())
+                .send(
+                    bao_tree::io::mixed::EncodedItem::from(bao_tree::io::EncodeError::Io(
+                        io::Error::other(cause),
+                    ))
+                    .into(),
+                )
                 .await
                 .ok();
         }

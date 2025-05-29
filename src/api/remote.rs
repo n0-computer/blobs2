@@ -675,7 +675,7 @@ async fn get_blob_ranges_impl(
                         .send(next.stats().payload_bytes_read)
                         .await
                         .map_err(|e| GetError::LocalFailure(e.into()))?;
-                    tx.send(item).await?;
+                    tx.send(item.into()).await?;
                     content = next;
                 }
                 BlobContentNext::Done(end) => {
