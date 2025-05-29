@@ -585,42 +585,6 @@ impl Drop for BaoFileHandle {
     }
 }
 
-// impl Drop for BaoFileHandleInner {
-//     fn drop(&mut self) {
-//         let id: u16 = rand::random();
-//         error!(
-//             "{id} dropping BaoFileHandleInner for hash {}",
-//             self.hash.to_hex()
-//         );
-//         if let BaoFileStorage::Partial(fs) = self.storage.borrow().deref() {
-//             let options = self.options.as_ref().unwrap();
-//             let path = options.path.bitfield_path(&self.hash);
-//             error!(
-//                 "{id} writing bitfield for hash {} to {}",
-//                 self.hash,
-//                 path.display()
-//             );
-//             if let Err(cause) = fs.sync_all(&path) {
-//                 error!(
-//                     "{id} failed to write bitfield for {} at {}: {:?}",
-//                     self.hash,
-//                     path.display(),
-//                     cause
-//                 );
-//             }
-//             error!(
-//                 "{id} wrote bitfield for hash {} to {}",
-//                 self.hash,
-//                 path.display()
-//             );
-//         }
-//         error!(
-//             "{id} done dropping BaoFileHandleInner for hash {}",
-//             self.hash.to_hex()
-//         );
-//     }
-// }
-
 /// A reader for a bao file, reading just the data.
 #[derive(Debug)]
 pub struct DataReader(BaoFileHandle);
