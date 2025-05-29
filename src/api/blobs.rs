@@ -83,10 +83,6 @@ pub struct Blobs {
     client: ApiClient,
 }
 
-pub trait AddableStream: Stream<Item = io::Result<Bytes>> + Send + Sync + 'static {}
-
-impl<T: Stream<Item = io::Result<Bytes>> + Send + Sync + 'static> AddableStream for T {}
-
 impl Blobs {
     pub(crate) fn ref_from_sender(sender: &ApiClient) -> &Self {
         Self::ref_cast(sender)
@@ -182,7 +178,10 @@ impl Blobs {
         })
     }
 
-    pub async fn add_stream(&self, data: impl AddableStream) -> AddProgress {
+    pub async fn add_stream(
+        &self,
+        data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
+    ) -> AddProgress {
         self.add_stream_impl(Box::pin(data)).await
     }
 
@@ -434,6 +433,7 @@ impl Blobs {
     }
 }
 
+/// A progress handle for a batch scoped add operation.
 pub struct BatchAddProgress<'a>(AddProgress<'a>);
 
 impl<'a> IntoFuture for BatchAddProgress<'a> {
@@ -527,7 +527,7 @@ pub struct AddPathOptions {
     pub mode: ImportMode,
 }
 
-/// A lazy result of an import operation.
+/// A progress handle for an import operation.
 ///
 /// Internally this is a stream of [`ImportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
@@ -672,7 +672,7 @@ impl ObserveProgress {
     }
 }
 
-/// Lazy result of an export operation.
+/// A progess handle for an export operation.
 ///
 /// Internally this is a stream of [`ExportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
@@ -765,7 +765,7 @@ impl IntoFuture for ImportBaoResult {
     }
 }
 
-/// Lazy result of a blobs list operation.
+/// A progress handle for a blobs list operation.
 pub struct BlobsListProgress {
     inner: future::Boxed<super::RpcResult<spsc::Receiver<super::Result<Hash>>>>,
 }
@@ -800,7 +800,7 @@ impl BlobsListProgress {
     }
 }
 
-/// A lazy result of a bao export operation.
+/// A progress handle for a bao export operation.
 ///
 /// Internally, this is a stream of [`EncodedItem`]s. Using this stream directly
 /// is often inconvenient, so there are a number of higher level methods to
@@ -881,7 +881,7 @@ impl ExportRangesProgress {
     }
 }
 
-/// A lazy result of a bao export operation.
+/// A progress handle for a bao export operation.
 ///
 /// Internally, this is a stream of [`EncodedItem`]s. Using this stream directly
 /// is often inconvenient, so there are a number of higher level methods to
