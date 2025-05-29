@@ -656,8 +656,8 @@ mod tests {
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetManyRequest::builder()
-            .hash(*tt1.hash(), ChunkRanges::all())
-            .hash(*tt2.hash(), ChunkRanges::all())
+            .hash(tt1.hash, ChunkRanges::all())
+            .hash(tt2.hash, ChunkRanges::all())
             .build();
         let mut progress = swarm
             .download(request, Shuffled::new(vec![node1_id, node2_id]))
@@ -666,11 +666,8 @@ mod tests {
         while let Some(item) = progress.next().await {
             println!("Got item: {:?}", item);
         }
-        assert_eq!(store3.get_bytes(*tt1.hash()).await?.deref(), b"hello world");
-        assert_eq!(
-            store3.get_bytes(*tt2.hash()).await?.deref(),
-            b"hello world 2"
-        );
+        assert_eq!(store3.get_bytes(tt1.hash).await?.deref(), b"hello world");
+        assert_eq!(store3.get_bytes(tt2.hash).await?.deref(), b"hello world 2");
         Ok(())
     }
 
@@ -683,7 +680,7 @@ mod tests {
         let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice(vec![1; 10000000]).await?;
         let tt2 = store2.add_slice(vec![2; 10000000]).await?;
-        let hs = [*tt1.hash(), *tt2.hash()].into_iter().collect::<HashSeq>();
+        let hs = [tt1.hash, tt2.hash].into_iter().collect::<HashSeq>();
         let root = store1
             .add_bytes_with_opts(AddBytesOptions {
                 data: hs.clone().into(),
@@ -703,7 +700,7 @@ mod tests {
             .root(ChunkRanges::all())
             .next(ChunkRanges::all())
             .next(ChunkRanges::all())
-            .build(*root.hash());
+            .build(root.hash);
         if true {
             let mut progress = swarm
                 .download_with_opts(DownloadOptions::new(
@@ -725,20 +722,20 @@ mod tests {
                     conn.clone(),
                     GetRequest::builder()
                         .root(ChunkRanges::all())
-                        .build(*root.hash()),
+                        .build(root.hash),
                 )
                 .await?;
             let h1 = remote.execute(
                 conn.clone(),
                 GetRequest::builder()
                     .child(0, ChunkRanges::all())
-                    .build(*root.hash()),
+                    .build(root.hash),
             );
             let h2 = remote.execute(
                 conn.clone(),
                 GetRequest::builder()
                     .child(1, ChunkRanges::all())
-                    .build(*root.hash()),
+                    .build(root.hash),
             );
             h1.await?;
             h2.await?;
@@ -755,7 +752,7 @@ mod tests {
         let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice(vec![1; 10000000]).await?;
         let tt2 = store2.add_slice(vec![2; 10000000]).await?;
-        let hs = [*tt1.hash(), *tt2.hash()].into_iter().collect::<HashSeq>();
+        let hs = [tt1.hash, tt2.hash].into_iter().collect::<HashSeq>();
         let root = store1
             .add_bytes_with_opts(AddBytesOptions {
                 data: hs.clone().into(),
@@ -771,7 +768,7 @@ mod tests {
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
-        let request = GetRequest::all(*root.hash());
+        let request = GetRequest::all(root.hash);
         if true {
             let mut progress = swarm
                 .download_with_opts(DownloadOptions::new(
@@ -793,20 +790,20 @@ mod tests {
                     conn.clone(),
                     GetRequest::builder()
                         .root(ChunkRanges::all())
-                        .build(*root.hash()),
+                        .build(root.hash),
                 )
                 .await?;
             let h1 = remote.execute(
                 conn.clone(),
                 GetRequest::builder()
                     .child(0, ChunkRanges::all())
-                    .build(*root.hash()),
+                    .build(root.hash),
             );
             let h2 = remote.execute(
                 conn.clone(),
                 GetRequest::builder()
                     .child(1, ChunkRanges::all())
-                    .build(*root.hash()),
+                    .build(root.hash),
             );
             h1.await?;
             h2.await?;

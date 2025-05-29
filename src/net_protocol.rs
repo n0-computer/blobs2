@@ -13,7 +13,7 @@
 //! let store = store::fs::FsStore::load("blobs").await?;
 //!
 //! // add some data
-//! let tt = store.add_slice(b"hello world").await?;
+//! let t = store.add_slice(b"hello world").await?;
 //!
 //! // create an iroh endpoint
 //! let endpoint = Endpoint::builder().discovery_n0().bind().await?;
@@ -28,7 +28,7 @@
 //!     .await;
 //!
 //! // this data is now globally available using the ticket
-//! let ticket = blobs.ticket(tt).await?;
+//! let ticket = blobs.ticket(t).await?;
 //! println!("ticket: {}", ticket);
 //!
 //! // wait for control-c to exit

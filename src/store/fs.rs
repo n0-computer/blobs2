@@ -1402,7 +1402,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash);
             let tt = store.add_bytes(expected.clone()).await?;
-            assert_eq!(expected_hash, *tt.hash());
+            assert_eq!(expected_hash, tt.hash);
             // we must at some point see completion, otherwise the test will hang
             obs.await_completion().await?;
             let actual = store.get_bytes(expected_hash).await?;
@@ -1430,7 +1430,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let obs = store.observe(expected_hash);
             let tt = store.add_bytes(expected.clone()).await?;
-            assert_eq!(expected_hash, *tt.hash());
+            assert_eq!(expected_hash, tt.hash);
             let actual = store.get_bytes(expected_hash).await?;
             // check that the data is there
             assert_eq!(&expected, &actual);
@@ -1463,7 +1463,7 @@ pub mod tests {
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash);
             let tt = store.add_path(&path).await?;
-            assert_eq!(expected_hash, *tt.hash());
+            assert_eq!(expected_hash, tt.hash);
             // we must at some point see completion, otherwise the test will hang
             obs.await_completion().await?;
             let actual = store.get_bytes(expected_hash).await?;
@@ -1485,7 +1485,7 @@ pub mod tests {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
             let tt = store.add_bytes(expected.clone()).await?;
-            assert_eq!(expected_hash, *tt.hash());
+            assert_eq!(expected_hash, tt.hash);
             let out_path = testdir.path().join(format!("out-{}", size));
             store.export(expected_hash, &out_path).await?;
             let actual = fs::read(&out_path)?;
@@ -1849,7 +1849,7 @@ pub mod tests {
     async fn test_batch(store: &Store) -> TestResult<()> {
         let batch = store.blobs().batch().await?;
         let tt1 = batch.temp_tag(Hash::new("foo")).await?;
-        let tt2 = batch.add_slice("boo").temp_tag().await?;
+        let tt2 = batch.add_slice("boo").await?;
         let tts = store
             .tags()
             .list_temp_tags()

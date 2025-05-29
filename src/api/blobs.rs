@@ -434,6 +434,36 @@ impl Blobs {
     }
 }
 
+pub struct BatchAddProgress<'a>(AddProgress<'a>);
+
+impl<'a> IntoFuture for BatchAddProgress<'a> {
+    type Output = RequestResult<TempTag>;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.temp_tag())
+    }
+}
+
+impl<'a> BatchAddProgress<'a> {
+    pub async fn with_named_tag(self, name: impl AsRef<[u8]>) -> RequestResult<HashAndFormat> {
+        self.0.with_named_tag(name).await
+    }
+
+    pub async fn with_tag(self) -> RequestResult<TagInfo> {
+        self.0.with_tag().await
+    }
+
+    pub async fn stream(self) -> RequestResult<impl Stream<Item = AddProgressItem>> {
+        self.0.stream().await
+    }
+
+    pub async fn temp_tag(self) -> RequestResult<TempTag> {
+        self.0.temp_tag().await
+    }
+}
+
 /// A batch of operations that modify the blob store.
 pub struct Batch<'a> {
     scope: Scope,
@@ -442,41 +472,41 @@ pub struct Batch<'a> {
 }
 
 impl<'a> Batch<'a> {
-    pub fn add_bytes(&self, data: impl Into<Bytes>) -> AddProgress {
+    pub fn add_bytes(&self, data: impl Into<Bytes>) -> BatchAddProgress {
         let options = ImportBytesRequest {
             data: data.into(),
             format: crate::BlobFormat::Raw,
             scope: self.scope,
         };
-        self.blobs.add_bytes_impl(options)
+        BatchAddProgress(self.blobs.add_bytes_impl(options))
     }
 
-    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> AddProgress {
+    pub fn add_bytes_with_opts(&self, options: impl Into<AddBytesOptions>) -> BatchAddProgress {
         let options = options.into();
-        self.blobs.add_bytes_impl(ImportBytesRequest {
+        BatchAddProgress(self.blobs.add_bytes_impl(ImportBytesRequest {
             data: options.data,
             format: options.format,
             scope: self.scope,
-        })
+        }))
     }
 
-    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> AddProgress {
+    pub fn add_slice(&self, data: impl AsRef<[u8]>) -> BatchAddProgress {
         let options = ImportBytesRequest {
             data: Bytes::copy_from_slice(data.as_ref()),
             format: crate::BlobFormat::Raw,
             scope: self.scope,
         };
-        self.blobs.add_bytes_impl(options)
+        BatchAddProgress(self.blobs.add_bytes_impl(options))
     }
 
-    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
+    pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> BatchAddProgress {
         let options = options.into();
-        self.blobs.add_path_with_opts_impl(ImportPathRequest {
+        BatchAddProgress(self.blobs.add_path_with_opts_impl(ImportPathRequest {
             path: options.path,
             mode: options.mode,
             format: options.format,
             scope: self.scope,
-        })
+        }))
     }
 
     pub async fn temp_tag(&self, value: impl Into<HashAndFormat>) -> super::RpcResult<TempTag> {
@@ -513,12 +543,12 @@ pub struct AddProgress<'a> {
 }
 
 impl<'a> IntoFuture for AddProgress<'a> {
-    type Output = RequestResult<TempTag>;
+    type Output = RequestResult<TagInfo>;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.temp_tag())
+        Box::pin(self.with_tag())
     }
 }
 

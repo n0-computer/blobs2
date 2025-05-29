@@ -207,13 +207,13 @@ mod tests {
 
     async fn gc_smoke(_path: &Path, store: &Store) -> TestResult<()> {
         let blobs = store.blobs();
-        let at = blobs.add_slice("a").await?;
-        let bt = blobs.add_slice("b").await?;
-        let ct = blobs.add_slice("c").await?;
-        let dt = blobs.add_slice("d").await?;
-        let et = blobs.add_slice("e").await?;
-        let ft = blobs.add_slice("f").await?;
-        let gt = blobs.add_slice("g").await?;
+        let at = blobs.add_slice("a").temp_tag().await?;
+        let bt = blobs.add_slice("b").temp_tag().await?;
+        let ct = blobs.add_slice("c").temp_tag().await?;
+        let dt = blobs.add_slice("d").temp_tag().await?;
+        let et = blobs.add_slice("e").temp_tag().await?;
+        let ft = blobs.add_slice("f").temp_tag().await?;
+        let gt = blobs.add_slice("g").temp_tag().await?;
         let a = *at.hash();
         let b = *bt.hash();
         let c = *ct.hash();
@@ -235,6 +235,7 @@ mod tests {
                 data: fghs.into(),
                 format: BlobFormat::HashSeq,
             })
+            .temp_tag()
             .await?;
         store.tags().set("fg", *fghs.hash_and_format()).await?;
         drop(fghs);

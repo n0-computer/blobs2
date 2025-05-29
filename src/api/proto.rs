@@ -343,6 +343,15 @@ pub struct TagInfo {
     pub hash: Hash,
 }
 
+impl From<TagInfo> for HashAndFormat {
+    fn from(tag_info: TagInfo) -> Self {
+        HashAndFormat {
+            hash: tag_info.hash,
+            format: tag_info.format,
+        }
+    }
+}
+
 impl TagInfo {
     /// Create a new tag info.
     pub fn new(name: impl AsRef<[u8]>, value: impl Into<HashAndFormat>) -> Self {

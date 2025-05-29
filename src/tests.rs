@@ -282,7 +282,7 @@ async fn two_nodes_get_many() -> TestResult<()> {
     for size in sizes {
         tts.push(store1.add_bytes(test_data(size)).await?);
     }
-    let hashes = tts.iter().map(|tt| *tt.hash()).collect::<Vec<_>>();
+    let hashes = tts.iter().map(|tt| tt.hash).collect::<Vec<_>>();
     let addr1 = r1.endpoint().node_addr().await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2
@@ -521,9 +521,9 @@ async fn node_serve_hash_seq() -> TestResult<()> {
         let tt = store.add_bytes(test_data(size)).await?;
         tts.push(tt);
     }
-    let hash_seq = tts.iter().map(|x| *x.hash()).collect::<HashSeq>();
+    let hash_seq = tts.iter().map(|x| x.hash).collect::<HashSeq>();
     let root_tt = store.add_bytes(hash_seq).await?;
-    let root = *root_tt.hash();
+    let root = root_tt.hash;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
@@ -651,7 +651,7 @@ async fn test_export_ranges_smoke() -> TestResult {
     for size in sizes {
         let data = test_data(size);
         let tt = store.add_bytes(data.clone()).await?;
-        let hash = *tt.hash();
+        let hash = tt.hash;
         let size = size as u64;
         test_export_ranges(&store, hash, &data, 0..size).await?;
         test_export_ranges(&store, hash, &data, 0..(size / 2)).await?;
