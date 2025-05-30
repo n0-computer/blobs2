@@ -378,12 +378,13 @@ use std::io;
 use builder::GetRequestBuilder;
 use derive_more::From;
 use iroh::endpoint::VarInt;
+use irpc::util::AsyncReadVarintExt;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use bao_tree::ChunkRanges;
 pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncReadExt;
 
 pub use crate::util::ChunkRangesExt;
 use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, provider::CountingReader};
@@ -459,7 +460,10 @@ impl Request {
                 .read_to_end_as::<ObserveRequest>(MAX_MESSAGE_SIZE)
                 .await?
                 .into(),
-            RequestType::Push => PushRequest::read_async(reader).await?.into(),
+            RequestType::Push => reader
+                .read_length_prefixed::<PushRequest>(MAX_MESSAGE_SIZE)
+                .await?
+                .into(),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -511,12 +515,6 @@ impl GetRequest {
         Self { hash, ranges }
     }
 
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let hash = Hash::read_async(&mut reader).await?;
-        let ranges = ChunkRangesSeq::read_async(&mut reader).await?;
-        Ok(Self { hash, ranges })
-    }
-
     /// Request a collection and all its children
     pub fn all(hash: impl Into<Hash>) -> Self {
         Self {
@@ -552,11 +550,6 @@ pub struct PushRequest(GetRequest);
 impl PushRequest {
     pub fn new(hash: Hash, ranges: ChunkRangesSeq) -> Self {
         Self(GetRequest::new(hash, ranges))
-    }
-
-    pub async fn read_async(reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let inner = GetRequest::read_async(reader).await?;
-        Ok(Self(inner))
     }
 }
 
@@ -623,23 +616,6 @@ impl ObserveRequest {
 pub struct ObserveItem {
     pub size: u64,
     pub ranges: ChunkRanges,
-}
-
-impl ObserveItem {
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        use irpc::util::AsyncReadVarintExt;
-        let size = reader.read_varint_u64().await?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Failed to read size of ObserveItem",
-            )
-        })?;
-        let ranges = RangeSpec::read_async(reader).await?;
-        Ok(Self {
-            size,
-            ranges: ranges.to_chunk_ranges(),
-        })
-    }
 }
 
 impl From<&Bitfield> for ObserveItem {
@@ -967,14 +943,11 @@ pub mod builder {
 
 #[cfg(test)]
 mod tests {
-    use bao_tree::ChunkRanges;
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
-    use n0_future::future::block_on;
     use postcard::experimental::max_size::MaxSize;
-    use testresult::TestResult;
 
     use super::{GetRequest, Request, RequestType};
-    use crate::{Hash, protocol::ObserveItem};
+    use crate::Hash;
 
     #[test]
     fn request_wire_format() {
@@ -1007,21 +980,5 @@ mod tests {
     #[test]
     fn request_type_size() {
         assert_eq!(RequestType::POSTCARD_MAX_SIZE, 1);
-    }
-
-    #[test]
-    fn observe_item_postcard() -> TestResult<()> {
-        let item = ObserveItem {
-            size: 0,
-            ranges: ChunkRanges::empty(),
-        };
-        let bytes = postcard::to_stdvec(&item)?;
-        let item2: ObserveItem = postcard::from_bytes(&bytes)?;
-        assert_eq!(item, item2);
-
-        let item3 = block_on(ObserveItem::read_async(&bytes[..]))?;
-        assert_eq!(item, item3);
-
-        Ok(())
     }
 }

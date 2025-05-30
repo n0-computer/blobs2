@@ -1,10 +1,9 @@
-use std::{cmp::Ordering, io, num::NonZeroU64};
+use std::{cmp::Ordering, num::NonZeroU64};
 
 use bao_tree::{ChunkNum, ChunkRanges};
 use range_collections::range_set::RangeSetRange;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
-use tokio::io::AsyncRead;
 
 use crate::store::util::{
     RangeSetExt,
@@ -71,28 +70,6 @@ impl<'de> Deserialize<'de> for Bitfield {
 }
 
 impl Bitfield {
-    pub async fn read_async(mut reader: impl AsyncRead + Unpin) -> io::Result<Self> {
-        use irpc::util::AsyncReadVarintExt;
-        let count = reader.read_varint_u64().await?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read length prefix")
-        })?;
-        let size = reader
-            .read_varint_u64()
-            .await?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read size"))?;
-        let mut values = SmallVec::<[_; 2]>::new();
-        for _ in 0..count {
-            let value = reader.read_varint_u64().await?.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::UnexpectedEof, "Failed to read value")
-            })?;
-            values.push(ChunkNum(value));
-        }
-        let ranges = ChunkRanges::new(values).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Ranges not strictly sorted")
-        })?;
-        Ok(Bitfield { size, ranges })
-    }
-
     pub(crate) fn new_unchecked(ranges: ChunkRanges, size: u64) -> Self {
         Self { ranges, size }
     }

@@ -199,6 +199,11 @@ impl DerefMut for ProgressWriter {
 }
 
 impl StreamContext {
+    /// Increase the write count due to a payload write.
+    pub fn log_payload_write(&mut self, len: usize) {
+        self.payload_bytes_sent += len as u64;
+    }
+
     /// Increase the write count due to a non-payload write.
     pub fn log_other_write(&mut self, len: usize) {
         self.other_bytes_sent += len as u64;
@@ -598,11 +603,10 @@ pub async fn handle_observe(
 }
 
 async fn send_observe_item(writer: &mut ProgressWriter, item: &Bitfield) -> Result<()> {
+    use irpc::util::AsyncWriteVarintExt;
     let item = ObserveItem::from(item);
-    let item_bytes = postcard::to_allocvec(&item)?;
-    let item_len = item_bytes.len();
-    writer.inner.write_all(&item_bytes).await?;
-    writer.context.log_other_write(item_len);
+    let len = writer.inner.write_length_prefixed(item).await?;
+    writer.log_payload_write(len);
     Ok(())
 }
 

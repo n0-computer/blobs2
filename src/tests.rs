@@ -263,13 +263,10 @@ async fn two_nodes_observe() -> TestResult<()> {
         }
         io::Result::Ok(())
     });
-    println!("adding data");
     store1
         .import_bao_bytes(hash, ChunkRanges::all(), bao)
         .await?;
-    println!("done adding data");
     remote_observe_task.await??;
-    println!("awaiting shutdown");
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
 }

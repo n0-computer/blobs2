@@ -2,6 +2,7 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
+use irpc::util::AsyncReadVarintExt;
 use n0_future::{Stream, StreamExt, io};
 use quinn::SendStream;
 use ref_cast::RefCast;
@@ -10,7 +11,10 @@ use super::blobs::Bitfield;
 use crate::{
     api::ApiClient,
     get::{GetError, GetResult, Stats, fsm::DecodeError},
-    protocol::{GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request},
+    protocol::{
+        GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
+        RequestType,
+    },
     provider::{EventSender, ProgressWriter, StreamContext},
     util::sink::{Drain, Sink},
 };
@@ -351,7 +355,9 @@ impl Remote {
         write_observe_request(request, &mut send).await?;
         send.finish()?;
         loop {
-            let msg = ObserveItem::read_async(&mut recv).await?;
+            let msg = recv
+                .read_length_prefixed::<ObserveItem>(MAX_MESSAGE_SIZE)
+                .await?;
             co.yield_(Ok(Bitfield::from(&msg))).await;
         }
     }
@@ -410,6 +416,7 @@ impl Remote {
             }
         }
         writer.inner.finish()?;
+        println!("push done");
         Ok(Default::default())
     }
 
@@ -785,16 +792,15 @@ impl LazyHashSeq {
 }
 
 async fn write_push_request(
-    requst: PushRequest,
+    request: PushRequest,
     stream: &mut ProgressWriter,
 ) -> anyhow::Result<PushRequest> {
-    let request = Request::Push(requst);
-    let request_bytes = postcard::to_allocvec(&request)?;
+    use irpc::util::WriteVarintExt;
+    let mut request_bytes = Vec::new();
+    request_bytes.push(RequestType::Push as u8);
+    request_bytes.write_length_prefixed(&request).unwrap();
     stream.inner.write_all(&request_bytes).await?;
-    stream.context.payload_bytes_sent += request_bytes.len() as u64;
-    let Request::Push(request) = request else {
-        unreachable!()
-    };
+    stream.context.other_bytes_sent += request_bytes.len() as u64;
     Ok(request)
 }
 
