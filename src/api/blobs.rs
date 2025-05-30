@@ -26,6 +26,7 @@ use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::channel::{oneshot, spsc};
 use n0_future::{Stream, StreamExt, future};
+use quinn::SendStream;
 use range_collections::{RangeSet2, range_set::RangeSetRange};
 use ref_cast::RefCast;
 use tokio::io::AsyncWriteExt;
@@ -52,7 +53,7 @@ use super::{
     tags::TagInfo,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat, api::proto::BatchRequest, provider::ProgressWriter,
+    BlobFormat, Hash, HashAndFormat, api::proto::BatchRequest, provider::StreamContext,
     store::IROH_BLOCK_SIZE, util::temp_tag::TempTag,
 };
 
@@ -1002,7 +1003,8 @@ impl ExportBaoProgress {
     /// Write quinn variant that also feeds a progress writer.
     pub(crate) async fn write_quinn_with_progress(
         self,
-        writer: &mut ProgressWriter,
+        writer: &mut SendStream,
+        progress: &mut impl WriteProgress,
         hash: &Hash,
         index: u64,
     ) -> super::ExportBaoResult<()> {
@@ -1010,29 +1012,27 @@ impl ExportBaoProgress {
         while let Some(item) = rx.recv().await? {
             match item {
                 EncodedItem::Size(size) => {
-                    writer.send_transfer_started(index, hash, size).await;
-                    writer.inner.write_u64_le(size).await?;
-                    writer.log_other_write(8);
+                    progress.send_transfer_started(index, hash, size).await;
+                    writer.write_u64_le(size).await?;
+                    progress.log_other_write(8);
                 }
                 EncodedItem::Parent(parent) => {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
                     writer
-                        .inner
                         .write_all(&data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
-                    writer.log_other_write(64);
+                    progress.log_other_write(64);
                 }
                 EncodedItem::Leaf(leaf) => {
                     let len = leaf.data.len();
                     writer
-                        .inner
                         .write_chunk(leaf.data)
                         .await
                         .map_err(|e| super::ExportBaoError::Io(e.into()))?;
-                    writer.notify_payload_write(index, leaf.offset, len);
+                    progress.notify_payload_write(index, leaf.offset, len).await;
                 }
                 EncodedItem::Done => break,
                 EncodedItem::Error(cause) => return Err(cause.into()),
@@ -1073,5 +1073,30 @@ impl ExportBaoProgress {
                 co.yield_(item).await;
             }
         })
+    }
+}
+
+pub(crate) trait WriteProgress {
+    /// Notify the progress writer that a payload write has happened.
+    async fn notify_payload_write(&mut self, index: u64, offset: u64, len: usize);
+
+    /// Log a write of some other data.
+    fn log_other_write(&mut self, len: usize);
+
+    /// Notify the progress writer that a transfer has started.
+    async fn send_transfer_started(&mut self, index: u64, hash: &Hash, size: u64);
+}
+
+impl WriteProgress for StreamContext {
+    async fn notify_payload_write(&mut self, index: u64, offset: u64, len: usize) {
+        StreamContext::notify_payload_write(self, index, offset, len);
+    }
+
+    fn log_other_write(&mut self, len: usize) {
+        StreamContext::log_other_write(self, len);
+    }
+
+    async fn send_transfer_started(&mut self, index: u64, hash: &Hash, size: u64) {
+        StreamContext::send_transfer_started(self, index, hash, size).await
     }
 }

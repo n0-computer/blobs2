@@ -312,7 +312,7 @@ pub struct DownloadProgress {
 }
 
 impl DownloadProgress {
-    pub fn new(fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>) -> Self {
+    fn new(fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>) -> Self {
         Self { fut }
     }
 
@@ -326,7 +326,8 @@ impl DownloadProgress {
 
     async fn complete(self) -> anyhow::Result<()> {
         let rx = self.fut.await?;
-        let mut stream = Box::pin(rx.into_stream());
+        let stream = rx.into_stream();
+        tokio::pin!(stream);
         while let Some(item) = stream.next().await {
             match item? {
                 DownloadProgessItem::Error(e) => Err(e)?,
@@ -420,13 +421,16 @@ async fn split_request<'a>(
     })
 }
 
-#[derive(Debug, Clone)]
-struct ConnectionPool {
+#[derive(Debug)]
+struct ConnectionPoolInner {
     alpn: Vec<u8>,
     endpoint: Endpoint,
-    connections: Arc<Mutex<HashMap<NodeId, Arc<Mutex<SlotState>>>>>,
+    connections: Mutex<HashMap<NodeId, Arc<Mutex<SlotState>>>>,
     retry_delay: Duration,
 }
+
+#[derive(Debug, Clone)]
+struct ConnectionPool(Arc<ConnectionPoolInner>);
 
 #[derive(Debug, Default)]
 enum SlotState {
@@ -440,12 +444,27 @@ enum SlotState {
 
 impl ConnectionPool {
     fn new(endpoint: Endpoint, alpn: Vec<u8>) -> Self {
-        Self {
-            endpoint,
-            alpn,
-            connections: Default::default(),
-            retry_delay: Duration::from_secs(5),
-        }
+        Self(
+            ConnectionPoolInner {
+                endpoint,
+                alpn,
+                connections: Default::default(),
+                retry_delay: Duration::from_secs(5),
+            }
+            .into(),
+        )
+    }
+
+    pub fn alpn(&self) -> &[u8] {
+        &self.0.alpn
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.0.endpoint
+    }
+
+    pub fn retry_delay(&self) -> Duration {
+        self.0.retry_delay
     }
 
     fn dial(&self, id: NodeId) -> DialNode {
@@ -457,13 +476,27 @@ impl ConnectionPool {
 
     #[allow(dead_code)]
     async fn mark_evil(&self, id: NodeId, reason: String) {
-        let slot = self.connections.lock().await.entry(id).or_default().clone();
+        let slot = self
+            .0
+            .connections
+            .lock()
+            .await
+            .entry(id)
+            .or_default()
+            .clone();
         *slot.lock().await = SlotState::Evil(reason)
     }
 
     #[allow(dead_code)]
     async fn mark_closed(&self, id: NodeId) {
-        let slot = self.connections.lock().await.entry(id).or_default().clone();
+        let slot = self
+            .0
+            .connections
+            .lock()
+            .await
+            .entry(id)
+            .or_default()
+            .clone();
         *slot.lock().await = SlotState::Initial
     }
 }
@@ -504,7 +537,7 @@ async fn execute_get(
         let local_bytes = local.local_bytes();
         let conn = conn.connection().await?;
         match remote
-            .execute_with_opts(
+            .execute_get_sink(
                 conn,
                 local.missing(),
                 (&mut progress).with_map(move |x| DownloadProgessItem::Progress(x + local_bytes)),
@@ -533,15 +566,17 @@ async fn execute_get(
     bail!("Unable to download {}", request.hash);
 }
 
+#[derive(Debug, Clone)]
 struct DialNode {
     pool: ConnectionPool,
     id: NodeId,
 }
 
-impl GetConnection for DialNode {
-    async fn connection(&mut self) -> anyhow::Result<Connection> {
+impl DialNode {
+    async fn connection_impl(&self) -> anyhow::Result<Connection> {
         let slot = self
             .pool
+            .0
             .connections
             .lock()
             .await
@@ -555,7 +590,7 @@ impl GetConnection for DialNode {
             }
             SlotState::AttemptFailed(time) => {
                 let elapsed = time.elapsed().unwrap_or_default();
-                if elapsed <= self.pool.retry_delay {
+                if elapsed <= self.pool.retry_delay() {
                     bail!(
                         "Connection attempt failed {} seconds ago",
                         elapsed.as_secs_f64()
@@ -567,7 +602,11 @@ impl GetConnection for DialNode {
             }
             SlotState::Initial => {}
         }
-        let res = self.pool.endpoint.connect(self.id, &self.pool.alpn).await;
+        let res = self
+            .pool
+            .endpoint()
+            .connect(self.id, &self.pool.alpn())
+            .await;
         match &res {
             Ok(conn) => {
                 *guard = SlotState::Connected(conn.clone());
@@ -578,6 +617,13 @@ impl GetConnection for DialNode {
             }
         }
         res
+    }
+}
+
+impl GetConnection for DialNode {
+    fn connection(&mut self) -> impl Future<Output = Result<Connection, anyhow::Error>> + '_ {
+        let this = self.clone();
+        async move { this.connection_impl().await }
     }
 }
 
@@ -636,7 +682,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn swarm_get_many_smoke() -> TestResult<()> {
+    async fn downloader_get_many_smoke() -> TestResult<()> {
         let testdir = tempfile::tempdir()?;
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
         let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -647,8 +693,6 @@ mod tests {
         let node1_id = node1_addr.node_id;
         let node2_addr = r2.endpoint().node_addr().await?;
         let node2_id = node2_addr.node_id;
-        // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
-        // store2.remote().fetch(conn, *tt.hash(), None).await?;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
@@ -669,7 +713,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn swarm_get_smoke() -> TestResult<()> {
+    async fn downloader_get_smoke() -> TestResult<()> {
         // tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
@@ -688,8 +732,6 @@ mod tests {
         let node1_id = node1_addr.node_id;
         let node2_addr = r2.endpoint().node_addr().await?;
         let node2_id = node2_addr.node_id;
-        // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
-        // store2.remote().fetch(conn, *tt.hash(), None).await?;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
@@ -715,20 +757,20 @@ mod tests {
             let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;
             let remote = store3.remote();
             let _rh = remote
-                .execute(
+                .execute_get(
                     conn.clone(),
                     GetRequest::builder()
                         .root(ChunkRanges::all())
                         .build(root.hash),
                 )
                 .await?;
-            let h1 = remote.execute(
+            let h1 = remote.execute_get(
                 conn.clone(),
                 GetRequest::builder()
                     .child(0, ChunkRanges::all())
                     .build(root.hash),
             );
-            let h2 = remote.execute(
+            let h2 = remote.execute_get(
                 conn.clone(),
                 GetRequest::builder()
                     .child(1, ChunkRanges::all())
@@ -741,8 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn swarm_get_all() -> TestResult<()> {
-        // tracing_subscriber::fmt::try_init().ok();
+    async fn downloader_get_all() -> TestResult<()> {
         let testdir = tempfile::tempdir()?;
         let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
         let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
@@ -760,50 +801,20 @@ mod tests {
         let node1_id = node1_addr.node_id;
         let node2_addr = r2.endpoint().node_addr().await?;
         let node2_id = node2_addr.node_id;
-        // let conn = r2.endpoint().connect(node1_addr, crate::ALPN).await?;
-        // store2.remote().fetch(conn, *tt.hash(), None).await?;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
         r3.endpoint().add_node_addr(node2_addr.clone())?;
         let request = GetRequest::all(root.hash);
-        if true {
-            let mut progress = swarm
-                .download_with_opts(DownloadOptions::new(
-                    request,
-                    [node1_id, node2_id],
-                    SplitStrategy::Split,
-                ))
-                .stream()
-                .await?;
-            while let Some(item) = progress.next().await {
-                println!("Got item: {:?}", item);
-            }
-        }
-        if false {
-            let conn = r3.endpoint().connect(node1_addr, crate::ALPN).await?;
-            let remote = store3.remote();
-            let _rh = remote
-                .execute(
-                    conn.clone(),
-                    GetRequest::builder()
-                        .root(ChunkRanges::all())
-                        .build(root.hash),
-                )
-                .await?;
-            let h1 = remote.execute(
-                conn.clone(),
-                GetRequest::builder()
-                    .child(0, ChunkRanges::all())
-                    .build(root.hash),
-            );
-            let h2 = remote.execute(
-                conn.clone(),
-                GetRequest::builder()
-                    .child(1, ChunkRanges::all())
-                    .build(root.hash),
-            );
-            h1.await?;
-            h2.await?;
+        let mut progress = swarm
+            .download_with_opts(DownloadOptions::new(
+                request,
+                [node1_id, node2_id],
+                SplitStrategy::Split,
+            ))
+            .stream()
+            .await?;
+        while let Some(item) = progress.next().await {
+            println!("Got item: {:?}", item);
         }
         Ok(())
     }

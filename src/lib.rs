@@ -10,6 +10,7 @@ mod metrics;
 pub mod net_protocol;
 pub mod protocol;
 pub mod provider;
+pub mod test;
 pub mod ticket;
 pub mod util;
 

@@ -2,21 +2,20 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
-use irpc::util::AsyncReadVarintExt;
+use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
 use n0_future::{Stream, StreamExt, io};
 use quinn::SendStream;
 use ref_cast::RefCast;
 
 use super::blobs::Bitfield;
 use crate::{
-    api::ApiClient,
+    api::{ApiClient, blobs::WriteProgress},
     get::{GetError, GetResult, Stats, fsm::DecodeError},
     protocol::{
         GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
         RequestType,
     },
-    provider::{EventSender, ProgressWriter, StreamContext},
-    util::sink::{Drain, Sink},
+    util::sink::{Sink, TokioMpscSenderSink},
 };
 
 /// API to compute request and to download from remote nodes.
@@ -34,10 +33,167 @@ use crate::{
 ///
 /// If you are not interested in the details and just want your data, you can use
 /// [`Download::fetch`]. This will internally do the dance described above.
-#[derive(Debug, RefCast)]
+#[derive(Debug, Clone, RefCast)]
 #[repr(transparent)]
 pub struct Remote {
     client: ApiClient,
+}
+
+#[derive(Debug)]
+pub enum GetProgressItem {
+    /// Progress on the payload bytes read.
+    Progress(u64),
+    /// The request was completed.
+    Done(Stats),
+    /// The request was closed, but not completed.
+    Error(GetError),
+}
+
+impl From<GetResult<Stats>> for GetProgressItem {
+    fn from(res: GetResult<Stats>) -> Self {
+        match res {
+            Ok(stats) => GetProgressItem::Done(stats),
+            Err(e) => GetProgressItem::Error(e),
+        }
+    }
+}
+
+impl TryFrom<GetProgressItem> for GetResult<Stats> {
+    type Error = &'static str;
+
+    fn try_from(item: GetProgressItem) -> Result<Self, Self::Error> {
+        match item {
+            GetProgressItem::Done(stats) => Ok(Ok(stats)),
+            GetProgressItem::Error(e) => Ok(Err(e)),
+            GetProgressItem::Progress(_) => Err("not a final item"),
+        }
+    }
+}
+
+pub struct GetProgress {
+    rx: tokio::sync::mpsc::Receiver<GetProgressItem>,
+    fut: n0_future::boxed::BoxFuture<()>,
+}
+
+impl IntoFuture for GetProgress {
+    type Output = GetResult<Stats>;
+    type IntoFuture = n0_future::boxed::BoxFuture<Self::Output>;
+
+    fn into_future(self) -> n0_future::boxed::BoxFuture<Self::Output> {
+        Box::pin(self.complete())
+    }
+}
+
+impl GetProgress {
+    pub fn stream(self) -> impl Stream<Item = GetProgressItem> {
+        into_stream(self.rx, self.fut)
+    }
+
+    pub async fn complete(self) -> GetResult<Stats> {
+        just_result(self.stream()).await.unwrap_or_else(|| {
+            Err(GetError::LocalFailure(
+                anyhow::anyhow!("stream closed without result").into(),
+            ))
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum PushProgressItem {
+    /// Progress on the payload bytes read.
+    Progress(u64),
+    /// The request was completed.
+    Done(Stats),
+    /// The request was closed, but not completed.
+    Error(anyhow::Error),
+}
+
+impl From<anyhow::Result<Stats>> for PushProgressItem {
+    fn from(res: anyhow::Result<Stats>) -> Self {
+        match res {
+            Ok(stats) => Self::Done(stats),
+            Err(e) => Self::Error(e),
+        }
+    }
+}
+
+impl TryFrom<PushProgressItem> for anyhow::Result<Stats> {
+    type Error = &'static str;
+
+    fn try_from(item: PushProgressItem) -> Result<Self, Self::Error> {
+        match item {
+            PushProgressItem::Done(stats) => Ok(Ok(stats)),
+            PushProgressItem::Error(e) => Ok(Err(e)),
+            PushProgressItem::Progress(_) => Err("not a final item"),
+        }
+    }
+}
+
+pub struct PushProgress {
+    rx: tokio::sync::mpsc::Receiver<PushProgressItem>,
+    fut: n0_future::boxed::BoxFuture<()>,
+}
+
+impl IntoFuture for PushProgress {
+    type Output = anyhow::Result<Stats>;
+    type IntoFuture = n0_future::boxed::BoxFuture<Self::Output>;
+
+    fn into_future(self) -> n0_future::boxed::BoxFuture<Self::Output> {
+        Box::pin(self.complete())
+    }
+}
+
+impl PushProgress {
+    pub fn stream(self) -> impl Stream<Item = PushProgressItem> {
+        into_stream(self.rx, self.fut)
+    }
+
+    pub async fn complete(self) -> anyhow::Result<Stats> {
+        just_result(self.stream())
+            .await
+            .unwrap_or_else(|| Err(anyhow::anyhow!("stream closed without result")))
+    }
+}
+
+async fn just_result<S, R>(stream: S) -> Option<R>
+where
+    S: Stream,
+    R: TryFrom<S::Item>,
+{
+    tokio::pin!(stream);
+    while let Some(item) = stream.next().await {
+        if let Ok(res) = R::try_from(item) {
+            return Some(res);
+        }
+    }
+    None
+}
+
+fn into_stream<T, F>(mut rx: tokio::sync::mpsc::Receiver<T>, fut: F) -> impl Stream<Item = T>
+where
+    F: Future,
+{
+    Gen::new(move |co| async move {
+        tokio::pin!(fut);
+        loop {
+            tokio::select! {
+                biased;
+                item = rx.recv() => {
+                    if let Some(item) = item {
+                        co.yield_(item).await;
+                    } else {
+                        break;
+                    }
+                }
+                _ = &mut fut => {
+                    break;
+                }
+            }
+        }
+        while let Some(item) = rx.recv().await {
+            co.yield_(item).await;
+        }
+    })
 }
 
 /// Local info for a blob or hash sequence.
@@ -307,6 +463,28 @@ impl Remote {
         self.local_for_request(request).await
     }
 
+    pub fn fetch(
+        &self,
+        conn: impl GetConnection + Send + 'static,
+        content: impl Into<HashAndFormat>,
+    ) -> GetProgress {
+        let content = content.into();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let tx2 = tx.clone();
+        let sink = TokioMpscSenderSink(tx)
+            .with_map(|offset| GetProgressItem::Progress(offset))
+            .with_map_err(|e| io::Error::other(e));
+        let this = self.clone();
+        let fut = async move {
+            let res = this.fetch_sink(conn, content, sink).await.into();
+            tx2.send(res).await.ok();
+        };
+        GetProgress {
+            rx,
+            fut: Box::pin(fut),
+        }
+    }
+
     /// Get a blob or hash sequence from the given connection, taking the locally available
     /// ranges into account.
     ///
@@ -314,20 +492,26 @@ impl Remote {
     /// is the aggregated number of downloaded payload bytes in the request.
     ///
     /// This will return the stats of the download.
-    pub async fn fetch(
+    pub async fn fetch_sink(
         &self,
         mut conn: impl GetConnection,
         content: impl Into<HashAndFormat>,
         progress: impl Sink<u64, Error = io::Error>,
-    ) -> anyhow::Result<Stats> {
+    ) -> GetResult<Stats> {
         let content = content.into();
-        let local = self.local(content).await?;
+        let local = self
+            .local(content)
+            .await
+            .map_err(|e| GetError::LocalFailure(e))?;
         if local.is_complete() {
             return Ok(Default::default());
         }
         let request = local.missing();
-        let conn = conn.connection().await?;
-        let stats = self.execute_with_opts(conn, request, progress).await?;
+        let conn = conn
+            .connection()
+            .await
+            .map_err(|e| GetError::LocalFailure(e))?;
+        let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
 
@@ -362,45 +546,55 @@ impl Remote {
         }
     }
 
+    pub fn execute_push(&self, conn: Connection, request: PushRequest) -> PushProgress {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let tx2 = tx.clone();
+        let sink = TokioMpscSenderSink(tx)
+            .with_map(|offset| PushProgressItem::Progress(offset))
+            .with_map_err(|e| io::Error::other(e));
+        let this = self.clone();
+        let fut = async move {
+            let res = this.execute_push_sink(conn, request, sink).await.into();
+            tx2.send(res).await.ok();
+        };
+        PushProgress {
+            rx,
+            fut: Box::pin(fut),
+        }
+    }
+
     /// Push the given blob or hash sequence to a remote node.
     ///
     /// Note that many nodes will reject push requests. Also, this is an experimental feature for now.
-    pub async fn execute_push(
+    pub async fn execute_push_sink(
         &self,
         conn: Connection,
         request: PushRequest,
-        _progress: Option<spsc::Sender<u64>>,
+        progress: impl Sink<u64, Error = io::Error>,
     ) -> anyhow::Result<Stats> {
         let hash = request.hash;
         debug!(%hash, "pushing");
-        let (send, mut recv) = conn.open_bi().await?;
-        let mut writer = ProgressWriter {
-            inner: send,
-            context: StreamContext {
-                connection_id: conn.stable_id() as u64,
-                request_id: recv.id().into(),
-                payload_bytes_sent: 0,
-                other_bytes_sent: 0,
-                bytes_read: 0,
-                progress: EventSender::new(None),
-            },
+        let (mut send, mut recv) = conn.open_bi().await?;
+        let mut context = StreamContext {
+            payload_bytes_sent: 0,
+            sender: progress,
         };
         // we are not going to need this!
         recv.stop(0u32.into())?;
         // write the request. Unlike for reading, we can just serialize it sync using postcard.
-        let request = write_push_request(request, &mut writer).await?;
+        let request = write_push_request(request, &mut send).await?;
         let mut request_ranges = request.ranges.iter_infinite();
         let root = request.hash;
         let root_ranges = request_ranges.next().expect("infinite iterator");
         if !root_ranges.is_empty() {
             self.store()
                 .export_bao(root, root_ranges.clone())
-                .write_quinn_with_progress(&mut writer, &root, 0)
+                .write_quinn_with_progress(&mut send, &mut context, &root, 0)
                 .await?;
         }
         if request.ranges.is_blob() {
             // we are done
-            writer.inner.finish()?;
+            send.finish()?;
             return Ok(Default::default());
         }
         let hash_seq = self.store().get_bytes(root).await?;
@@ -411,17 +605,38 @@ impl Remote {
             if !child_ranges.is_empty() {
                 self.store()
                     .export_bao(child_hash, child_ranges.clone())
-                    .write_quinn_with_progress(&mut writer, &child_hash, (child + 1) as u64)
+                    .write_quinn_with_progress(
+                        &mut send,
+                        &mut context,
+                        &child_hash,
+                        (child + 1) as u64,
+                    )
                     .await?;
             }
         }
-        writer.inner.finish()?;
-        println!("push done");
+        send.finish()?;
         Ok(Default::default())
     }
 
-    pub async fn execute(&self, conn: Connection, request: GetRequest) -> GetResult<Stats> {
-        self.execute_with_opts(conn, request, Drain).await
+    pub fn execute_get(&self, conn: Connection, request: GetRequest) -> GetProgress {
+        self.execute_get_with_opts(conn, request)
+    }
+
+    pub fn execute_get_with_opts(&self, conn: Connection, request: GetRequest) -> GetProgress {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let tx2 = tx.clone();
+        let sink = TokioMpscSenderSink(tx)
+            .with_map(|offset| GetProgressItem::Progress(offset))
+            .with_map_err(|e| io::Error::other(e));
+        let this = self.clone();
+        let fut = async move {
+            let res = this.execute_get_sink(conn, request, sink).await.into();
+            tx2.send(res).await.ok();
+        };
+        GetProgress {
+            rx,
+            fut: Box::pin(fut),
+        }
     }
 
     /// Execute a get request *without* taking the locally available ranges into account.
@@ -432,7 +647,7 @@ impl Remote {
     /// This will download the data again even if the data is locally present.
     ///
     /// This will return the stats of the download.
-    pub async fn execute_with_opts(
+    pub async fn execute_get_sink(
         &self,
         conn: Connection,
         request: GetRequest,
@@ -494,6 +709,23 @@ impl Remote {
         Ok(stats)
     }
 
+    pub fn execute_get_many(&self, conn: Connection, request: GetManyRequest) -> GetProgress {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let tx2 = tx.clone();
+        let sink = TokioMpscSenderSink(tx)
+            .with_map(|offset| GetProgressItem::Progress(offset))
+            .with_map_err(|e| io::Error::other(e));
+        let this = self.clone();
+        let fut = async move {
+            let res = this.execute_get_many_sink(conn, request, sink).await.into();
+            tx2.send(res).await.ok();
+        };
+        GetProgress {
+            rx,
+            fut: Box::pin(fut),
+        }
+    }
+
     /// Execute a get request *without* taking the locally available ranges into account.
     ///
     /// You can provide a progress channel to get updates on the download progress. This progress
@@ -502,7 +734,7 @@ impl Remote {
     /// This will download the data again even if the data is locally present.
     ///
     /// This will return the stats of the download.
-    pub async fn execute_get_many(
+    pub async fn execute_get_many_sink(
         &self,
         conn: Connection,
         request: GetManyRequest,
@@ -575,8 +807,7 @@ use bao_tree::{
     ChunkNum, ChunkRanges,
     io::{BaoContentItem, Leaf},
 };
-use iroh::{Endpoint, NodeAddr, endpoint::Connection};
-use irpc::channel::spsc;
+use iroh::endpoint::Connection;
 use tracing::{debug, trace};
 
 use crate::{
@@ -604,45 +835,13 @@ impl GetConnection for Connection {
     }
 }
 
+/// If we already have a connection, the impl is trivial
 impl GetConnection for &Connection {
     fn connection(
         &mut self,
     ) -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_ {
         let conn = self.clone();
         async { Ok(conn) }
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) struct Dialer {
-    endpoint: Endpoint,
-    addr: NodeAddr,
-    conn: Option<Connection>,
-}
-
-impl Dialer {
-    #[allow(dead_code)]
-    pub fn new(endpoint: Endpoint, addr: NodeAddr) -> Self {
-        Self {
-            endpoint,
-            addr,
-            conn: None,
-        }
-    }
-}
-
-impl GetConnection for Dialer {
-    async fn connection(&mut self) -> Result<Connection, anyhow::Error> {
-        if let Some(conn) = &self.conn {
-            Ok(conn.clone())
-        } else {
-            let conn = self
-                .endpoint
-                .connect(self.addr.clone(), crate::ALPN)
-                .await?;
-            self.conn = Some(conn.clone());
-            Ok(conn)
-        }
     }
 }
 
@@ -793,14 +992,12 @@ impl LazyHashSeq {
 
 async fn write_push_request(
     request: PushRequest,
-    stream: &mut ProgressWriter,
+    stream: &mut SendStream,
 ) -> anyhow::Result<PushRequest> {
-    use irpc::util::WriteVarintExt;
     let mut request_bytes = Vec::new();
     request_bytes.push(RequestType::Push as u8);
     request_bytes.write_length_prefixed(&request).unwrap();
-    stream.inner.write_all(&request_bytes).await?;
-    stream.context.other_bytes_sent += request_bytes.len() as u64;
+    stream.write_all(&request_bytes).await?;
     Ok(request)
 }
 
@@ -810,6 +1007,25 @@ async fn write_observe_request(requst: ObserveRequest, stream: &mut SendStream) 
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     stream.write_all(&request_bytes).await?;
     Ok(())
+}
+
+struct StreamContext<S> {
+    payload_bytes_sent: u64,
+    sender: S,
+}
+
+impl<S> WriteProgress for StreamContext<S>
+where
+    S: Sink<u64, Error = io::Error>,
+{
+    async fn notify_payload_write(&mut self, _index: u64, _offset: u64, len: usize) {
+        self.payload_bytes_sent += len as u64;
+        self.sender.send(self.payload_bytes_sent).await.ok();
+    }
+
+    fn log_other_write(&mut self, _len: usize) {}
+
+    async fn send_transfer_started(&mut self, _index: u64, _hash: &Hash, _size: u64) {}
 }
 
 #[cfg(test)]

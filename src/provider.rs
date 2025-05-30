@@ -199,11 +199,6 @@ impl DerefMut for ProgressWriter {
 }
 
 impl StreamContext {
-    /// Increase the write count due to a payload write.
-    pub fn log_payload_write(&mut self, len: usize) {
-        self.payload_bytes_sent += len as u64;
-    }
-
     /// Increase the write count due to a non-payload write.
     pub fn log_other_write(&mut self, len: usize) {
         self.other_bytes_sent += len as u64;
@@ -562,7 +557,7 @@ pub(crate) async fn send_blob(
 ) -> api::Result<()> {
     Ok(store
         .export_bao(hash, ranges)
-        .write_quinn_with_progress(writer, &hash, index)
+        .write_quinn_with_progress(&mut writer.inner, &mut writer.context, &hash, index)
         .await?)
 }
 
@@ -606,7 +601,7 @@ async fn send_observe_item(writer: &mut ProgressWriter, item: &Bitfield) -> Resu
     use irpc::util::AsyncWriteVarintExt;
     let item = ObserveItem::from(item);
     let len = writer.inner.write_length_prefixed(item).await?;
-    writer.log_payload_write(len);
+    writer.log_other_write(len);
     Ok(())
 }
 
