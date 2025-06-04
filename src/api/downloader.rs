@@ -20,7 +20,8 @@ use tokio::{
     sync::{Mutex, mpsc},
     task::JoinSet,
 };
-use tracing::instrument::Instrument;
+use tokio_util::time::FutureExt;
+use tracing::{info, instrument::Instrument, warn};
 
 use super::{Store, remote::GetConnection};
 use crate::{
@@ -366,7 +367,7 @@ impl Downloader {
         self.download_with_opts(DownloadOptions {
             request,
             providers,
-            strategy: SplitStrategy::None,
+            strategy: SplitStrategy::Split,
         })
     }
 
@@ -427,6 +428,7 @@ struct ConnectionPoolInner {
     endpoint: Endpoint,
     connections: Mutex<HashMap<NodeId, Arc<Mutex<SlotState>>>>,
     retry_delay: Duration,
+    connect_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +452,7 @@ impl ConnectionPool {
                 alpn,
                 connections: Default::default(),
                 retry_delay: Duration::from_secs(5),
+                connect_timeout: Duration::from_secs(2),
             }
             .into(),
         )
@@ -535,7 +538,15 @@ async fn execute_get(
             return Ok(());
         }
         let local_bytes = local.local_bytes();
-        let conn = conn.connection().await?;
+        let Ok(conn) = conn.connection().await else {
+            progress
+                .send(DownloadProgessItem::ProviderFailed {
+                    id: provider,
+                    request: request.clone(),
+                })
+                .await?;
+            continue;
+        };
         match remote
             .execute_get_sink(
                 conn,
@@ -574,6 +585,7 @@ struct DialNode {
 
 impl DialNode {
     async fn connection_impl(&self) -> anyhow::Result<Connection> {
+        info!("Getting connection for node {}", self.id);
         let slot = self
             .pool
             .0
@@ -583,6 +595,7 @@ impl DialNode {
             .entry(self.id)
             .or_default()
             .clone();
+        info!("Dialing node {}", self.id);
         let mut guard = slot.lock().await;
         match guard.deref() {
             SlotState::Connected(conn) => {
@@ -606,17 +619,25 @@ impl DialNode {
             .pool
             .endpoint()
             .connect(self.id, &self.pool.alpn())
+            .timeout(self.pool.0.connect_timeout)
             .await;
-        match &res {
-            Ok(conn) => {
+        match res {
+            Ok(Ok(conn)) => {
+                info!("Connected to node {}", self.id);
                 *guard = SlotState::Connected(conn.clone());
+                return Ok(conn);
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to connect to node {}: {}", self.id, e);
+                *guard = SlotState::AttemptFailed(SystemTime::now());
+                return Err(e);
             }
             Err(e) => {
+                warn!("Failed to connect to node {}: {}", self.id, e);
                 *guard = SlotState::AttemptFailed(SystemTime::now());
                 bail!("Failed to connect to node: {}", e);
             }
         }
-        res
     }
 }
 

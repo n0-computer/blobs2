@@ -1,14 +1,17 @@
 use std::{env, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use iroh::SecretKey;
 use iroh_base::ticket::NodeTicket;
 use iroh_blobs::{
+    HashAndFormat,
+    api::downloader::Shuffled,
     provider::Event,
     store::fs::FsStore,
     test::{add_hash_sequences, create_random_blobs},
 };
+use n0_future::StreamExt;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::{signal::ctrl_c, sync::mpsc};
 use tracing::info;
@@ -16,6 +19,13 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    /// Commands to run
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Parser, Debug)]
+pub struct CommonArgs {
     /// Random seed for reproducible results
     #[arg(long)]
     pub seed: Option<u64>,
@@ -23,6 +33,20 @@ pub struct Args {
     /// Path for store, none for in-memory store
     #[arg(long)]
     pub path: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Provide content to the network
+    Provide(ProvideArgs),
+    /// Request content from the network
+    Request(RequestArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct ProvideArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
 
     /// Number of blobs to generate
     #[arg(long, default_value_t = 100)]
@@ -43,6 +67,23 @@ pub struct Args {
     /// Size of each hash sequence
     #[arg(long, default_value_t = false)]
     pub allow_push: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct RequestArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// Hash of the blob to request
+    #[arg(long)]
+    pub content: Vec<HashAndFormat>,
+
+    /// Nodes to request from
+    pub nodes: Vec<NodeTicket>,
+
+    /// Split large requests
+    #[arg(long, default_value_t = false)]
+    pub split: bool,
 }
 
 pub fn get_or_generate_secret_key() -> Result<SecretKey> {
@@ -137,15 +178,29 @@ pub fn dump_provider_events(
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+    match args.command {
+        Commands::Provide(args) => provide(args).await,
+        Commands::Request(args) => request(args).await,
+    }
+}
+
+async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
     println!("{:?}", args);
-    let path = args.path.unwrap_or_else(|| PathBuf::from("tmp"));
+    let tempdir = if args.common.path.is_none() {
+        Some(tempfile::tempdir_in(".").context("Failed to create temporary directory")?)
+    } else {
+        None
+    };
+    let path = args
+        .common
+        .path
+        .unwrap_or_else(|| tempdir.as_ref().unwrap().path().to_path_buf());
     let store = FsStore::load(&path).await?;
     println!("Using store at: {}", path.display());
-    let mut rng = match args.seed {
+    let mut rng = match args.common.seed {
         Some(seed) => StdRng::seed_from_u64(seed),
         None => StdRng::from_entropy(),
     };
@@ -170,10 +225,10 @@ async fn main() -> anyhow::Result<()> {
         hs.len()
     );
     for (i, info) in blobs.iter().enumerate() {
-        println!("blob {i} {}", info.hash);
+        println!("blob {i} {}", info.hash_and_format());
     }
     for (i, info) in hs.iter().enumerate() {
-        println!("hash_seq {i} {}", info.hash);
+        println!("hash_seq {i} {}", info.hash_and_format());
     }
     let secret_key = get_or_generate_secret_key()?;
     let endpoint = iroh::Endpoint::builder()
@@ -193,5 +248,45 @@ async fn main() -> anyhow::Result<()> {
     ctrl_c().await?;
     router.shutdown().await?;
     dump_task.abort();
+    Ok(())
+}
+
+async fn request(args: RequestArgs) -> anyhow::Result<()> {
+    println!("{:?}", args);
+    let tempdir = if args.common.path.is_none() {
+        Some(tempfile::tempdir_in(".").context("Failed to create temporary directory")?)
+    } else {
+        None
+    };
+    let path = args
+        .common
+        .path
+        .unwrap_or_else(|| tempdir.as_ref().unwrap().path().to_path_buf());
+    let store = FsStore::load(&path).await?;
+    println!("Using store at: {}", path.display());
+    let endpoint = iroh::Endpoint::builder().bind().await?;
+    let downloader = store.downloader(&endpoint);
+    for ticket in &args.nodes {
+        endpoint.add_node_addr(ticket.node_addr().clone())?;
+    }
+    let nodes = args
+        .nodes
+        .iter()
+        .map(|ticket| ticket.node_addr().node_id)
+        .collect::<Vec<_>>();
+    for content in args.content {
+        let mut progress = downloader
+            .download(content, Shuffled::new(nodes.clone()))
+            .stream()
+            .await?;
+        while let Some(event) = progress.next().await {
+            info!("Progress: {:?}", event);
+        }
+    }
+    let hashes = store.list().hashes().await?;
+    for hash in hashes {
+        println!("Got {}", hash);
+    }
+    store.dump().await?;
     Ok(())
 }
