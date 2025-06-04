@@ -4,6 +4,7 @@ use bao_tree::{ChunkNum, ChunkRanges, io::round_up_to_chunks};
 use range_collections::{RangeSet2, range_set::RangeSetEntry};
 
 pub mod channel;
+pub mod handler_pool;
 pub(crate) mod temp_tag;
 pub mod serde {
     // Module that handles io::Error serialization/deserialization
