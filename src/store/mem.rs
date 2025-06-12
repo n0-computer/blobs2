@@ -8,7 +8,7 @@
 //! For many use cases this can be quite useful, since it does not require write access
 //! to the file system.
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io::{self, Write},
     num::NonZeroU64,
     ops::Deref,
@@ -19,7 +19,7 @@ use std::{
 use bao_tree::{
     BaoTree, ChunkNum, ChunkRanges, TreeNode, blake3,
     io::{
-        BaoContentItem,
+        BaoContentItem, Leaf,
         mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
@@ -28,26 +28,29 @@ use bao_tree::{
 use bytes::Bytes;
 use irpc::channel::spsc;
 use n0_future::{StreamExt, future::yield_now};
+use range_collections::range_set::RangeSetRange;
 use tokio::{
     io::AsyncReadExt,
     sync::{mpsc, watch},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, trace};
 
 use super::util::{BaoTreeSender, PartialMemStorage, observer::BitfieldObserver};
 use crate::{
     BlobFormat, Hash,
     api::{
         self, ApiClient,
-        blobs::{AddProgressItem, Bitfield, ExportProgressItem},
+        blobs::{AddProgressItem, Bitfield, BlobStatus, ExportProgressItem},
         proto::{
-            BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, DeleteTagsMsg,
-            DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
-            ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg, ImportBytesMsg,
-            ImportBytesRequest, ImportPathMsg, ImportPathRequest, ListTagsMsg, ListTagsRequest,
-            ObserveMsg, ObserveRequest, RenameTagMsg, RenameTagRequest, SetTagMsg, SetTagRequest,
-            ShutdownMsg, SyncDbMsg,
+            BatchMsg, BatchResponse, BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest,
+            BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, CreateTempTagMsg,
+            DeleteBlobsMsg, DeleteTagsMsg, DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest,
+            ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
+            ExportRangesRequest, ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg,
+            ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, ListBlobsMsg,
+            ListTagsMsg, ListTagsRequest, ObserveMsg, ObserveRequest, RenameTagMsg,
+            RenameTagRequest, Scope, SetTagMsg, SetTagRequest, ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
     },
@@ -55,7 +58,10 @@ use crate::{
         HashAndFormat, IROH_BLOCK_SIZE,
         util::{SizeInfo, SparseMemFile, Tag},
     },
-    util::temp_tag::TempTag,
+    util::{
+        ChunkRangesExt,
+        temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -99,11 +105,14 @@ impl MemStore {
                 commands: receiver,
                 unit_tasks: JoinSet::new(),
                 import_tasks: JoinSet::new(),
+                batch_tasks: JoinSet::new(),
                 state: State {
                     data: HashMap::new(),
                     tags: BTreeMap::new(),
                 },
                 options: Arc::new(Options::default()),
+                temp_tags: Default::default(),
+                protected: Default::default(),
             }
             .run(),
         );
@@ -115,9 +124,13 @@ struct Actor {
     commands: mpsc::Receiver<Command>,
     unit_tasks: JoinSet<()>,
     import_tasks: JoinSet<anyhow::Result<ImportEntry>>,
+    batch_tasks: JoinSet<Scope>,
     state: State,
     #[allow(dead_code)]
     options: Arc<Options>,
+    // temp tags
+    temp_tags: TempTags,
+    protected: HashSet<Hash>,
 }
 
 impl Actor {
@@ -178,7 +191,7 @@ impl Actor {
                     .spawn(export_bao_task(hash, entry.clone(), ranges, tx));
             }
             Command::ExportPath(cmd) => {
-                let entry = self.state.data.get(&cmd.inner.hash).cloned();
+                let entry = self.state.data.get(&cmd.hash).cloned();
                 self.unit_tasks.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
@@ -281,29 +294,78 @@ impl Actor {
                 self.state.tags.insert(tag.clone(), value);
                 tx.send(Ok(tag)).await.ok();
             }
-            Command::CreateTempTag(_cmd) => {
-                todo!()
+            Command::CreateTempTag(cmd) => {
+                trace!("{cmd:?}");
+                self.create_temp_tag(cmd).await;
             }
-            Command::ListTempTags(_cmd) => {
-                todo!()
+            Command::ListTempTags(cmd) => {
+                trace!("{cmd:?}");
+                let tts = self.temp_tags.list();
+                cmd.tx.send(tts).await.ok();
             }
-            Command::ListBlobs(_cmd) => {
-                todo!()
+            Command::ListBlobs(cmd) => {
+                let ListBlobsMsg { mut tx, .. } = cmd;
+                let blobs = self.state.data.keys().cloned().collect::<Vec<Hash>>();
+                self.unit_tasks.spawn(async move {
+                    for blob in blobs {
+                        if tx.send(Ok(blob)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
             }
-            Command::BlobStatus(_cmd) => {
-                todo!()
+            Command::BlobStatus(cmd) => {
+                trace!("{cmd:?}");
+                let BlobStatusMsg {
+                    inner: BlobStatusRequest { hash },
+                    tx,
+                    ..
+                } = cmd;
+                let res = match self.state.data.get(&hash) {
+                    None => api::blobs::BlobStatus::NotFound,
+                    Some(x) => {
+                        let bitfield = x.0.state.borrow().bitfield();
+                        if bitfield.is_complete() {
+                            BlobStatus::Complete {
+                                size: bitfield.size,
+                            }
+                        } else {
+                            BlobStatus::Partial {
+                                size: bitfield.validated_size(),
+                            }
+                        }
+                    }
+                };
+                tx.send(res).await.ok();
             }
-            Command::DeleteBlobs(_cmd) => {
-                todo!()
+            Command::DeleteBlobs(cmd) => {
+                let DeleteBlobsMsg {
+                    inner: BlobDeleteRequest { hashes, force },
+                    ..
+                } = cmd;
+                for hash in hashes {
+                    if !force && self.protected.contains(&hash) {
+                        continue;
+                    }
+                    self.state.data.remove(&hash);
+                }
             }
-            Command::Batch(_cmd) => {
-                todo!()
+            Command::Batch(cmd) => {
+                trace!("{cmd:?}");
+                let (id, scope) = self.temp_tags.create_scope();
+                self.batch_tasks.spawn(handle_batch(cmd, id, scope));
             }
-            Command::ClearProtected(_cmd) => {
-                todo!()
+            Command::ClearProtected(cmd) => {
+                self.protected.clear();
+                cmd.tx.send(Ok(())).await.ok();
             }
-            Command::ExportRanges(_cmd) => {
-                todo!()
+            Command::ExportRanges(cmd) => {
+                let entry = self
+                    .state
+                    .data
+                    .entry(cmd.hash)
+                    .or_insert_with(|| BaoFileHandle::new_incomplete(cmd.hash));
+                self.unit_tasks.spawn(export_ranges(cmd, entry.clone()));
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
                 tx.send(Ok(())).await.ok();
@@ -313,6 +375,15 @@ impl Actor {
             }
         }
         None
+    }
+
+    async fn create_temp_tag(&mut self, cmd: CreateTempTagMsg) {
+        let CreateTempTagMsg { tx, inner, .. } = cmd;
+        let mut tt = self.temp_tags.create(inner.scope, inner.value);
+        if tx.is_rpc() {
+            tt.leak();
+        }
+        tx.send(tt).await.ok();
     }
 
     async fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
@@ -380,6 +451,11 @@ impl Actor {
                 Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
                     self.finish_import(res).await;
                 }
+                Some(scope) = self.batch_tasks.join_next(), if !self.batch_tasks.is_empty() => {
+                    if let Ok(scope) = scope {
+                        self.temp_tags.end_scope(scope);
+                    }
+                }
                 Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
                     self.log_unit_task(res);
                 }
@@ -389,6 +465,81 @@ impl Actor {
             shutdown.tx.send(()).await.ok();
         }
     }
+}
+
+async fn handle_batch(cmd: BatchMsg, id: Scope, scope: Arc<TempTagScope>) -> Scope {
+    if let Err(cause) = handle_batch_impl(cmd, id, &scope).await {
+        error!("batch failed: {cause}");
+    }
+    id
+}
+
+async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) -> api::Result<()> {
+    let BatchMsg { tx, mut rx, .. } = cmd;
+    trace!("created scope {}", id);
+    tx.send(id).await.map_err(api::Error::other)?;
+    while let Some(msg) = rx.recv().await? {
+        match msg {
+            BatchResponse::Drop(msg) => scope.on_drop(&msg),
+            BatchResponse::Ping => {}
+        }
+    }
+    Ok(())
+}
+
+async fn export_ranges(mut cmd: ExportRangesMsg, entry: BaoFileHandle) {
+    if let Err(cause) = export_ranges_impl(cmd.inner, &mut cmd.tx, entry).await {
+        cmd.tx
+            .send(ExportRangesItem::Error(cause.into()))
+            .await
+            .ok();
+    }
+}
+
+async fn export_ranges_impl(
+    cmd: ExportRangesRequest,
+    tx: &mut spsc::Sender<ExportRangesItem>,
+    entry: BaoFileHandle,
+) -> io::Result<()> {
+    let ExportRangesRequest { ranges, hash } = cmd;
+    let bitfield = entry.bitfield();
+    trace!(
+        "exporting ranges: {hash} {ranges:?} size={}",
+        bitfield.size()
+    );
+    debug_assert!(entry.hash() == hash, "hash mismatch");
+    let data = ExportData {
+        data: entry.clone(),
+    };
+    let size = bitfield.size();
+    for range in ranges.iter() {
+        let range = match range {
+            RangeSetRange::Range(range) => size.min(*range.start)..size.min(*range.end),
+            RangeSetRange::RangeFrom(range) => size.min(*range.start)..size,
+        };
+        let requested = ChunkRanges::bytes(range.start..range.end);
+        if !bitfield.ranges.is_superset(&requested) {
+            return Err(io::Error::other(format!(
+                "missing range: {requested:?}, present: {bitfield:?}",
+            )));
+        }
+        let bs = 1024;
+        let mut offset = range.start;
+        loop {
+            let end: u64 = (offset + bs).min(range.end);
+            let size = (end - offset) as usize;
+            tx.send(ExportRangesItem::Data(Leaf {
+                offset,
+                data: data.read_bytes_at(offset, size)?,
+            }))
+            .await?;
+            offset = end;
+            if offset >= range.end {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn import_bao_task(
@@ -661,6 +812,10 @@ impl BaoFileHandle {
 
     pub fn hash(&self) -> Hash {
         self.hash
+    }
+
+    pub fn bitfield(&self) -> Bitfield {
+        self.0.state.borrow().bitfield()
     }
 
     pub fn subscribe(&self) -> BaoFileStorageSubscriber {

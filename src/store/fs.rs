@@ -553,27 +553,27 @@ impl Actor {
             }
             Command::ExportPath(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.inner.hash);
+                let ctx = self.hash_context(cmd.hash);
                 self.spawn(export_path(cmd, ctx));
             }
             Command::ExportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.inner.hash);
+                let ctx = self.hash_context(cmd.hash);
                 self.spawn(export_bao(cmd, ctx));
             }
             Command::ExportRanges(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.inner.hash);
+                let ctx = self.hash_context(cmd.hash);
                 self.spawn(export_ranges(cmd, ctx));
             }
             Command::ImportBao(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.inner.hash);
+                let ctx = self.hash_context(cmd.hash);
                 self.spawn(import_bao(cmd, ctx));
             }
             Command::Observe(cmd) => {
                 trace!("{cmd:?}");
-                let ctx = self.hash_context(cmd.inner.hash);
+                let ctx = self.hash_context(cmd.hash);
                 self.spawn(observe(cmd, ctx));
             }
         }
@@ -931,7 +931,7 @@ async fn import_bao_impl(
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn observe(cmd: ObserveMsg, ctx: HashContext) {
-    let Ok(handle) = ctx.get_or_create(cmd.inner.hash).await else {
+    let Ok(handle) = ctx.get_or_create(cmd.hash).await else {
         return;
     };
     handle.subscribe().forward(cmd.tx).await.ok();
@@ -939,7 +939,7 @@ async fn observe(cmd: ObserveMsg, ctx: HashContext) {
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
-    match ctx.get_or_create(cmd.inner.hash).await {
+    match ctx.get_or_create(cmd.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_ranges_impl(cmd.inner, &mut cmd.tx, handle).await {
                 cmd.tx
@@ -1000,7 +1000,7 @@ async fn export_ranges_impl(
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
 async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
-    match ctx.get_or_create(cmd.inner.hash).await {
+    match ctx.get_or_create(cmd.hash).await {
         Ok(handle) => {
             if let Err(cause) = export_bao_impl(cmd.inner, &mut cmd.tx, handle).await {
                 cmd.tx
