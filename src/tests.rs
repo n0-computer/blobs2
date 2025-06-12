@@ -369,26 +369,6 @@ fn event_handler(
     (events_tx, count_rx, task)
 }
 
-#[tokio::test]
-async fn two_nodes_push_blobs_fs() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let testdir = tempfile::tempdir()?;
-    let (r1, store1, _) = node_test_setup_fs(testdir.path().join("a")).await?;
-    let (events_tx, count_rx, _task) = event_handler([r1.endpoint().node_id()]);
-    let (r2, store2, _) =
-        node_test_setup_with_events_fs(testdir.path().join("b"), Some(events_tx)).await?;
-    two_nodes_push_blobs(r1, &store1, r2, &store2, count_rx).await
-}
-
-#[tokio::test]
-async fn two_nodes_push_blobs_mem() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let (r1, store1) = node_test_setup_mem().await?;
-    let (events_tx, count_rx, _task) = event_handler([r1.endpoint().node_id()]);
-    let (r2, store2) = node_test_setup_with_events_mem(Some(events_tx)).await?;
-    two_nodes_push_blobs(r1, &store1, r2, &store2, count_rx).await
-}
-
 async fn two_nodes_push_blobs(
     r1: Router,
     store1: &Store,
@@ -420,6 +400,26 @@ async fn two_nodes_push_blobs(
     }
     tokio::try_join!(r1.shutdown(), r2.shutdown())?;
     Ok(())
+}
+
+#[tokio::test]
+async fn two_nodes_push_blobs_fs() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let testdir = tempfile::tempdir()?;
+    let (r1, store1, _) = node_test_setup_fs(testdir.path().join("a")).await?;
+    let (events_tx, count_rx, _task) = event_handler([r1.endpoint().node_id()]);
+    let (r2, store2, _) =
+        node_test_setup_with_events_fs(testdir.path().join("b"), Some(events_tx)).await?;
+    two_nodes_push_blobs(r1, &store1, r2, &store2, count_rx).await
+}
+
+#[tokio::test]
+async fn two_nodes_push_blobs_mem() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let (r1, store1) = node_test_setup_mem().await?;
+    let (events_tx, count_rx, _task) = event_handler([r1.endpoint().node_id()]);
+    let (r2, store2) = node_test_setup_with_events_mem(Some(events_tx)).await?;
+    two_nodes_push_blobs(r1, &store1, r2, &store2, count_rx).await
 }
 
 pub async fn add_test_hash_seq(
@@ -542,10 +542,12 @@ async fn two_node_test_setup_mem() -> TestResult<((Router, MemStore), (Router, M
     Ok((node_test_setup_mem().await?, node_test_setup_mem().await?))
 }
 
-#[tokio::test]
-async fn two_nodes_hash_seq() -> TestResult<()> {
-    tracing_subscriber::fmt::try_init().ok();
-    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup_fs().await?;
+async fn two_nodes_hash_seq(
+    r1: Router,
+    store1: &Store,
+    r2: Router,
+    store2: &Store,
+) -> TestResult<()> {
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
     let root = add_test_hash_seq(&store1, sizes).await?;
@@ -553,6 +555,20 @@ async fn two_nodes_hash_seq() -> TestResult<()> {
     store2.remote().fetch(conn, root).await?;
     check_presence(&store2, &sizes).await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn two_nodes_hash_seq_fs() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let (_testdir, (r1, store1, _), (r2, store2, _)) = two_node_test_setup_fs().await?;
+    two_nodes_hash_seq(r1, &store1, r2, &store2).await
+}
+
+#[tokio::test]
+async fn two_nodes_hash_seq_mem() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let ((r1, store1), (r2, store2)) = two_node_test_setup_mem().await?;
+    two_nodes_hash_seq(r1, &store1, r2, &store2).await
 }
 
 #[tokio::test]
@@ -591,7 +607,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let root_tt = store.add_bytes(hash_seq).await?;
     let root = root_tt.hash;
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
+    let blobs = crate::net_protocol::Blobs::new(&store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
         .spawn()
@@ -623,7 +639,7 @@ async fn node_serve_blobs() -> TestResult<()> {
         tts.push(store.add_bytes(test_data(size)).await?);
     }
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
+    let blobs = crate::net_protocol::Blobs::new(&store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
         .spawn()
@@ -647,11 +663,22 @@ async fn node_serve_blobs() -> TestResult<()> {
 }
 
 #[tokio::test]
-async fn node_smoke() -> TestResult<()> {
+async fn node_smoke_fs() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
+    node_smoke(&store).await
+}
+
+#[tokio::test]
+async fn node_smoke_mem() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let store = crate::store::mem::MemStore::new();
+    node_smoke(&store).await
+}
+
+async fn node_smoke(store: &Store) -> TestResult<()> {
     let tt = store.add_bytes(b"hello world".to_vec()).temp_tag().await?;
     let hash = *tt.hash();
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
@@ -708,11 +735,22 @@ async fn test_export_ranges(
 }
 
 #[tokio::test]
-async fn test_export_ranges_smoke() -> TestResult {
+async fn export_ranges_smoke_fs() -> TestResult {
     tracing_subscriber::fmt::try_init().ok();
     let testdir = tempfile::tempdir()?;
     let db_path = testdir.path().join("db");
     let store = crate::store::fs::FsStore::load(&db_path).await?;
+    export_ranges_smoke(&store).await
+}
+
+#[tokio::test]
+async fn export_ranges_smoke_mem() -> TestResult {
+    tracing_subscriber::fmt::try_init().ok();
+    let store = MemStore::new();
+    export_ranges_smoke(&store).await
+}
+
+async fn export_ranges_smoke(store: &Store) -> TestResult {
     let sizes = INTERESTING_SIZES;
     for size in sizes {
         let data = test_data(size);

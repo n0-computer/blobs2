@@ -417,7 +417,6 @@ impl Actor {
     fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
         let span = tracing::Span::current();
         let id = self.tasks.spawn(fut.instrument(span)).id();
-        // println!("spawned task {id} {}", self.tasks.len());
         self.running.insert(id);
     }
 

@@ -34,7 +34,7 @@ use tokio::{
     sync::{mpsc, watch},
     task::{JoinError, JoinSet},
 };
-use tracing::{error, info, instrument, trace};
+use tracing::{Instrument, error, info, instrument, trace};
 
 use super::util::{BaoTreeSender, PartialMemStorage, observer::BitfieldObserver};
 use crate::{
@@ -93,6 +93,13 @@ impl Default for MemStore {
     }
 }
 
+#[derive(derive_more::From)]
+enum TaskResult {
+    Unit(()),
+    Import(anyhow::Result<ImportEntry>),
+    Scope(Scope),
+}
+
 impl MemStore {
     pub fn from_sender(client: ApiClient) -> Self {
         Self { client }
@@ -103,9 +110,7 @@ impl MemStore {
         tokio::spawn(
             Actor {
                 commands: receiver,
-                unit_tasks: JoinSet::new(),
-                import_tasks: JoinSet::new(),
-                batch_tasks: JoinSet::new(),
+                tasks: JoinSet::new(),
                 state: State {
                     data: HashMap::new(),
                     tags: BTreeMap::new(),
@@ -122,9 +127,7 @@ impl MemStore {
 
 struct Actor {
     commands: mpsc::Receiver<Command>,
-    unit_tasks: JoinSet<()>,
-    import_tasks: JoinSet<anyhow::Result<ImportEntry>>,
-    batch_tasks: JoinSet<Scope>,
+    tasks: JoinSet<TaskResult>,
     state: State,
     #[allow(dead_code)]
     options: Arc<Options>,
@@ -134,6 +137,16 @@ struct Actor {
 }
 
 impl Actor {
+    fn spawn<F, T>(&mut self, f: F)
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Into<TaskResult>,
+    {
+        let span = tracing::Span::current();
+        let fut = async move { f.await.into() }.instrument(span);
+        self.tasks.spawn(fut);
+    }
+
     async fn handle_command(&mut self, cmd: Command) -> Option<ShutdownMsg> {
         match cmd {
             Command::ImportBao(ImportBaoMsg {
@@ -142,16 +155,16 @@ impl Actor {
                 tx,
                 ..
             }) => {
-                let entry = self.get_or_create_entry(hash).clone();
-                self.unit_tasks.spawn(import_bao(entry, size, data, tx));
+                let entry = self.get_or_create_entry(hash);
+                self.spawn(import_bao(entry, size, data, tx));
             }
             Command::Observe(ObserveMsg {
                 inner: ObserveRequest { hash },
                 tx,
                 ..
             }) => {
-                let entry = self.get_or_create_entry(hash).clone();
-                self.unit_tasks.spawn(observe(entry, tx));
+                let entry = self.get_or_create_entry(hash);
+                self.spawn(observe(entry, tx));
             }
             Command::ImportBytes(ImportBytesMsg {
                 inner:
@@ -164,29 +177,26 @@ impl Actor {
                 tx,
                 ..
             }) => {
-                self.import_tasks
-                    .spawn(import_bytes(data, scope, format, tx));
+                self.spawn(import_bytes(data, scope, format, tx));
             }
             Command::ImportByteStream(ImportByteStreamMsg { inner, tx, .. }) => {
                 let stream = Box::pin(n0_future::stream::iter(inner.data).map(io::Result::Ok));
-                self.import_tasks
-                    .spawn(import_byte_stream(inner.scope, inner.format, stream, tx));
+                self.spawn(import_byte_stream(inner.scope, inner.format, stream, tx));
             }
             Command::ImportPath(cmd) => {
-                self.import_tasks.spawn(import_path(cmd));
+                self.spawn(import_path(cmd));
             }
             Command::ExportBao(ExportBaoMsg {
                 inner: ExportBaoRequest { hash, ranges },
                 tx,
                 ..
             }) => {
-                let entry = self.get_or_create_entry(hash).clone();
-                self.unit_tasks
-                    .spawn(export_bao_task(hash, entry, ranges, tx));
+                let entry = self.get_or_create_entry(hash);
+                self.spawn(export_bao_task(entry, ranges, tx));
             }
             Command::ExportPath(cmd) => {
                 let entry = self.state.data.get(&cmd.hash).cloned();
-                self.unit_tasks.spawn(export_path_task(entry, cmd));
+                self.spawn(export_path_task(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
@@ -302,7 +312,7 @@ impl Actor {
             Command::ListBlobs(cmd) => {
                 let ListBlobsMsg { mut tx, .. } = cmd;
                 let blobs = self.state.data.keys().cloned().collect::<Vec<Hash>>();
-                self.unit_tasks.spawn(async move {
+                self.spawn(async move {
                     for blob in blobs {
                         if tx.send(Ok(blob)).await.is_err() {
                             break;
@@ -352,15 +362,15 @@ impl Actor {
             Command::Batch(cmd) => {
                 trace!("{cmd:?}");
                 let (id, scope) = self.temp_tags.create_scope();
-                self.batch_tasks.spawn(handle_batch(cmd, id, scope));
+                self.spawn(handle_batch(cmd, id, scope));
             }
             Command::ClearProtected(cmd) => {
                 self.protected.clear();
                 cmd.tx.send(Ok(())).await.ok();
             }
             Command::ExportRanges(cmd) => {
-                let entry = self.get_or_create_entry(cmd.hash).clone();
-                self.unit_tasks.spawn(export_ranges(cmd, entry.clone()));
+                let entry = self.get_or_create_entry(cmd.hash);
+                self.spawn(export_ranges(cmd, entry.clone()));
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
                 tx.send(Ok(())).await.ok();
@@ -372,11 +382,12 @@ impl Actor {
         None
     }
 
-    fn get_or_create_entry(&mut self, hash: Hash) -> &mut BaoFileHandle {
+    fn get_or_create_entry(&mut self, hash: Hash) -> BaoFileHandle {
         self.state
             .data
             .entry(hash)
             .or_insert_with(|| BaoFileHandle::new_partial(hash))
+            .clone()
     }
 
     async fn create_temp_tag(&mut self, cmd: CreateTempTagMsg) {
@@ -388,19 +399,11 @@ impl Actor {
         tx.send(tt).await.ok();
     }
 
-    async fn finish_import(&mut self, res: Result<anyhow::Result<ImportEntry>, JoinError>) {
+    async fn finish_import(&mut self, res: anyhow::Result<ImportEntry>) {
         let mut import_data = match res {
-            Ok(Ok(entry)) => entry,
-            Ok(Err(e)) => {
-                tracing::error!("import failed: {e}");
-                return;
-            }
+            Ok(entry) => entry,
             Err(e) => {
-                if e.is_cancelled() {
-                    tracing::warn!("import task failed: {e}");
-                } else {
-                    tracing::error!("import task panicked: {e}");
-                }
+                error!("import failed: {e}");
                 return;
             }
         };
@@ -427,9 +430,17 @@ impl Actor {
         import_data.tx.send(AddProgressItem::Done(tt)).await.ok();
     }
 
-    fn log_unit_task(&self, res: Result<(), JoinError>) {
-        if let Err(e) = res {
-            error!("task failed: {e}");
+    fn log_task_result(&self, res: Result<TaskResult, JoinError>) -> Option<TaskResult> {
+        match res {
+            Ok(x) => Some(x),
+            Err(e) => {
+                if e.is_cancelled() {
+                    trace!("task cancelled: {e}");
+                } else {
+                    error!("task failed: {e}");
+                }
+                None
+            }
         }
     }
 
@@ -446,16 +457,19 @@ impl Actor {
                         break Some(cmd);
                     }
                 }
-                Some(res) = self.import_tasks.join_next(), if !self.import_tasks.is_empty() => {
-                    self.finish_import(res).await;
-                }
-                Some(scope) = self.batch_tasks.join_next(), if !self.batch_tasks.is_empty() => {
-                    if let Ok(scope) = scope {
-                        self.temp_tags.end_scope(scope);
+                Some(res) = self.tasks.join_next(), if !self.tasks.is_empty() => {
+                    let Some(res) = self.log_task_result(res) else {
+                        continue;
+                    };
+                    match res {
+                        TaskResult::Import(res) => {
+                            self.finish_import(res).await;
+                        }
+                        TaskResult::Scope(scope) => {
+                            self.temp_tags.end_scope(scope);
+                        }
+                        TaskResult::Unit(_) => {}
                     }
-                }
-                Some(res) = self.unit_tasks.join_next(), if !self.unit_tasks.is_empty() => {
-                    self.log_unit_task(res);
                 }
             }
         };
@@ -506,9 +520,7 @@ async fn export_ranges_impl(
         bitfield.size()
     );
     debug_assert!(entry.hash() == hash, "hash mismatch");
-    let data = ExportData {
-        data: entry.clone(),
-    };
+    let data = entry.data_reader();
     let size = bitfield.size();
     for range in ranges.iter() {
         let range = match range {
@@ -605,21 +617,12 @@ async fn import_bao(
 }
 
 async fn export_bao_task(
-    hash: Hash,
     entry: BaoFileHandle,
     ranges: ChunkRanges,
     mut sender: spsc::Sender<EncodedItem>,
 ) {
-    let size = entry.0.state.borrow().size();
-    let data = ExportData {
-        data: entry.clone(),
-    };
-    let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
-    let outboard = ExportOutboard {
-        hash: hash.into(),
-        tree,
-        data: entry.clone(),
-    };
+    let data = entry.data_reader();
+    let outboard = entry.outboard_reader();
     let tx = BaoTreeSender::new(&mut sender);
     traverse_ranges_validated(data, outboard, &ranges, tx)
         .await
@@ -741,24 +744,21 @@ struct ImportEntry {
     tx: spsc::Sender<AddProgressItem>,
 }
 
-struct ExportOutboard {
+pub struct OutboardReader {
     hash: blake3::Hash,
     tree: BaoTree,
     data: BaoFileHandle,
 }
+pub struct DataReader(BaoFileHandle);
 
-struct ExportData {
-    data: BaoFileHandle,
-}
-
-impl ReadBytesAt for ExportData {
+impl ReadBytesAt for DataReader {
     fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
-        let entry = self.data.0.state.borrow();
+        let entry = self.0.0.state.borrow();
         entry.data().read_bytes_at(offset, size)
     }
 }
 
-impl Outboard for ExportOutboard {
+impl Outboard for OutboardReader {
     fn root(&self) -> blake3::Hash {
         self.hash
     }
@@ -841,6 +841,25 @@ impl BaoFileHandle {
     pub fn subscribe(&self) -> BaoFileStorageSubscriber {
         let receiver = self.0.state.subscribe();
         BaoFileStorageSubscriber::new(receiver)
+    }
+
+    /// An AsyncSliceReader for the data file.
+    ///
+    /// Caution: this is a reader for the unvalidated data file. Reading this
+    /// can produce data that does not match the hash.
+    pub fn data_reader(&self) -> DataReader {
+        DataReader(self.clone())
+    }
+
+    pub fn outboard_reader(&self) -> OutboardReader {
+        let entry = self.0.state.borrow();
+        let hash = self.hash.into();
+        let tree = BaoTree::new(entry.size(), IROH_BLOCK_SIZE);
+        OutboardReader {
+            hash,
+            tree,
+            data: self.clone(),
+        }
     }
 }
 

@@ -19,7 +19,7 @@
 //! let endpoint = Endpoint::builder().discovery_n0().bind().await?;
 //!
 //! // create a blobs protocol handler
-//! let blobs = Blobs::new(store.clone(), endpoint.clone(), None);
+//! let blobs = Blobs::new(&store, endpoint.clone(), None);
 //!
 //! // create a router and add the blobs protocol handler
 //! let router = Router::builder(endpoint)
@@ -66,14 +66,10 @@ pub struct Blobs {
 }
 
 impl Blobs {
-    pub fn new(
-        store: impl AsRef<Store>,
-        endpoint: Endpoint,
-        events: Option<mpsc::Sender<Event>>,
-    ) -> Self {
+    pub fn new(store: &Store, endpoint: Endpoint, events: Option<mpsc::Sender<Event>>) -> Self {
         Self {
             inner: Arc::new(BlobsInner {
-                store: store.as_ref().clone(),
+                store: store.clone(),
                 endpoint,
                 events: EventSender::new(events),
             }),

@@ -20,7 +20,7 @@ use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::spsc;
 use tokio::sync::watch;
-use tracing::{Span, debug, error, trace};
+use tracing::{Span, debug, error, info, trace};
 
 use super::{
     BaoFilePart,
@@ -188,7 +188,7 @@ impl PartialFileStorage {
                 {
                     ranges |= ChunkRanges::from(range);
                 }
-                error!("reconstructed range is {:?}", ranges);
+                info!("reconstructed range is {:?}", ranges);
                 Bitfield::new(ranges, size)
             }
         };
