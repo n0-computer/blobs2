@@ -5,6 +5,7 @@ use range_collections::{RangeSet2, range_set::RangeSetEntry};
 
 pub mod channel;
 pub mod handler_pool;
+pub mod handler_pool_0rtt;
 pub(crate) mod temp_tag;
 pub mod serde {
     // Module that handles io::Error serialization/deserialization
