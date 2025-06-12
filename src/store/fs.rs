@@ -365,7 +365,7 @@ async fn open_bao_file(
                     MemOrFile::File(file)
                 }
             };
-            BaoFileHandle::new_complete(*hash, data, outboard)
+            BaoFileHandle::new_complete(*hash, data, outboard, options.clone())
         }
         EntryState::Partial { .. } => BaoFileHandle::new_partial_file(*hash, ctx).await?,
     })
@@ -668,10 +668,15 @@ impl Actor {
         let (protect, ds) = delete_set::pair(Arc::new(options.path.clone()));
         let db_actor = meta::Actor::new(db_path, db_recv, ds, options.batch.clone())?;
         let slot_context = Arc::new(TaskContext {
-            options,
+            options: options.clone(),
             db: meta::Db::new(db_send),
             internal_cmd_tx: fs_commands_tx,
-            empty: BaoFileHandle::new_complete(Hash::EMPTY, MemOrFile::empty(), MemOrFile::empty()),
+            empty: BaoFileHandle::new_complete(
+                Hash::EMPTY,
+                MemOrFile::empty(),
+                MemOrFile::empty(),
+                options,
+            ),
             protect,
         });
         rt.spawn(db_actor.run());

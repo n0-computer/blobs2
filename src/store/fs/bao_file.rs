@@ -531,7 +531,7 @@ impl BaoFileHandleWeak {
 pub struct BaoFileHandleInner {
     pub(crate) storage: watch::Sender<BaoFileStorage>,
     hash: Hash,
-    options: Option<Arc<Options>>,
+    options: Arc<Options>,
 }
 
 impl fmt::Debug for BaoFileHandleInner {
@@ -565,7 +565,7 @@ impl Drop for BaoFileHandle {
             let BaoFileStorage::Partial(fs) = guard.take() else {
                 return false;
             };
-            let options = self.options.as_ref().unwrap();
+            let options = &self.options;
             let path = options.path.bitfield_path(&self.hash);
             trace!(
                 "writing bitfield for hash {} to {}",
@@ -631,7 +631,7 @@ impl BaoFileHandle {
         Self(Arc::new(BaoFileHandleInner {
             storage: watch::Sender::new(storage),
             hash,
-            options: Some(options),
+            options: options.clone(),
         }))
     }
 
@@ -665,7 +665,7 @@ impl BaoFileHandle {
         Ok(Self(Arc::new(BaoFileHandleInner {
             storage: watch::Sender::new(storage),
             hash,
-            options: Some(options),
+            options,
         })))
     }
 
@@ -674,12 +674,13 @@ impl BaoFileHandle {
         hash: Hash,
         data: MemOrFile<Bytes, FixedSize<File>>,
         outboard: MemOrFile<Bytes, File>,
+        options: Arc<Options>,
     ) -> Self {
         let storage = CompleteStorage { data, outboard }.into();
         Self(Arc::new(BaoFileHandleInner {
             storage: watch::Sender::new(storage),
             hash,
-            options: None,
+            options,
         }))
     }
 
