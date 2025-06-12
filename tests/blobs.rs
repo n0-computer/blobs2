@@ -10,7 +10,7 @@ use iroh_blobs::{
         Store,
         blobs::{AddProgressItem, Blobs},
     },
-    store::fs::FsStore,
+    store::{fs::FsStore, mem::MemStore},
 };
 use n0_future::StreamExt;
 use testresult::TestResult;
@@ -91,7 +91,17 @@ async fn blobs_smoke_fs() -> TestResult {
 }
 
 #[tokio::test]
-async fn blobs_smoke_rpc() -> TestResult {
+async fn blobs_smoke_mem() -> TestResult {
+    tracing_subscriber::fmt::try_init().ok();
+    let td = tempfile::tempdir()?;
+    let store = MemStore::new();
+    blobs_smoke(td.path(), store.blobs()).await?;
+    store.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blobs_smoke_fs_rpc() -> TestResult {
     tracing_subscriber::fmt::try_init().ok();
     let unspecified = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let (server, cert) = irpc::util::make_server_endpoint(unspecified)?;

@@ -155,15 +155,15 @@ impl ImportEntry {
 }
 
 /// Start a task to import from a [`Bytes`] in memory.
-#[instrument(skip_all, fields(data = cmd.inner.data.len()))]
+#[instrument(skip_all, fields(data = cmd.data.len()))]
 pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
-    let size = cmd.inner.data.len() as u64;
+    let size = cmd.data.len() as u64;
     if ctx.options.is_inlined_all(size) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStreamRequest {
-                format: cmd.inner.format,
+                format: cmd.format,
                 scope: cmd.scope,
                 data: vec![cmd.inner.data],
             },
@@ -405,7 +405,7 @@ async fn compute_outboard(
     })
 }
 
-#[instrument(skip_all, fields(path = %cmd.inner.path.display()))]
+#[instrument(skip_all, fields(path = %cmd.path.display()))]
 pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
     match import_path_impl(cmd.inner, &mut cmd.tx, context.options.clone()).await {
         Ok(inner) => {

@@ -205,7 +205,7 @@ mod tests {
         store::fs::{options::PathOptions, tests::create_n0_bao},
     };
 
-    async fn gc_smoke(_path: &Path, store: &Store) -> TestResult<()> {
+    async fn gc_smoke(store: &Store) -> TestResult<()> {
         let blobs = store.blobs();
         let at = blobs.add_slice("a").temp_tag().await?;
         let bt = blobs.add_slice("b").temp_tag().await?;
@@ -317,8 +317,16 @@ mod tests {
         let testdir = tempfile::tempdir()?;
         let db_path = testdir.path().join("db");
         let store = crate::store::fs::FsStore::load(&db_path).await?;
-        gc_smoke(testdir.path(), &store).await?;
+        gc_smoke(&store).await?;
         gc_file_delete(testdir.path(), &store).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gc_smoke_mem() -> TestResult {
+        tracing_subscriber::fmt::try_init().ok();
+        let store = crate::store::mem::MemStore::new();
+        gc_smoke(&store).await?;
         Ok(())
     }
 }

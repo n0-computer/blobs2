@@ -60,7 +60,7 @@ use crate::{
     },
     util::{
         ChunkRangesExt,
-        temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
+        temp_tag::{TagDrop, TempTagScope, TempTags},
     },
 };
 
@@ -142,37 +142,35 @@ impl Actor {
                 tx,
                 ..
             }) => {
-                let entry = self.state.data.entry(hash).or_insert_with(|| {
-                    BaoFileHandle(Arc::new(BaoFileHandleInner {
-                        state: watch::channel(BaoFileStorage::default()).0,
-                        hash,
-                    }))
-                });
-                self.unit_tasks
-                    .spawn(import_bao_task(entry.clone(), size, data, tx));
+                let entry = self.get_or_create_entry(hash).clone();
+                self.unit_tasks.spawn(import_bao(entry, size, data, tx));
             }
             Command::Observe(ObserveMsg {
                 inner: ObserveRequest { hash },
                 tx,
                 ..
             }) => {
-                let entry = self
-                    .state
-                    .data
-                    .entry(hash)
-                    .or_insert_with(|| BaoFileHandle::new_incomplete(hash));
-                self.unit_tasks.spawn(observe(entry.clone(), tx));
+                let entry = self.get_or_create_entry(hash).clone();
+                self.unit_tasks.spawn(observe(entry, tx));
             }
             Command::ImportBytes(ImportBytesMsg {
-                inner: ImportBytesRequest { data, .. },
+                inner:
+                    ImportBytesRequest {
+                        data,
+                        scope,
+                        format,
+                        ..
+                    },
                 tx,
                 ..
             }) => {
-                self.import_tasks.spawn(import_bytes(data, tx));
+                self.import_tasks
+                    .spawn(import_bytes(data, scope, format, tx));
             }
             Command::ImportByteStream(ImportByteStreamMsg { inner, tx, .. }) => {
                 let stream = Box::pin(n0_future::stream::iter(inner.data).map(io::Result::Ok));
-                self.import_tasks.spawn(import_byte_stream(stream, tx));
+                self.import_tasks
+                    .spawn(import_byte_stream(inner.scope, inner.format, stream, tx));
             }
             Command::ImportPath(cmd) => {
                 self.import_tasks.spawn(import_path(cmd));
@@ -182,13 +180,9 @@ impl Actor {
                 tx,
                 ..
             }) => {
-                let entry = self
-                    .state
-                    .data
-                    .entry(hash)
-                    .or_insert_with(|| BaoFileHandle::new_incomplete(hash));
+                let entry = self.get_or_create_entry(hash).clone();
                 self.unit_tasks
-                    .spawn(export_bao_task(hash, entry.clone(), ranges, tx));
+                    .spawn(export_bao_task(hash, entry, ranges, tx));
             }
             Command::ExportPath(cmd) => {
                 let entry = self.state.data.get(&cmd.hash).cloned();
@@ -239,6 +233,8 @@ impl Actor {
                     }
                 };
                 tags.insert(to, value);
+                tx.send(Ok(())).await.ok();
+                return None;
             }
             Command::ListTags(cmd) => {
                 let ListTagsMsg {
@@ -339,8 +335,10 @@ impl Actor {
                 tx.send(res).await.ok();
             }
             Command::DeleteBlobs(cmd) => {
+                trace!("{cmd:?}");
                 let DeleteBlobsMsg {
                     inner: BlobDeleteRequest { hashes, force },
+                    tx,
                     ..
                 } = cmd;
                 for hash in hashes {
@@ -349,6 +347,7 @@ impl Actor {
                     }
                     self.state.data.remove(&hash);
                 }
+                tx.send(Ok(())).await.ok();
             }
             Command::Batch(cmd) => {
                 trace!("{cmd:?}");
@@ -360,11 +359,7 @@ impl Actor {
                 cmd.tx.send(Ok(())).await.ok();
             }
             Command::ExportRanges(cmd) => {
-                let entry = self
-                    .state
-                    .data
-                    .entry(cmd.hash)
-                    .or_insert_with(|| BaoFileHandle::new_incomplete(cmd.hash));
+                let entry = self.get_or_create_entry(cmd.hash).clone();
                 self.unit_tasks.spawn(export_ranges(cmd, entry.clone()));
             }
             Command::SyncDb(SyncDbMsg { tx, .. }) => {
@@ -375,6 +370,13 @@ impl Actor {
             }
         }
         None
+    }
+
+    fn get_or_create_entry(&mut self, hash: Hash) -> &mut BaoFileHandle {
+        self.state
+            .data
+            .entry(hash)
+            .or_insert_with(|| BaoFileHandle::new_partial(hash))
     }
 
     async fn create_temp_tag(&mut self, cmd: CreateTempTagMsg) {
@@ -403,11 +405,7 @@ impl Actor {
             }
         };
         let hash = import_data.outboard.root().into();
-        let entry = self
-            .state
-            .data
-            .entry(hash)
-            .or_insert_with(|| BaoFileHandle::new_incomplete(hash));
+        let entry = self.get_or_create_entry(hash);
         entry
             .0
             .state
@@ -419,12 +417,12 @@ impl Actor {
                     CompleteStorage::new(import_data.data, import_data.outboard.data.into()).into();
                 true
             });
-        let tt = TempTag::new(
+        let tt = self.temp_tags.create(
+            import_data.scope,
             HashAndFormat {
                 hash,
-                format: BlobFormat::Raw,
+                format: import_data.format,
             },
-            None,
         );
         import_data.tx.send(AddProgressItem::Done(tt)).await.ok();
     }
@@ -542,7 +540,13 @@ async fn export_ranges_impl(
     Ok(())
 }
 
-async fn import_bao_task(
+fn chunk_range(leaf: &Leaf) -> ChunkRanges {
+    let start = ChunkNum::chunks(leaf.offset);
+    let end = ChunkNum::chunks(leaf.offset + leaf.data.len() as u64);
+    (start..end).into()
+}
+
+async fn import_bao(
     entry: BaoFileHandle,
     size: NonZeroU64,
     mut stream: spsc::Receiver<BaoContentItem>,
@@ -579,14 +583,12 @@ async fn import_bao_task(
                 }
                 BaoContentItem::Leaf(leaf) => {
                     let start = leaf.offset;
-                    let end = start + (leaf.data.len() as u64);
                     partial
                         .data
                         .write_at(start, &leaf.data)
                         .expect("writing to mem can never fail");
-                    let added =
-                        ChunkRanges::from(ChunkNum::chunks(start)..ChunkNum::full_chunks(end));
-                    let update = partial.bitfield.update(&Bitfield::new(added, size));
+                    let added = chunk_range(&leaf);
+                    let update = partial.bitfield.update(&Bitfield::new(added.clone(), size));
                     if update.new_state().complete {
                         let data = std::mem::take(&mut partial.data);
                         let outboard = std::mem::take(&mut partial.outboard);
@@ -630,15 +632,25 @@ async fn observe(entry: BaoFileHandle, tx: spsc::Sender<api::blobs::Bitfield>) {
 
 async fn import_bytes(
     data: Bytes,
+    scope: Scope,
+    format: BlobFormat,
     mut tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     tx.send(AddProgressItem::Size(data.len() as u64)).await?;
     tx.send(AddProgressItem::CopyDone).await?;
     let outboard = PreOrderMemOutboard::create(&data, IROH_BLOCK_SIZE);
-    Ok(ImportEntry { data, outboard, tx })
+    Ok(ImportEntry {
+        data,
+        outboard,
+        scope,
+        format,
+        tx,
+    })
 }
 
 async fn import_byte_stream(
+    scope: Scope,
+    format: BlobFormat,
     mut data: BoxedByteStream,
     mut tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
@@ -649,13 +661,19 @@ async fn import_byte_stream(
         tx.try_send(AddProgressItem::CopyProgress(res.len() as u64))
             .await?;
     }
-    import_bytes(res.into(), tx).await
+    import_bytes(res.into(), scope, format, tx).await
 }
 
-#[instrument(skip_all, fields(path = %cmd.inner.path.display()))]
+#[instrument(skip_all, fields(path = %cmd.path.display()))]
 async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
     let ImportPathMsg {
-        inner: ImportPathRequest { path, .. },
+        inner:
+            ImportPathRequest {
+                path,
+                scope,
+                format,
+                ..
+            },
         mut tx,
         ..
     } = cmd;
@@ -671,7 +689,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
         tx.send(AddProgressItem::CopyProgress(res.len() as u64))
             .await?;
     }
-    import_bytes(res.into(), tx).await
+    import_bytes(res.into(), scope, format, tx).await
 }
 
 async fn export_path_task(entry: Option<BaoFileHandle>, cmd: ExportPathMsg) {
@@ -716,6 +734,8 @@ async fn export_path_impl(
 }
 
 struct ImportEntry {
+    scope: Scope,
+    format: BlobFormat,
     data: Bytes,
     outboard: PreOrderMemOutboard,
     tx: spsc::Sender<AddProgressItem>,
@@ -800,7 +820,7 @@ pub struct BaoFileHandleInner {
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
 impl BaoFileHandle {
-    pub fn new_incomplete(hash: Hash) -> Self {
+    pub fn new_partial(hash: Hash) -> Self {
         let (state, _) = watch::channel(BaoFileStorage::Partial(PartialMemStorage {
             data: SparseMemFile::new(),
             outboard: SparseMemFile::new(),

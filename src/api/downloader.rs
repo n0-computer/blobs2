@@ -699,15 +699,15 @@ mod tests {
         },
         hashseq::HashSeq,
         protocol::{GetManyRequest, GetRequest},
-        tests::node_test_setup,
+        tests::node_test_setup_fs,
     };
 
     #[tokio::test]
     async fn downloader_get_many_smoke() -> TestResult<()> {
         let testdir = tempfile::tempdir()?;
-        let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
-        let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
-        let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+        let (r1, store1, _) = node_test_setup_fs(testdir.path().join("a")).await?;
+        let (r2, store2, _) = node_test_setup_fs(testdir.path().join("b")).await?;
+        let (r3, store3, _) = node_test_setup_fs(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice("hello world").await?;
         let tt2 = store2.add_slice("hello world 2").await?;
         let node1_addr = r1.endpoint().node_addr().await?;
@@ -737,9 +737,9 @@ mod tests {
     async fn downloader_get_smoke() -> TestResult<()> {
         // tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
-        let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
-        let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+        let (r1, store1, _) = node_test_setup_fs(testdir.path().join("a")).await?;
+        let (r2, store2, _) = node_test_setup_fs(testdir.path().join("b")).await?;
+        let (r3, store3, _) = node_test_setup_fs(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice(vec![1; 10000000]).await?;
         let tt2 = store2.add_slice(vec![2; 10000000]).await?;
         let hs = [tt1.hash, tt2.hash].into_iter().collect::<HashSeq>();
@@ -806,9 +806,9 @@ mod tests {
     #[tokio::test]
     async fn downloader_get_all() -> TestResult<()> {
         let testdir = tempfile::tempdir()?;
-        let (r1, store1, _) = node_test_setup(testdir.path().join("a")).await?;
-        let (r2, store2, _) = node_test_setup(testdir.path().join("b")).await?;
-        let (r3, store3, _) = node_test_setup(testdir.path().join("c")).await?;
+        let (r1, store1, _) = node_test_setup_fs(testdir.path().join("a")).await?;
+        let (r2, store2, _) = node_test_setup_fs(testdir.path().join("b")).await?;
+        let (r3, store3, _) = node_test_setup_fs(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice(vec![1; 10000000]).await?;
         let tt2 = store2.add_slice(vec![2; 10000000]).await?;
         let hs = [tt1.hash, tt2.hash].into_iter().collect::<HashSeq>();

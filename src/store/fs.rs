@@ -1601,16 +1601,7 @@ pub mod tests {
     async fn test_import_bao_persistence_just_size() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,               // always there
-            1,               // will become complete due to last chunk
-            1024,            // will become complete due to last chunk
-            1024 * 16 - 1,   // will become complete due to rounding up of chunks
-            1024 * 16,       // will become complete due to rounding up of chunks
-            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
-            1024 * 1024,     // will remain incomplete as file, needs outboard
-            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         let just_size = ChunkRanges::last_chunk();
         {
@@ -1648,16 +1639,7 @@ pub mod tests {
     async fn test_import_bao_persistence_two_stages() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,               // always there
-            1,               // will become complete due to last chunk
-            1024,            // will become complete due to last chunk
-            1024 * 16 - 1,   // will become complete due to rounding up of chunks
-            1024 * 16,       // will become complete due to rounding up of chunks
-            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
-            1024 * 1024,     // will remain incomplete as file, needs outboard
-            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         let just_size = ChunkRanges::last_chunk();
         // stage 1, import just the last full chunk group to get a validated size
@@ -1721,16 +1703,7 @@ pub mod tests {
     async fn test_import_bao_persistence_observe() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,               // always there
-            1,               // will become complete due to last chunk
-            1024,            // will become complete due to last chunk
-            1024 * 16 - 1,   // will become complete due to rounding up of chunks
-            1024 * 16,       // will become complete due to rounding up of chunks
-            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
-            1024 * 1024,     // will remain incomplete as file, needs outboard
-            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         let just_size = just_size();
         // stage 1, import just the last full chunk group to get a validated size
@@ -1768,16 +1741,7 @@ pub mod tests {
     async fn test_import_bao_persistence_recover() -> TestResult<()> {
         tracing_subscriber::fmt::try_init().ok();
         let testdir = tempfile::tempdir()?;
-        let sizes = [
-            0,               // always there
-            1,               // will become complete due to last chunk
-            1024,            // will become complete due to last chunk
-            1024 * 16 - 1,   // will become complete due to rounding up of chunks
-            1024 * 16,       // will become complete due to rounding up of chunks
-            1024 * 16 + 1,   // will remain incomplete as file, needs outboard
-            1024 * 1024,     // will remain incomplete as file, needs outboard
-            1024 * 1024 * 8, // will remain incomplete as file, needs file outboard
-        ];
+        let sizes = INTERESTING_SIZES;
         let db_dir = testdir.path().join("db");
         let options = Options::new(&db_dir);
         let just_size = just_size();

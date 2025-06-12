@@ -9,7 +9,7 @@ use iroh_blobs::{
         self, Store,
         tags::{TagInfo, Tags},
     },
-    store::fs::FsStore,
+    store::{fs::FsStore, mem::MemStore},
 };
 use n0_future::{Stream, StreamExt};
 use testresult::TestResult;
@@ -129,13 +129,12 @@ async fn tags_smoke(tags: &Tags) -> TestResult<()> {
     Ok(())
 }
 
-// #[tokio::test]
-// #[ignore = "fixme"]
-// async fn tags_smoke_mem() -> TestResult<()> {
-//     tracing_subscriber::fmt::try_init().ok();
-//     let store = iroh_blobs::store::mem::MemStore::new();
-//     tags_smoke(store.tags()).await
-// }
+#[tokio::test]
+async fn tags_smoke_mem() -> TestResult<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let store = MemStore::new();
+    tags_smoke(store.tags()).await
+}
 
 #[tokio::test]
 async fn tags_smoke_fs() -> TestResult<()> {
@@ -146,7 +145,7 @@ async fn tags_smoke_fs() -> TestResult<()> {
 }
 
 #[tokio::test]
-async fn tags_smoke_rpc() -> TestResult<()> {
+async fn tags_smoke_fs_rpc() -> TestResult<()> {
     tracing_subscriber::fmt::try_init().ok();
     let unspecified = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let (server, cert) = irpc::util::make_server_endpoint(unspecified)?;
