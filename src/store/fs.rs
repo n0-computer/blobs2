@@ -308,7 +308,6 @@ impl HashContext {
         if hash == Hash::EMPTY {
             return Ok(self.ctx.empty.clone());
         }
-        // let id = symbol_string(&(Arc::as_ptr(&self.slot.0) as usize).to_le_bytes());
         let res = self
             .slot
             .get_or_create(|| async {
