@@ -36,7 +36,7 @@ use tokio::{
 };
 use tracing::{Instrument, error, info, instrument, trace};
 
-use super::util::{BaoTreeSender, PartialMemStorage, observer::BitfieldObserver};
+use super::util::{BaoTreeSender, PartialMemStorage};
 use crate::{
     BlobFormat, Hash,
     api::{
@@ -192,11 +192,11 @@ impl Actor {
                 ..
             }) => {
                 let entry = self.get_or_create_entry(hash);
-                self.spawn(export_bao_task(entry, ranges, tx));
+                self.spawn(export_bao(entry, ranges, tx));
             }
             Command::ExportPath(cmd) => {
                 let entry = self.state.data.get(&cmd.hash).cloned();
-                self.spawn(export_path_task(entry, cmd));
+                self.spawn(export_path(entry, cmd));
             }
             Command::DeleteTags(cmd) => {
                 let DeleteTagsMsg {
@@ -538,10 +538,13 @@ async fn export_ranges_impl(
         loop {
             let end: u64 = (offset + bs).min(range.end);
             let size = (end - offset) as usize;
-            tx.send(ExportRangesItem::Data(Leaf {
-                offset,
-                data: data.read_bytes_at(offset, size)?,
-            }))
+            tx.send(
+                Leaf {
+                    offset,
+                    data: data.read_bytes_at(offset, size)?,
+                }
+                .into(),
+            )
             .await?;
             offset = end;
             if offset >= range.end {
@@ -565,14 +568,17 @@ async fn import_bao(
     tx: irpc::channel::oneshot::Sender<api::Result<()>>,
 ) {
     let size = size.get();
-    entry.0.state.send_if_modified(|x| {
-        let BaoFileStorage::Partial(entry) = x else {
-            // entry was already completed, no need to write
-            return false;
-        };
-        entry.size.write(0, size);
-        false
-    });
+    entry
+        .0
+        .state
+        .send_if_modified(|state: &mut BaoFileStorage| {
+            let BaoFileStorage::Partial(entry) = state else {
+                // entry was already completed, no need to write
+                return false;
+            };
+            entry.size.write(0, size);
+            false
+        });
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
     while let Some(item) = stream.recv().await.unwrap() {
         entry.0.state.send_if_modified(|state| {
@@ -616,7 +622,8 @@ async fn import_bao(
     tx.send(Ok(())).await.ok();
 }
 
-async fn export_bao_task(
+#[instrument(skip_all, fields(hash = %entry.hash.fmt_short()))]
+async fn export_bao(
     entry: BaoFileHandle,
     ranges: ChunkRanges,
     mut sender: spsc::Sender<EncodedItem>,
@@ -629,6 +636,7 @@ async fn export_bao_task(
         .ok();
 }
 
+#[instrument(skip_all, fields(hash = %entry.hash.fmt_short()))]
 async fn observe(entry: BaoFileHandle, tx: spsc::Sender<api::blobs::Bitfield>) {
     entry.subscribe().forward(tx).await.ok();
 }
@@ -695,7 +703,8 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
     import_bytes(res.into(), scope, format, tx).await
 }
 
-async fn export_path_task(entry: Option<BaoFileHandle>, cmd: ExportPathMsg) {
+#[instrument(skip_all, fields(hash = %cmd.hash.fmt_short(), path = %cmd.target.display()))]
+async fn export_path(entry: Option<BaoFileHandle>, cmd: ExportPathMsg) {
     let ExportPathMsg { inner, mut tx, .. } = cmd;
     let Some(entry) = entry else {
         tx.send(ExportProgressItem::Error(api::Error::io(
@@ -744,11 +753,6 @@ struct ImportEntry {
     tx: spsc::Sender<AddProgressItem>,
 }
 
-pub struct OutboardReader {
-    hash: blake3::Hash,
-    tree: BaoTree,
-    data: BaoFileHandle,
-}
 pub struct DataReader(BaoFileHandle);
 
 impl ReadBytesAt for DataReader {
@@ -756,6 +760,12 @@ impl ReadBytesAt for DataReader {
         let entry = self.0.0.state.borrow();
         entry.data().read_bytes_at(offset, size)
     }
+}
+
+pub struct OutboardReader {
+    hash: blake3::Hash,
+    tree: BaoTree,
+    data: BaoFileHandle,
 }
 
 impl Outboard for OutboardReader {
@@ -815,7 +825,7 @@ pub struct BaoFileHandleInner {
     hash: Hash,
 }
 
-/// A cheaply cloneable handle to a bao file, including the hash and the configuration.
+/// A cheaply cloneable handle to a bao file, including the hash
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct BaoFileHandle(Arc<BaoFileHandleInner>);
 
@@ -839,14 +849,9 @@ impl BaoFileHandle {
     }
 
     pub fn subscribe(&self) -> BaoFileStorageSubscriber {
-        let receiver = self.0.state.subscribe();
-        BaoFileStorageSubscriber::new(receiver)
+        BaoFileStorageSubscriber::new(self.0.state.subscribe())
     }
 
-    /// An AsyncSliceReader for the data file.
-    ///
-    /// Caution: this is a reader for the unvalidated data file. Reading this
-    /// can produce data that does not match the hash.
     pub fn data_reader(&self) -> DataReader {
         DataReader(self.clone())
     }
@@ -892,7 +897,7 @@ impl BaoFileStorage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompleteStorage {
     pub(crate) data: Bytes,
     pub(crate) outboard: Bytes,
@@ -905,10 +910,6 @@ impl CompleteStorage {
         let outboard = outboard.data.into();
         let entry = Self::new(data, outboard);
         (hash, entry)
-    }
-
-    pub fn subscribe(&mut self) -> BitfieldObserver {
-        BitfieldObserver::once(Bitfield::complete(self.size()))
     }
 
     pub fn new(data: Bytes, outboard: Bytes) -> Self {
