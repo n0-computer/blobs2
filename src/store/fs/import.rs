@@ -15,7 +15,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Seek, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, mpsc::RecvError},
 };
 
 use bao_tree::{
@@ -23,6 +23,7 @@ use bao_tree::{
     io::outboard::{PreOrderMemOutboard, PreOrderOutboard},
 };
 use bytes::Bytes;
+use genawaiter::sync::Gen;
 use irpc::{
     Channels, WithChannels,
     channel::{none::NoReceiver, spsc},
@@ -162,15 +163,15 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
     if ctx.options.is_inlined_all(size) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
-        let (mut tx, rx) = spsc::channel(1);
+        let (mut tx, rx) = spsc::channel(2);
         tx.send(ImportByteStreamUpdate::Bytes(cmd.data.clone()))
             .await
             .unwrap();
+        tx.send(ImportByteStreamUpdate::Done).await.unwrap();
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStreamRequest {
                 format: cmd.format,
                 scope: cmd.scope,
-                data: vec![cmd.inner.data],
             },
             tx: cmd.tx,
             rx,
@@ -237,8 +238,34 @@ pub async fn import_byte_stream(cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>)
     import_byte_stream_outer(cmd, ctx).await;
 }
 
+fn into_stream(
+    mut rx: spsc::Receiver<ImportByteStreamUpdate>,
+) -> impl Stream<Item = io::Result<Bytes>> {
+    Gen::new(|co| async move {
+        loop {
+            match rx.recv().await {
+                Ok(Some(ImportByteStreamUpdate::Bytes(data))) => {
+                    co.yield_(Ok(data)).await;
+                }
+                Ok(Some(ImportByteStreamUpdate::Done)) => {
+                    break;
+                }
+                Ok(None) => {
+                    co.yield_(Err(io::ErrorKind::UnexpectedEof.into())).await;
+                    break;
+                }
+                Err(e) => {
+                    co.yield_(Err(e.into())).await;
+                    break;
+                }
+            }
+        }
+    })
+}
+
 pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>) {
-    match import_byte_stream_impl(cmd.inner, &mut cmd.tx, ctx.options.clone()).await {
+    let stream = into_stream(cmd.rx);
+    match import_byte_stream_impl(cmd.inner, &mut cmd.tx, stream, ctx.options.clone()).await {
         Ok(entry) => {
             let entry = ImportEntryMsg {
                 inner: entry,
@@ -257,22 +284,18 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
 async fn import_byte_stream_impl(
     cmd: ImportByteStreamRequest,
     tx: &mut spsc::Sender<AddProgressItem>,
+    stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
-    let ImportByteStreamRequest {
-        format,
-        data,
-        scope: batch,
-    } = cmd;
-    let data = n0_future::stream::iter(data).map(io::Result::Ok);
-    let import_source = get_import_source(data, tx, &options).await?;
+    let ImportByteStreamRequest { format, scope } = cmd;
+    let import_source = get_import_source(stream, tx, &options).await?;
     tx.send(AddProgressItem::Size(import_source.size()))
         .await
         .map_err(|_e| io::Error::other("error"))?;
     tx.send(AddProgressItem::CopyDone)
         .await
         .map_err(|_e| io::Error::other("error"))?;
-    compute_outboard(import_source, format, batch, options, tx).await
+    compute_outboard(import_source, format, scope, options, tx).await
 }
 
 async fn get_import_source(
@@ -538,11 +561,11 @@ mod tests {
         let data = stream.collect::<Vec<_>>().await;
         let data = data.into_iter().collect::<io::Result<Vec<_>>>()?;
         let cmd = ImportByteStreamRequest {
-            data,
             format: BlobFormat::Raw,
             scope: Default::default(),
         };
-        let res = import_byte_stream_impl(cmd, &mut tx, options).await;
+        let stream = stream::iter(data.into_iter().map(Ok));
+        let res = import_byte_stream_impl(cmd, &mut tx, stream, options).await;
         let Ok(res) = res else {
             panic!("import failed");
         };

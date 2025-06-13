@@ -48,9 +48,10 @@ use crate::{
             DeleteBlobsMsg, DeleteTagsMsg, DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest,
             ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
             ExportRangesRequest, ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg,
-            ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, ListBlobsMsg,
-            ListTagsMsg, ListTagsRequest, ObserveMsg, ObserveRequest, RenameTagMsg,
-            RenameTagRequest, Scope, SetTagMsg, SetTagRequest, ShutdownMsg, SyncDbMsg,
+            ImportByteStreamUpdate, ImportBytesMsg, ImportBytesRequest, ImportPathMsg,
+            ImportPathRequest, ListBlobsMsg, ListTagsMsg, ListTagsRequest, ObserveMsg,
+            ObserveRequest, RenameTagMsg, RenameTagRequest, Scope, SetTagMsg, SetTagRequest,
+            ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
     },
@@ -179,9 +180,8 @@ impl Actor {
             }) => {
                 self.spawn(import_bytes(data, scope, format, tx));
             }
-            Command::ImportByteStream(ImportByteStreamMsg { inner, tx, .. }) => {
-                let stream = Box::pin(n0_future::stream::iter(inner.data).map(io::Result::Ok));
-                self.spawn(import_byte_stream(inner.scope, inner.format, stream, tx));
+            Command::ImportByteStream(ImportByteStreamMsg { inner, tx, rx, .. }) => {
+                self.spawn(import_byte_stream(inner.scope, inner.format, rx, tx));
             }
             Command::ImportPath(cmd) => {
                 self.spawn(import_path(cmd));
@@ -662,15 +662,31 @@ async fn import_bytes(
 async fn import_byte_stream(
     scope: Scope,
     format: BlobFormat,
-    mut data: BoxedByteStream,
+    mut rx: spsc::Receiver<ImportByteStreamUpdate>,
     mut tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
-    while let Some(item) = data.next().await {
-        let item = item?;
-        res.extend_from_slice(&item);
-        tx.try_send(AddProgressItem::CopyProgress(res.len() as u64))
-            .await?;
+    loop {
+        match rx.recv().await {
+            Ok(Some(ImportByteStreamUpdate::Bytes(data))) => {
+                res.extend_from_slice(&data);
+                tx.send(AddProgressItem::CopyProgress(res.len() as u64))
+                    .await?;
+            }
+            Ok(Some(ImportByteStreamUpdate::Done)) => {
+                break;
+            }
+            Ok(None) => {
+                return Err(api::Error::io(
+                    io::ErrorKind::UnexpectedEof,
+                    "byte stream ended unexpectedly",
+                )
+                .into());
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
     }
     import_bytes(res.into(), scope, format, tx).await
 }

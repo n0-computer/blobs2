@@ -245,7 +245,6 @@ pub struct ExportPathRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportByteStreamRequest {
     pub format: BlobFormat,
-    pub data: Vec<Bytes>,
     pub scope: Scope,
 }
 

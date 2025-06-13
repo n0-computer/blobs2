@@ -53,8 +53,11 @@ use super::{
     tags::TagInfo,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat, api::proto::BatchRequest, provider::StreamContext,
-    store::IROH_BLOCK_SIZE, util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat,
+    api::proto::{BatchRequest, ImportByteStreamUpdate},
+    provider::StreamContext,
+    store::IROH_BLOCK_SIZE,
+    util::temp_tag::TempTag,
 };
 
 /// Options for adding bytes.
@@ -216,28 +219,14 @@ impl Blobs {
         &self,
         data: impl Stream<Item = io::Result<Bytes>> + Send + Sync + 'static,
     ) -> AddProgress {
-        self.add_stream_impl(Box::pin(data)).await
-    }
-
-    async fn add_stream_impl(
-        &self,
-        data: Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync + 'static>>,
-    ) -> AddProgress {
-        let data = data
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<io::Result<Vec<_>>>()
-            .unwrap();
         let inner = ImportByteStreamRequest {
-            data,
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
         let client = self.client.clone();
         let stream = Gen::new(|co| async move {
-            let mut receiver = match client.bidi_streaming(inner, 32, 32).await {
-                Ok((sender, receiver)) => receiver,
+            let (mut sender, mut receiver) = match client.bidi_streaming(inner, 32, 32).await {
+                Ok(x) => x,
                 Err(cause) => {
                     co.yield_(AddProgressItem::Error(cause.into())).await;
                     return;
@@ -255,12 +244,15 @@ impl Blobs {
                     }
                 }
             };
-            // let send = async {
-            //     while let Some(item) = data.next().await {
-
-            //     }
-            // }
-            recv.await;
+            let send = async {
+                tokio::pin!(data);
+                while let Some(item) = data.next().await {
+                    sender.send(ImportByteStreamUpdate::Bytes(item?)).await?;
+                }
+                sender.send(ImportByteStreamUpdate::Done).await?;
+                anyhow::Ok(())
+            };
+            let _ = tokio::join!(send, recv);
         });
         AddProgress::new(self, stream)
     }
