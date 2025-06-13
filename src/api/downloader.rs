@@ -618,19 +618,19 @@ impl DialNode {
         let res = self
             .pool
             .endpoint()
-            .connect(self.id, &self.pool.alpn())
+            .connect(self.id, self.pool.alpn())
             .timeout(self.pool.0.connect_timeout)
             .await;
         match res {
             Ok(Ok(conn)) => {
                 info!("Connected to node {}", self.id);
                 *guard = SlotState::Connected(conn.clone());
-                return Ok(conn);
+                Ok(conn)
             }
             Ok(Err(e)) => {
                 warn!("Failed to connect to node {}: {}", self.id, e);
                 *guard = SlotState::AttemptFailed(SystemTime::now());
-                return Err(e);
+                Err(e)
             }
             Err(e) => {
                 warn!("Failed to connect to node {}: {}", self.id, e);

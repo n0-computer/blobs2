@@ -550,10 +550,10 @@ async fn two_nodes_hash_seq(
 ) -> TestResult<()> {
     let addr1 = r1.endpoint().node_addr().await?;
     let sizes = INTERESTING_SIZES;
-    let root = add_test_hash_seq(&store1, sizes).await?;
+    let root = add_test_hash_seq(store1, sizes).await?;
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     store2.remote().fetch(conn, root).await?;
-    check_presence(&store2, &sizes).await?;
+    check_presence(store2, &sizes).await?;
     Ok(())
 }
 
@@ -757,11 +757,11 @@ async fn export_ranges_smoke(store: &Store) -> TestResult {
         let tt = store.add_bytes(data.clone()).await?;
         let hash = tt.hash;
         let size = size as u64;
-        test_export_ranges(&store, hash, &data, 0..size).await?;
-        test_export_ranges(&store, hash, &data, 0..(size / 2)).await?;
-        test_export_ranges(&store, hash, &data, (size / 2)..size).await?;
-        test_export_ranges(&store, hash, &data, (size / 2)..(size + size / 2)).await?;
-        test_export_ranges(&store, hash, &data, size * 4..size * 5).await?;
+        test_export_ranges(store, hash, &data, 0..size).await?;
+        test_export_ranges(store, hash, &data, 0..(size / 2)).await?;
+        test_export_ranges(store, hash, &data, (size / 2)..size).await?;
+        test_export_ranges(store, hash, &data, (size / 2)..(size + size / 2)).await?;
+        test_export_ranges(store, hash, &data, size * 4..size * 5).await?;
     }
     Ok(())
 }

@@ -92,7 +92,7 @@ impl GetProgress {
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
             Err(GetError::LocalFailure(
-                anyhow::anyhow!("stream closed without result").into(),
+                anyhow::anyhow!("stream closed without result"),
             ))
         })
     }
@@ -472,8 +472,8 @@ impl Remote {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tx2 = tx.clone();
         let sink = TokioMpscSenderSink(tx)
-            .with_map(|offset| GetProgressItem::Progress(offset))
-            .with_map_err(|e| io::Error::other(e));
+            .with_map(GetProgressItem::Progress)
+            .with_map_err(io::Error::other);
         let this = self.clone();
         let fut = async move {
             let res = this.fetch_sink(conn, content, sink).await.into();
@@ -502,7 +502,7 @@ impl Remote {
         let local = self
             .local(content)
             .await
-            .map_err(|e| GetError::LocalFailure(e))?;
+            .map_err(GetError::LocalFailure)?;
         if local.is_complete() {
             return Ok(Default::default());
         }
@@ -510,7 +510,7 @@ impl Remote {
         let conn = conn
             .connection()
             .await
-            .map_err(|e| GetError::LocalFailure(e))?;
+            .map_err(GetError::LocalFailure)?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -550,8 +550,8 @@ impl Remote {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tx2 = tx.clone();
         let sink = TokioMpscSenderSink(tx)
-            .with_map(|offset| PushProgressItem::Progress(offset))
-            .with_map_err(|e| io::Error::other(e));
+            .with_map(PushProgressItem::Progress)
+            .with_map_err(io::Error::other);
         let this = self.clone();
         let fut = async move {
             let res = this.execute_push_sink(conn, request, sink).await.into();
@@ -626,8 +626,8 @@ impl Remote {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tx2 = tx.clone();
         let sink = TokioMpscSenderSink(tx)
-            .with_map(|offset| GetProgressItem::Progress(offset))
-            .with_map_err(|e| io::Error::other(e));
+            .with_map(GetProgressItem::Progress)
+            .with_map_err(io::Error::other);
         let this = self.clone();
         let fut = async move {
             let res = this.execute_get_sink(conn, request, sink).await.into();
@@ -713,8 +713,8 @@ impl Remote {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tx2 = tx.clone();
         let sink = TokioMpscSenderSink(tx)
-            .with_map(|offset| GetProgressItem::Progress(offset))
-            .with_map_err(|e| io::Error::other(e));
+            .with_map(GetProgressItem::Progress)
+            .with_map_err(io::Error::other);
         let this = self.clone();
         let fut = async move {
             let res = this.execute_get_many_sink(conn, request, sink).await.into();
@@ -866,7 +866,7 @@ async fn get_blob_ranges_impl(
     };
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
-    let mut handle = store
+    let handle = store
         .import_bao(hash, size, buffer_size)
         .await
         .map_err(|e| GetError::LocalFailure(e.into()))?;

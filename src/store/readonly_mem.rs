@@ -82,24 +82,24 @@ impl Actor {
                 .await
                 .ok();
             }
-            Command::ImportBytes(ImportBytesMsg { mut tx, .. }) => {
+            Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
-            Command::ImportByteStream(ImportByteStreamMsg { mut tx, .. }) => {
+            Command::ImportByteStream(ImportByteStreamMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
-            Command::ImportPath(ImportPathMsg { mut tx, .. }) => {
+            Command::ImportPath(ImportPathMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
             Command::Observe(ObserveMsg {
                 inner: ObserveRequest { hash },
-                mut tx,
+                tx,
                 ..
             }) => {
                 let size = self.data.get_mut(&hash).map(|x| x.data.len() as u64);
@@ -159,7 +159,7 @@ impl Actor {
                     .await
                     .ok();
             }
-            Command::ListBlobs(mut cmd) => {
+            Command::ListBlobs(cmd) => {
                 let hashes: Vec<Hash> = self.data.keys().cloned().collect();
                 self.tasks.spawn(async move {
                     for hash in hashes {

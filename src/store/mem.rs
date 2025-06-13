@@ -310,7 +310,7 @@ impl Actor {
                 cmd.tx.send(tts).await.ok();
             }
             Command::ListBlobs(cmd) => {
-                let ListBlobsMsg { mut tx, .. } = cmd;
+                let ListBlobsMsg { tx, .. } = cmd;
                 let blobs = self.state.data.keys().cloned().collect::<Vec<Hash>>();
                 self.spawn(async move {
                     for blob in blobs {
@@ -400,7 +400,7 @@ impl Actor {
     }
 
     async fn finish_import(&mut self, res: anyhow::Result<ImportEntry>) {
-        let mut import_data = match res {
+        let import_data = match res {
             Ok(entry) => entry,
             Err(e) => {
                 error!("import failed: {e}");
@@ -645,7 +645,7 @@ async fn import_bytes(
     data: Bytes,
     scope: Scope,
     format: BlobFormat,
-    mut tx: spsc::Sender<AddProgressItem>,
+    tx: spsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     tx.send(AddProgressItem::Size(data.len() as u64)).await?;
     tx.send(AddProgressItem::CopyDone).await?;
@@ -685,7 +685,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
                 format,
                 ..
             },
-        mut tx,
+        tx,
         ..
     } = cmd;
     let mut res = Vec::new();

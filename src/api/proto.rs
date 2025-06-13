@@ -552,6 +552,18 @@ pub enum ExportRangesItem {
     Error(super::Error),
 }
 
+impl From<super::Error> for ExportRangesItem {
+    fn from(e: super::Error) -> Self {
+        Self::Error(e)
+    }
+}
+
+impl From<Leaf> for ExportRangesItem {
+    fn from(leaf: Leaf) -> Self {
+        Self::Data(leaf)
+    }
+}
+
 /// Progress events for exporting to a local file.
 ///
 /// Exporting does not involve outboard computation, so the events are simpler

@@ -282,7 +282,7 @@ impl Blobs {
         trace!("{:?}", options);
         if options.hash == Hash::EMPTY {
             return ObserveProgress::new(async move {
-                let (mut tx, rx) = spsc::channel(1);
+                let (tx, rx) = spsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
                 Ok(rx)
             });
@@ -349,7 +349,7 @@ impl Blobs {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let options = ImportBaoOptions { hash, size };
-        let mut handle = self.import_bao_with_opts(options, 32).await?;
+        let handle = self.import_bao_with_opts(options, 32).await?;
         let driver = async move {
             let reader = loop {
                 match decoder.next().await {
@@ -363,7 +363,7 @@ impl Blobs {
             drop(handle.tx);
             io::Result::Ok(reader)
         };
-        let fut = async move { handle.rx.await.map_err(|e| io::Error::other(e))? };
+        let fut = async move { handle.rx.await.map_err(io::Error::other)? };
         let (reader, res) = tokio::join!(driver, fut);
         res?;
         Ok(reader?)
