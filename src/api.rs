@@ -237,7 +237,7 @@ impl Store {
                     Request::BlobStatus(msg) => local.send((msg, tx)),
 
                     Request::ImportBytes(msg) => local.send((msg, tx)),
-                    Request::ImportByteStream(msg) => local.send((msg, tx)),
+                    Request::ImportByteStream(msg) => local.send((msg, tx, rx)),
                     Request::ImportBao(msg) => local.send((msg, tx, rx)),
                     Request::ImportPath(msg) => local.send((msg, tx)),
                     Request::ListBlobs(msg) => local.send((msg, tx)),

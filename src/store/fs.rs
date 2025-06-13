@@ -598,7 +598,7 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.temp_tags.end_scope(cmd.scope);
             }
-            InternalCommand::FinishImport(cmd) => {
+            InternalCommand::FinishImport(mut cmd) => {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
@@ -746,7 +746,7 @@ async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) 
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
+async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
     let res = match finish_import_impl(cmd.inner, ctx).await {
         Ok(()) => {
             // for a remote call, we can't have the on_drop callback, so we have to leak the temp tag

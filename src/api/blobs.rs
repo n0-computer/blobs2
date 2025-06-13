@@ -25,7 +25,7 @@ use bytes::Bytes;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::channel::{oneshot, spsc};
-use n0_future::{Stream, StreamExt, future};
+use n0_future::{Stream, StreamExt, future, stream};
 use quinn::SendStream;
 use range_collections::{RangeSet2, range_set::RangeSetRange};
 use ref_cast::RefCast;
@@ -146,7 +146,27 @@ impl Blobs {
 
     fn add_bytes_impl(&self, options: ImportBytesRequest) -> AddProgress {
         trace!("{options:?}");
-        AddProgress::new(self, self.client.server_streaming(options, 32))
+        let this = self.clone();
+        let stream = Gen::new(|co| async move {
+            let mut receiver = match this.client.server_streaming(options, 32).await {
+                Ok(receiver) => receiver,
+                Err(cause) => {
+                    co.yield_(AddProgressItem::Error(cause.into())).await;
+                    return;
+                }
+            };
+            loop {
+                match receiver.recv().await {
+                    Ok(Some(item)) => co.yield_(item).await,
+                    Err(cause) => {
+                        co.yield_(AddProgressItem::Error(cause.into())).await;
+                        break;
+                    }
+                    Ok(None) => break,
+                }
+            }
+        });
+        AddProgress::new(self, stream)
     }
 
     pub fn add_path_with_opts(&self, options: impl Into<AddPathOptions>) -> AddProgress {
@@ -162,10 +182,26 @@ impl Blobs {
     fn add_path_with_opts_impl(&self, options: ImportPathRequest) -> AddProgress {
         trace!("{:?}", options);
         let client = self.client.clone();
-        AddProgress::new(
-            self,
-            async move { client.server_streaming(options, 32).await },
-        )
+        let stream = Gen::new(|co| async move {
+            let mut receiver = match client.server_streaming(options, 32).await {
+                Ok(receiver) => receiver,
+                Err(cause) => {
+                    co.yield_(AddProgressItem::Error(cause.into())).await;
+                    return;
+                }
+            };
+            loop {
+                match receiver.recv().await {
+                    Ok(Some(item)) => co.yield_(item).await,
+                    Err(cause) => {
+                        co.yield_(AddProgressItem::Error(cause.into())).await;
+                        break;
+                    }
+                    Ok(None) => break,
+                }
+            }
+        });
+        AddProgress::new(self, stream)
     }
 
     pub fn add_path(&self, path: impl AsRef<Path>) -> AddProgress {
@@ -198,7 +234,35 @@ impl Blobs {
             format: crate::BlobFormat::Raw,
             scope: Scope::default(),
         };
-        AddProgress::new(self, self.client.server_streaming(inner, 32))
+        let client = self.client.clone();
+        let stream = Gen::new(|co| async move {
+            let mut receiver = match client.bidi_streaming(inner, 32, 32).await {
+                Ok((sender, receiver)) => receiver,
+                Err(cause) => {
+                    co.yield_(AddProgressItem::Error(cause.into())).await;
+                    return;
+                }
+            };
+            let recv = async {
+                loop {
+                    match receiver.recv().await {
+                        Ok(Some(item)) => co.yield_(item).await,
+                        Err(cause) => {
+                            co.yield_(AddProgressItem::Error(cause.into())).await;
+                            break;
+                        }
+                        Ok(None) => break,
+                    }
+                }
+            };
+            // let send = async {
+            //     while let Some(item) = data.next().await {
+
+            //     }
+            // }
+            recv.await;
+        });
+        AddProgress::new(self, stream)
     }
 
     pub fn export_ranges(
@@ -282,7 +346,7 @@ impl Blobs {
         trace!("{:?}", options);
         if options.hash == Hash::EMPTY {
             return ObserveProgress::new(async move {
-                let (tx, rx) = spsc::channel(1);
+                let (mut tx, rx) = spsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
                 Ok(rx)
             });
@@ -349,7 +413,7 @@ impl Blobs {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let options = ImportBaoOptions { hash, size };
-        let handle = self.import_bao_with_opts(options, 32).await?;
+        let mut handle = self.import_bao_with_opts(options, 32).await?;
         let driver = async move {
             let reader = loop {
                 match decoder.next().await {
@@ -440,7 +504,7 @@ impl<'a> BatchAddProgress<'a> {
         self.0.with_tag().await
     }
 
-    pub async fn stream(self) -> RequestResult<impl Stream<Item = AddProgressItem>> {
+    pub async fn stream(self) -> impl Stream<Item = AddProgressItem> {
         self.0.stream().await
     }
 
@@ -524,7 +588,7 @@ pub struct AddPathOptions {
 /// If you want access to the stream, you can use the [`AddResult::stream`] method.
 pub struct AddProgress<'a> {
     blobs: &'a Blobs,
-    inner: future::Boxed<irpc::Result<spsc::Receiver<AddProgressItem>>>,
+    inner: stream::Boxed<AddProgressItem>,
 }
 
 impl<'a> IntoFuture for AddProgress<'a> {
@@ -538,32 +602,23 @@ impl<'a> IntoFuture for AddProgress<'a> {
 }
 
 impl<'a> AddProgress<'a> {
-    fn new(
-        blobs: &'a Blobs,
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<AddProgressItem>>> + Send + 'static,
-    ) -> Self {
+    fn new(blobs: &'a Blobs, stream: impl Stream<Item = AddProgressItem> + Send + 'static) -> Self {
         Self {
             blobs,
-            inner: Box::pin(fut),
+            inner: Box::pin(stream),
         }
     }
 
     pub async fn temp_tag(self) -> RequestResult<TempTag> {
-        let mut rx = self.inner.await?;
-        loop {
-            match rx.recv().await {
-                Ok(Some(AddProgressItem::Done(tt))) => break Ok(tt),
-                Ok(Some(AddProgressItem::Error(cause))) => {
-                    trace!("got explicit error: {:?}", cause);
-                    break Err(super::Error::other(cause).into());
-                }
-                Err(cause) => {
-                    trace!("error receiving import progress: {:?}", cause);
-                    return Err(cause.into());
-                }
+        let mut stream = self.inner;
+        while let Some(item) = stream.next().await {
+            match item {
+                AddProgressItem::Done(tt) => return Ok(tt),
+                AddProgressItem::Error(e) => return Err(e.into()),
                 _ => {}
             }
         }
+        Err(super::Error::other("unexpected end of stream").into())
     }
 
     pub async fn with_named_tag(self, name: impl AsRef<[u8]>) -> RequestResult<HashAndFormat> {
@@ -587,13 +642,8 @@ impl<'a> AddProgress<'a> {
         Ok(TagInfo { name, hash, format })
     }
 
-    pub async fn stream(self) -> RequestResult<impl Stream<Item = AddProgressItem>> {
-        let mut rx = self.inner.await?;
-        Ok(Gen::new(|co| async move {
-            while let Ok(Some(item)) = rx.recv().await {
-                co.yield_(item).await;
-            }
-        }))
+    pub async fn stream(self) -> impl Stream<Item = AddProgressItem> {
+        self.inner
     }
 }
 

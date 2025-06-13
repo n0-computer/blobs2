@@ -38,8 +38,9 @@ use crate::{
     api::{
         blobs::{AddProgressItem, ImportMode},
         proto::{
-            HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportBytesMsg,
-            ImportBytesRequest, ImportPathMsg, ImportPathRequest, Scope, StoreService,
+            HashSpecific, ImportByteStreamMsg, ImportByteStreamRequest, ImportByteStreamUpdate,
+            ImportBytesMsg, ImportBytesRequest, ImportPathMsg, ImportPathRequest, Scope,
+            StoreService,
         },
     },
     store::{
@@ -161,6 +162,10 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
     if ctx.options.is_inlined_all(size) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
+        let (mut tx, rx) = spsc::channel(1);
+        tx.send(ImportByteStreamUpdate::Bytes(cmd.data.clone()))
+            .await
+            .unwrap();
         let cmd = ImportByteStreamMsg {
             inner: ImportByteStreamRequest {
                 format: cmd.format,
@@ -168,7 +173,7 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
                 data: vec![cmd.inner.data],
             },
             tx: cmd.tx,
-            rx: NoReceiver,
+            rx,
             span: tracing::Span::current(),
         };
         import_byte_stream_outer(cmd, ctx).await;
@@ -238,7 +243,7 @@ pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<Tas
             let entry = ImportEntryMsg {
                 inner: entry,
                 tx: cmd.tx,
-                rx: cmd.rx,
+                rx: NoReceiver,
                 span: cmd.span,
             };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();

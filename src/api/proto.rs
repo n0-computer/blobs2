@@ -109,7 +109,7 @@ pub enum Request {
     BlobStatus(BlobStatusRequest),
     #[rpc(tx = spsc::Sender<AddProgressItem>)]
     ImportBytes(ImportBytesRequest),
-    #[rpc(tx = spsc::Sender<AddProgressItem>)]
+    #[rpc(rx = spsc::Receiver<ImportByteStreamUpdate>, tx = spsc::Sender<AddProgressItem>)]
     ImportByteStream(ImportByteStreamRequest),
     #[rpc(tx = spsc::Sender<AddProgressItem>)]
     ImportPath(ImportPathRequest),
@@ -247,6 +247,12 @@ pub struct ImportByteStreamRequest {
     pub format: BlobFormat,
     pub data: Vec<Bytes>,
     pub scope: Scope,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ImportByteStreamUpdate {
+    Bytes(Bytes),
+    Done,
 }
 
 /// Options for a list operation.

@@ -91,9 +91,9 @@ impl GetProgress {
 
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
-            Err(GetError::LocalFailure(
-                anyhow::anyhow!("stream closed without result"),
-            ))
+            Err(GetError::LocalFailure(anyhow::anyhow!(
+                "stream closed without result"
+            )))
         })
     }
 }
@@ -499,18 +499,12 @@ impl Remote {
         progress: impl Sink<u64, Error = io::Error>,
     ) -> GetResult<Stats> {
         let content = content.into();
-        let local = self
-            .local(content)
-            .await
-            .map_err(GetError::LocalFailure)?;
+        let local = self.local(content).await.map_err(GetError::LocalFailure)?;
         if local.is_complete() {
             return Ok(Default::default());
         }
         let request = local.missing();
-        let conn = conn
-            .connection()
-            .await
-            .map_err(GetError::LocalFailure)?;
+        let conn = conn.connection().await.map_err(GetError::LocalFailure)?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -866,7 +860,7 @@ async fn get_blob_ranges_impl(
     };
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
-    let handle = store
+    let mut handle = store
         .import_bao(hash, size, buffer_size)
         .await
         .map_err(|e| GetError::LocalFailure(e.into()))?;
