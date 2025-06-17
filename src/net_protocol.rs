@@ -38,9 +38,12 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use anyhow::Result;
-use iroh::{Endpoint, endpoint::Connection, protocol::ProtocolHandler};
-use n0_future::future::Boxed as BoxedFuture;
+use iroh::{
+    Endpoint,
+    endpoint::Connection,
+    protocol::{AcceptError, ProtocolHandler},
+};
+use n0_watcher::Watcher;
 use tokio::sync::mpsc;
 use tracing::error;
 
@@ -89,14 +92,17 @@ impl Blobs {
     /// just a convenience method to create a ticket from content and the address of this node.
     pub async fn ticket(&self, content: impl Into<HashAndFormat>) -> anyhow::Result<BlobTicket> {
         let content = content.into();
-        let addr = self.inner.endpoint.node_addr().await?;
+        let addr = self.inner.endpoint.node_addr().initialized().await?;
         let ticket = BlobTicket::new(addr, content.hash, content.format);
         Ok(ticket)
     }
 }
 
 impl ProtocolHandler for Blobs {
-    fn accept(&self, conn: Connection) -> BoxedFuture<Result<()>> {
+    fn accept(
+        &self,
+        conn: Connection,
+    ) -> impl Future<Output = std::result::Result<(), AcceptError>> + Send {
         let store = self.store().clone();
         let events = self.inner.events.clone();
 
@@ -106,7 +112,7 @@ impl ProtocolHandler for Blobs {
         })
     }
 
-    fn shutdown(&self) -> BoxedFuture<()> {
+    fn shutdown(&self) -> impl Future<Output = ()> + Send {
         let store = self.store().clone();
         Box::pin(async move {
             if let Err(cause) = store.shutdown().await {

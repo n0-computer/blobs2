@@ -11,6 +11,7 @@ derive_more = { version = "2.0.1", features = ["from", "try_from", "into", "debu
 futures-lite = "2.6.0"
 quinn = { package = "iroh-quinn", version = "0.13.0" }
 n0-future = "0.1.2"
+n0-watcher = "0.2.0"
 range-collections = { version = "0.4.6", features = ["serde"] }
 redb = "2.4.0"
 smallvec = { version = "1", features = ["serde", "const_new"] }
@@ -28,10 +29,10 @@ chrono = "0.4.39"
 nested_enum_utils = "0.1.0"
 ref-cast = "1.0.24"
 arrayvec = "0.7.6"
-iroh = "0.35.0"
+iroh = "0.35"
 self_cell = "1.1.0"
 genawaiter = { version = "0.99.1", features = ["futures03"] }
-iroh-base = "0.35.0"
+iroh-base = "0.35"
 reflink-copy = "0.1.24"
 irpc = { version = "0.4.0", features = ["rpc", "quinn_endpoint_setup", "message_spans", "stream", "derive"], default-features = false }
 iroh-metrics = { version = "0.32.0" }
@@ -56,3 +57,7 @@ walkdir = "2.5.0"
 hide-proto-docs = []
 metrics = []
 default = ["hide-proto-docs"]
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
+iroh-base = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }

@@ -253,7 +253,7 @@ pub mod fsm {
         RequestTooBig,
         /// Error when writing the request to the [`SendStream`].
         #[error("write: {0}")]
-        Write(#[from] quinn::WriteError),
+        Write(#[from] iroh::endpoint::WriteError),
         /// Quic connection is closed.
         #[error("closed")]
         Closed(#[from] quinn::ClosedStream),

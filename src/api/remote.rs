@@ -2,9 +2,9 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
+use iroh::endpoint::SendStream;
 use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
 use n0_future::{Stream, StreamExt, io};
-use quinn::SendStream;
 use ref_cast::RefCast;
 
 use super::blobs::Bitfield;
