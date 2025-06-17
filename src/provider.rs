@@ -732,7 +732,7 @@ impl<R> CountingReader<R> {
     }
 }
 
-impl CountingReader<&mut quinn::RecvStream> {
+impl CountingReader<&mut iroh::endpoint::RecvStream> {
     pub async fn read_to_end_as<T: DeserializeOwned>(&mut self, max_size: usize) -> io::Result<T> {
         let data = self
             .inner
