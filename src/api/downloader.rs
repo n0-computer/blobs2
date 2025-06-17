@@ -630,7 +630,7 @@ impl DialNode {
             Ok(Err(e)) => {
                 warn!("Failed to connect to node {}: {}", self.id, e);
                 *guard = SlotState::AttemptFailed(SystemTime::now());
-                Err(e)
+                Err(e.into())
             }
             Err(e) => {
                 warn!("Failed to connect to node {}: {}", self.id, e);
@@ -690,6 +690,7 @@ mod tests {
 
     use bao_tree::ChunkRanges;
     use n0_future::StreamExt;
+    use n0_watcher::Watcher;
     use testresult::TestResult;
 
     use crate::{
@@ -710,9 +711,9 @@ mod tests {
         let (r3, store3, _) = node_test_setup_fs(testdir.path().join("c")).await?;
         let tt1 = store1.add_slice("hello world").await?;
         let tt2 = store2.add_slice("hello world 2").await?;
-        let node1_addr = r1.endpoint().node_addr().await?;
+        let node1_addr = r1.endpoint().node_addr().initialized().await?;
         let node1_id = node1_addr.node_id;
-        let node2_addr = r2.endpoint().node_addr().await?;
+        let node2_addr = r2.endpoint().node_addr().initialized().await?;
         let node2_id = node2_addr.node_id;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
@@ -749,9 +750,9 @@ mod tests {
                 format: crate::BlobFormat::HashSeq,
             })
             .await?;
-        let node1_addr = r1.endpoint().node_addr().await?;
+        let node1_addr = r1.endpoint().node_addr().initialized().await?;
         let node1_id = node1_addr.node_id;
-        let node2_addr = r2.endpoint().node_addr().await?;
+        let node2_addr = r2.endpoint().node_addr().initialized().await?;
         let node2_id = node2_addr.node_id;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;
@@ -818,9 +819,9 @@ mod tests {
                 format: crate::BlobFormat::HashSeq,
             })
             .await?;
-        let node1_addr = r1.endpoint().node_addr().await?;
+        let node1_addr = r1.endpoint().node_addr().initialized().await?;
         let node1_id = node1_addr.node_id;
-        let node2_addr = r2.endpoint().node_addr().await?;
+        let node2_addr = r2.endpoint().node_addr().initialized().await?;
         let node2_id = node2_addr.node_id;
         let swarm = Downloader::new(&store3, r3.endpoint());
         r3.endpoint().add_node_addr(node1_addr.clone())?;

@@ -437,7 +437,7 @@ pub enum RequestType {
 
 impl Request {
     pub async fn read_async(
-        reader: &mut CountingReader<&mut quinn::RecvStream>,
+        reader: &mut CountingReader<&mut iroh::endpoint::RecvStream>,
     ) -> io::Result<Self> {
         let request_type = reader.read_u8().await?;
         let request_type: RequestType = postcard::from_bytes(std::slice::from_ref(&request_type))

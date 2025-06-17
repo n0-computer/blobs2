@@ -430,7 +430,7 @@ impl Blobs {
         &self,
         hash: Hash,
         ranges: ChunkRanges,
-        stream: &mut quinn::RecvStream,
+        stream: &mut iroh::endpoint::RecvStream,
     ) -> RequestResult<()> {
         let reader = TokioStreamReader::new(stream);
         self.import_bao_reader(hash, ranges, reader).await?;
