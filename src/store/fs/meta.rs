@@ -10,8 +10,11 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
-use irpc::channel::mpsc;
+use irpc::channel::spsc;
+use n0_snafu::SpanTrace;
+use nested_enum_utils::common_fields;
 use redb::{Database, DatabaseError, ReadableTable};
+use snafu::{Backtrace, Snafu};
 use tokio::pin;
 
 use crate::{
@@ -46,21 +49,28 @@ use crate::store::{Hash, IROH_BLOCK_SIZE, util::Tag};
 ///
 /// What can go wrong are various things with redb, as well as io errors related
 /// to files other than redb.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, thiserror::Error)]
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: n0_snafu::SpanTrace,
+})]
+#[allow(missing_docs)]
+#[derive(Debug, Snafu)]
+#[non_exhaustive]
+#[derive(Debug, snafu::Error)]
 pub enum ActorError {
-    #[error("table error: {0}")]
-    Table(#[from] redb::TableError),
-    #[error("database error: {0}")]
-    Database(#[from] redb::DatabaseError),
-    #[error("transaction error: {0}")]
-    Transaction(#[from] redb::TransactionError),
-    #[error("commit error: {0}")]
-    Commit(#[from] redb::CommitError),
-    #[error("storage error: {0}")]
-    Storage(#[from] redb::StorageError),
-    #[error("inconsistent database state: {0}")]
-    Inconsistent(String),
+    #[snafu(display("table error: {source}"))]
+    Table { source: redb::TableError },
+    #[snafu(display("database error: {source}"))]
+    Database { source: redb::DatabaseError },
+    #[snafu(display("transaction error: {source}"))]
+    Transaction { source: redb::TransactionError },
+    #[snafu(display("commit error: {source}"))]
+    Commit { source: redb::CommitError },
+    #[snafu(display("storage error: {source}"))]
+    Storage { source: redb::StorageError },
+    #[snafu(display("inconsistent database state: {source}"))]
+    Inconsistent { source: String },
 }
 
 impl From<ActorError> for io::Error {

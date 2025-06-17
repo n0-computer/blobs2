@@ -11,11 +11,13 @@ derive_more = { version = "2.0.1", features = ["from", "try_from", "into", "debu
 futures-lite = "2.6.0"
 quinn = { package = "iroh-quinn", version = "0.13.0" }
 n0-future = "0.1.2"
+n0-snafu = "0.2.0"
 n0-watcher = "0.2.0"
+nested_enum_utils = "0.2.1"
 range-collections = { version = "0.4.6", features = ["serde"] }
 redb = "2.4.0"
 smallvec = { version = "1", features = ["serde", "const_new"] }
-thiserror = "2.0.11"
+snafu = "0.8.5"
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-util = { version = "0.7.13", features = ["full"] }
 tracing = "0.1.41"
@@ -26,7 +28,6 @@ serde = "1.0.217"
 postcard = { version = "1.1.1", features = ["experimental-derive", "use-std"] }
 data-encoding = "2.8.0"
 chrono = "0.4.39"
-nested_enum_utils = "0.1.0"
 ref-cast = "1.0.24"
 arrayvec = "0.7.6"
 iroh = "0.35"

@@ -243,23 +243,33 @@ pub mod fsm {
     }
 
     /// Error that you can get from [`AtConnected::next`]
-    #[derive(Debug, thiserror::Error)]
+    #[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: n0_snafu::SpanTrace,
+})]
+    #[allow(missing_docs)]
+    #[derive(Debug, Snafu)]
+    #[non_exhaustive]
+    #[derive(Debug, snafu::Error)]
     pub enum ConnectedNextError {
         /// Error when serializing the request
-        #[error("postcard ser: {0}")]
-        PostcardSer(postcard::Error),
+        #[snafu(display("postcard ser: {source}"))]
+        PostcardSer { source: postcard::Error },
         /// The serialized request is too long to be sent
-        #[error("request too big")]
+        #[snafu(display("request too big"))]
         RequestTooBig,
         /// Error when writing the request to the [`SendStream`].
-        #[error("write: {0}")]
-        Write(#[from] iroh::endpoint::WriteError),
+        #[snafu(display("write: {source}"))]
+        Write { source: iroh::endpoint::WriteError },
         /// Quic connection is closed.
-        #[error("closed")]
-        Closed(#[from] quinn::ClosedStream),
+        #[snafu(display("closed"))]
+        Closed {
+            source: iroh::endpoint::ClosedStream,
+        },
         /// A generic io error
-        #[error("io {0}")]
-        Io(io::Error),
+        #[snafu(transparent)]
+        Io { source: io::Error },
     }
 
     impl ConnectedNextError {
