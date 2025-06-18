@@ -15,7 +15,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Seek, Write},
     path::PathBuf,
-    sync::{Arc, mpsc::RecvError},
+    sync::Arc,
 };
 
 use bao_tree::{
@@ -163,21 +163,12 @@ pub async fn import_bytes(cmd: ImportBytesMsg, ctx: Arc<TaskContext>) {
     if ctx.options.is_inlined_all(size) {
         import_bytes_tiny_outer(cmd, ctx).await;
     } else {
-        let (mut tx, rx) = spsc::channel(2);
-        tx.send(ImportByteStreamUpdate::Bytes(cmd.data.clone()))
-            .await
-            .unwrap();
-        tx.send(ImportByteStreamUpdate::Done).await.unwrap();
-        let cmd = ImportByteStreamMsg {
-            inner: ImportByteStreamRequest {
-                format: cmd.format,
-                scope: cmd.scope,
-            },
-            tx: cmd.tx,
-            rx,
-            span: tracing::Span::current(),
+        let request = ImportByteStreamRequest {
+            format: cmd.format,
+            scope: cmd.scope,
         };
-        import_byte_stream_outer(cmd, ctx).await;
+        let stream = stream::iter(Some(Ok(cmd.data.clone())));
+        import_byte_stream_mid(request, cmd.tx, cmd.span, stream, ctx).await;
     }
 }
 
@@ -235,7 +226,8 @@ async fn import_bytes_tiny_impl(
 
 #[instrument(skip_all)]
 pub async fn import_byte_stream(cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>) {
-    import_byte_stream_outer(cmd, ctx).await;
+    let stream = into_stream(cmd.rx);
+    import_byte_stream_mid(cmd.inner, cmd.tx, cmd.span, stream, ctx).await
 }
 
 fn into_stream(
@@ -263,20 +255,25 @@ fn into_stream(
     })
 }
 
-pub async fn import_byte_stream_outer(mut cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>) {
-    let stream = into_stream(cmd.rx);
-    match import_byte_stream_impl(cmd.inner, &mut cmd.tx, stream, ctx.options.clone()).await {
+async fn import_byte_stream_mid(
+    request: ImportByteStreamRequest,
+    mut tx: spsc::Sender<AddProgressItem>,
+    span: tracing::Span,
+    stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
+    ctx: Arc<TaskContext>,
+) {
+    match import_byte_stream_impl(request, &mut tx, stream, ctx.options.clone()).await {
         Ok(entry) => {
             let entry = ImportEntryMsg {
                 inner: entry,
-                tx: cmd.tx,
+                tx,
                 rx: NoReceiver,
-                span: cmd.span,
+                span,
             };
             ctx.internal_cmd_tx.send(entry.into()).await.ok();
         }
         Err(cause) => {
-            cmd.tx.send(cause.into()).await.ok();
+            tx.send(cause.into()).await.ok();
         }
     }
 }

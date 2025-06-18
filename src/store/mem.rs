@@ -27,7 +27,7 @@ use bao_tree::{
 };
 use bytes::Bytes;
 use irpc::channel::spsc;
-use n0_future::{StreamExt, future::yield_now};
+use n0_future::future::yield_now;
 use range_collections::range_set::RangeSetRange;
 use tokio::{
     io::AsyncReadExt,
@@ -43,15 +43,14 @@ use crate::{
         self, ApiClient,
         blobs::{AddProgressItem, Bitfield, BlobStatus, ExportProgressItem},
         proto::{
-            BatchMsg, BatchResponse, BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest,
-            BoxedByteStream, Command, CreateTagMsg, CreateTagRequest, CreateTempTagMsg,
-            DeleteBlobsMsg, DeleteTagsMsg, DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest,
-            ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
-            ExportRangesRequest, ImportBaoMsg, ImportBaoRequest, ImportByteStreamMsg,
-            ImportByteStreamUpdate, ImportBytesMsg, ImportBytesRequest, ImportPathMsg,
-            ImportPathRequest, ListBlobsMsg, ListTagsMsg, ListTagsRequest, ObserveMsg,
-            ObserveRequest, RenameTagMsg, RenameTagRequest, Scope, SetTagMsg, SetTagRequest,
-            ShutdownMsg, SyncDbMsg,
+            BatchMsg, BatchResponse, BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest, Command,
+            CreateTagMsg, CreateTagRequest, CreateTempTagMsg, DeleteBlobsMsg, DeleteTagsMsg,
+            DeleteTagsRequest, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
+            ExportRangesItem, ExportRangesMsg, ExportRangesRequest, ImportBaoMsg, ImportBaoRequest,
+            ImportByteStreamMsg, ImportByteStreamUpdate, ImportBytesMsg, ImportBytesRequest,
+            ImportPathMsg, ImportPathRequest, ListBlobsMsg, ListTagsMsg, ListTagsRequest,
+            ObserveMsg, ObserveRequest, RenameTagMsg, RenameTagRequest, Scope, SetTagMsg,
+            SetTagRequest, ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
     },
