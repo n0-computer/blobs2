@@ -24,8 +24,7 @@
 //! // create a router and add the blobs protocol handler
 //! let router = Router::builder(endpoint)
 //!     .accept(iroh_blobs::ALPN, blobs.clone())
-//!     .spawn()
-//!     .await;
+//!     .spawn();
 //!
 //! // this data is now globally available using the ticket
 //! let ticket = blobs.ticket(t).await?;

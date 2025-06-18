@@ -129,10 +129,42 @@ pub mod outboard_with_progress {
         },
         iter::BaoChunk,
     };
-    use blake3::guts::parent_cv;
     use smallvec::SmallVec;
 
     use super::sink::Sink;
+
+    fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> blake3::Hash {
+        use blake3::hazmat::{ChainingValue, HasherExt};
+        if is_root {
+            debug_assert!(start_chunk == 0);
+            blake3::hash(data)
+        } else {
+            let mut hasher = blake3::Hasher::new();
+            hasher.set_input_offset(start_chunk * 1024);
+            hasher.update(data);
+            let non_root_hash: ChainingValue = hasher.finalize_non_root();
+            blake3::Hash::from(non_root_hash)
+        }
+    }
+
+    fn parent_cv(
+        left_child: &blake3::Hash,
+        right_child: &blake3::Hash,
+        is_root: bool,
+    ) -> blake3::Hash {
+        use blake3::hazmat::{ChainingValue, Mode, merge_subtrees_non_root, merge_subtrees_root};
+        let left_child: ChainingValue = *left_child.as_bytes();
+        let right_child: ChainingValue = *right_child.as_bytes();
+        if is_root {
+            merge_subtrees_root(&left_child, &right_child, Mode::Hash)
+        } else {
+            blake3::Hash::from(merge_subtrees_non_root(
+                &left_child,
+                &right_child,
+                Mode::Hash,
+            ))
+        }
+    }
 
     pub async fn init_outboard<R, W, P>(
         data: R,
@@ -189,7 +221,7 @@ pub mod outboard_with_progress {
                     }
                     let buf = &mut buffer[..size];
                     data.read_exact(buf)?;
-                    let hash = bao_tree::hash_subtree(start_chunk.0, buf, is_root);
+                    let hash = hash_subtree(start_chunk.0, buf, is_root);
                     stack.push(hash);
                 }
             }

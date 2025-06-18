@@ -491,10 +491,7 @@ pub async fn node_test_setup_with_events_fs(
     let store = crate::store::fs::FsStore::load(&db_path).await?;
     let ep = Endpoint::builder().bind().await?;
     let blobs = Blobs::new(&store, ep.clone(), events);
-    let router = Router::builder(ep)
-        .accept(crate::ALPN, blobs)
-        .spawn()
-        .await?;
+    let router = Router::builder(ep).accept(crate::ALPN, blobs).spawn();
     Ok((router, store, db_path))
 }
 
@@ -508,10 +505,7 @@ pub async fn node_test_setup_with_events_mem(
     let store = MemStore::new();
     let ep = Endpoint::builder().bind().await?;
     let blobs = Blobs::new(&store, ep.clone(), events);
-    let router = Router::builder(ep)
-        .accept(crate::ALPN, blobs)
-        .spawn()
-        .await?;
+    let router = Router::builder(ep).accept(crate::ALPN, blobs).spawn();
     Ok((router, store))
 }
 
@@ -610,8 +604,7 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let blobs = crate::net_protocol::Blobs::new(&store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
-        .spawn()
-        .await?;
+        .spawn();
     let addr1 = r1.endpoint().node_addr().await?;
     info!("node addr: {addr1:?}");
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
@@ -642,8 +635,7 @@ async fn node_serve_blobs() -> TestResult<()> {
     let blobs = crate::net_protocol::Blobs::new(&store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
-        .spawn()
-        .await?;
+        .spawn();
     let addr1 = r1.endpoint().node_addr().await?;
     info!("node addr: {addr1:?}");
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
@@ -685,8 +677,7 @@ async fn node_smoke(store: &Store) -> TestResult<()> {
     let blobs = crate::net_protocol::Blobs::new(store, endpoint.clone(), None);
     let r1 = Router::builder(endpoint)
         .accept(crate::protocol::ALPN, blobs)
-        .spawn()
-        .await?;
+        .spawn();
     let addr1 = r1.endpoint().node_addr().await?;
     info!("node addr: {addr1:?}");
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
