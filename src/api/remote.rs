@@ -860,7 +860,7 @@ async fn get_blob_ranges_impl(
     };
     let buffer_size = get_buffer_size(size);
     trace!(%size, %buffer_size, "get blob");
-    let mut handle = store
+    let handle = store
         .import_bao(hash, size, buffer_size)
         .await
         .map_err(|e| GetError::LocalFailure(e.into()))?;

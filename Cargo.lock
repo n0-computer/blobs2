@@ -1680,14 +1680,14 @@ dependencies = [
  "instant",
  "iroh-base",
  "iroh-metrics 0.34.0",
- "iroh-quinn 0.14.0",
+ "iroh-quinn",
  "iroh-quinn-proto",
  "iroh-quinn-udp",
  "iroh-relay",
  "n0-future",
  "n0-snafu",
  "n0-watcher",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "netdev",
  "netwatch 0.6.0",
  "pin-project",
@@ -1727,7 +1727,7 @@ dependencies = [
  "derive_more 1.0.0",
  "ed25519-dalek",
  "n0-snafu",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "postcard",
  "rand_core 0.6.4",
  "serde",
@@ -1756,14 +1756,14 @@ dependencies = [
  "iroh-base",
  "iroh-io",
  "iroh-metrics 0.32.0",
- "iroh-quinn 0.13.0",
+ "iroh-quinn",
  "iroh-test",
  "irpc",
  "irpc-derive",
  "n0-future",
  "n0-snafu",
  "n0-watcher",
- "nested_enum_utils 0.1.0",
+ "nested_enum_utils",
  "postcard",
  "proptest",
  "rand 0.8.5",
@@ -1780,6 +1780,7 @@ dependencies = [
  "tempfile",
  "test-strategy",
  "testresult",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1838,26 +1839,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "iroh-quinn"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c6245c9ed906506ab9185e8d7f64857129aee4f935e899f398a3bd3b70338d"
-dependencies = [
- "bytes",
- "cfg_aliases",
- "iroh-quinn-proto",
- "iroh-quinn-udp",
- "pin-project-lite",
- "rustc-hash",
- "rustls",
- "socket2",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "web-time",
 ]
 
 [[package]]
@@ -1932,12 +1913,12 @@ dependencies = [
  "hyper-util",
  "iroh-base",
  "iroh-metrics 0.34.0",
- "iroh-quinn 0.14.0",
+ "iroh-quinn",
  "iroh-quinn-proto",
  "lru",
  "n0-future",
  "n0-snafu",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "num_enum",
  "pin-project",
  "pkarr",
@@ -1977,14 +1958,13 @@ dependencies = [
 
 [[package]]
 name = "irpc"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e645d8bb696998f4610287e650d2cbd09fe15b3668231de6c8d185156dc6e8a"
+version = "0.4.0"
+source = "git+https://github.com/n0-computer/irpc.git?branch=iroh-quinn-latest#04f7fa33f878496f8117776c675aa000f01fc50c"
 dependencies = [
  "anyhow",
  "futures-buffered",
  "futures-util",
- "iroh-quinn 0.13.0",
+ "iroh-quinn",
  "n0-future",
  "postcard",
  "rcgen",
@@ -1999,9 +1979,8 @@ dependencies = [
 
 [[package]]
 name = "irpc-derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7fa55af7f664a6dd2b790f422009a45d68620f9a63e43dc2da9fc1e1a4c8e01"
+version = "0.4.0"
+source = "git+https://github.com/n0-computer/irpc.git?branch=iroh-quinn-latest#04f7fa33f878496f8117776c675aa000f01fc50c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2233,18 +2212,6 @@ dependencies = [
 
 [[package]]
 name = "nested_enum_utils"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f256ef99e7ac37428ef98c89bef9d84b590172de4bbfbe81b68a4cd3abadb32"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "nested_enum_utils"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43fa9161ed44d30e9702fe42bd78693bceac0fed02f647da749f36109023d3a3"
@@ -2365,7 +2332,7 @@ dependencies = [
  "js-sys",
  "libc",
  "n0-future",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "netdev",
  "netlink-packet-core",
  "netlink-packet-route 0.23.0",
@@ -2399,7 +2366,7 @@ dependencies = [
  "libc",
  "n0-future",
  "n0-watcher",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "netdev",
  "netlink-packet-core",
  "netlink-packet-route 0.23.0",
@@ -2790,7 +2757,7 @@ dependencies = [
  "igd-next",
  "iroh-metrics 0.34.0",
  "libc",
- "nested_enum_utils 0.2.2",
+ "nested_enum_utils",
  "netwatch 0.5.0",
  "num_enum",
  "rand 0.8.5",

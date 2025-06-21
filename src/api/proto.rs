@@ -28,7 +28,7 @@ use bao_tree::{
     io::{BaoContentItem, Leaf, mixed::EncodedItem},
 };
 use bytes::Bytes;
-use irpc::channel::{oneshot, spsc};
+use irpc::channel::{mpsc, oneshot};
 use irpc_derive::rpc_requests;
 use n0_future::Stream;
 use range_collections::RangeSet2;
@@ -91,29 +91,29 @@ impl irpc::Service for StoreService {}
 #[rpc_requests(StoreService, message = Command, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
-    #[rpc(tx = spsc::Sender<super::Result<Hash>>)]
+    #[rpc(tx = mpsc::Sender<super::Result<Hash>>)]
     ListBlobs(ListRequest),
-    #[rpc(tx = oneshot::Sender<Scope>, rx = spsc::Receiver<BatchResponse>)]
+    #[rpc(tx = oneshot::Sender<Scope>, rx = mpsc::Receiver<BatchResponse>)]
     Batch(BatchRequest),
     #[rpc(tx = oneshot::Sender<super::Result<()>>)]
     DeleteBlobs(BlobDeleteRequest),
-    #[rpc(rx = spsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
+    #[rpc(rx = mpsc::Receiver<BaoContentItem>, tx = oneshot::Sender<super::Result<()>>)]
     ImportBao(ImportBaoRequest),
-    #[rpc(tx = spsc::Sender<EncodedItem>)]
+    #[rpc(tx = mpsc::Sender<EncodedItem>)]
     ExportBao(ExportBaoRequest),
-    #[rpc(tx = spsc::Sender<ExportRangesItem>)]
+    #[rpc(tx = mpsc::Sender<ExportRangesItem>)]
     ExportRanges(ExportRangesRequest),
-    #[rpc(tx = spsc::Sender<Bitfield>)]
+    #[rpc(tx = mpsc::Sender<Bitfield>)]
     Observe(ObserveRequest),
     #[rpc(tx = oneshot::Sender<BlobStatus>)]
     BlobStatus(BlobStatusRequest),
-    #[rpc(tx = spsc::Sender<AddProgressItem>)]
+    #[rpc(tx = mpsc::Sender<AddProgressItem>)]
     ImportBytes(ImportBytesRequest),
-    #[rpc(rx = spsc::Receiver<ImportByteStreamUpdate>, tx = spsc::Sender<AddProgressItem>)]
+    #[rpc(rx = mpsc::Receiver<ImportByteStreamUpdate>, tx = mpsc::Sender<AddProgressItem>)]
     ImportByteStream(ImportByteStreamRequest),
-    #[rpc(tx = spsc::Sender<AddProgressItem>)]
+    #[rpc(tx = mpsc::Sender<AddProgressItem>)]
     ImportPath(ImportPathRequest),
-    #[rpc(tx = spsc::Sender<ExportProgressItem>)]
+    #[rpc(tx = mpsc::Sender<ExportProgressItem>)]
     ExportPath(ExportPathRequest),
     #[rpc(tx = oneshot::Sender<Vec<super::Result<TagInfo>>>)]
     ListTags(ListTagsRequest),

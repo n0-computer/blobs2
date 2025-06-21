@@ -46,7 +46,7 @@ impl<X> DataLocation<X, u64> {
                 DataLocation::External(b_paths, b_size),
             ) => {
                 if a_size != b_size {
-                    return Err(ActorError::Inconsistent(format!(
+                    return Err(ActorError::inconsistent(format!(
                         "complete size mismatch {} {}",
                         a_size, b_size
                     )));
@@ -252,7 +252,7 @@ impl EntryState {
                         // least one validation was wrong, which would be a bug
                         // in bao-tree.
                         if a_size != b_size {
-                            return Err(ActorError::Inconsistent(format!(
+                            return Err(ActorError::inconsistent(format!(
                                 "validated size mismatch {} {}",
                                 a_size, b_size
                             )));

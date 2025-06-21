@@ -22,7 +22,6 @@ use bao_tree::{
     },
 };
 use bytes::Bytes;
-use irpc::channel::spsc;
 use n0_future::future::{self, yield_now};
 use range_collections::range_set::RangeSetRange;
 use ref_cast::RefCast;
@@ -82,24 +81,24 @@ impl Actor {
                 .await
                 .ok();
             }
-            Command::ImportBytes(ImportBytesMsg { mut tx, .. }) => {
+            Command::ImportBytes(ImportBytesMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
-            Command::ImportByteStream(ImportByteStreamMsg { mut tx, .. }) => {
+            Command::ImportByteStream(ImportByteStreamMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
-            Command::ImportPath(ImportPathMsg { mut tx, .. }) => {
+            Command::ImportPath(ImportPathMsg { tx, .. }) => {
                 tx.send(io::Error::other("import not supported").into())
                     .await
                     .ok();
             }
             Command::Observe(ObserveMsg {
                 inner: ObserveRequest { hash },
-                mut tx,
+                tx,
                 ..
             }) => {
                 let size = self.data.get_mut(&hash).map(|x| x.data.len() as u64);
@@ -159,7 +158,7 @@ impl Actor {
                     .await
                     .ok();
             }
-            Command::ListBlobs(mut cmd) => {
+            Command::ListBlobs(cmd) => {
                 let hashes: Vec<Hash> = self.data.keys().cloned().collect();
                 self.tasks.spawn(async move {
                     for hash in hashes {
@@ -233,7 +232,7 @@ async fn export_bao(
     hash: Hash,
     entry: Option<CompleteStorage>,
     ranges: ChunkRanges,
-    mut sender: spsc::Sender<EncodedItem>,
+    mut sender: irpc::channel::mpsc::Sender<EncodedItem>,
 ) {
     let entry = match entry {
         Some(entry) => entry,
@@ -286,7 +285,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, entry: Option<CompleteStorage>)
 
 async fn export_ranges_impl(
     cmd: ExportRangesRequest,
-    tx: &mut spsc::Sender<ExportRangesItem>,
+    tx: &mut irpc::channel::mpsc::Sender<ExportRangesItem>,
     entry: CompleteStorage,
 ) -> io::Result<()> {
     let ExportRangesRequest { ranges, .. } = cmd;
@@ -347,7 +346,7 @@ impl ReadonlyMemStore {
 async fn export_path(
     entry: Option<CompleteStorage>,
     target: PathBuf,
-    mut tx: spsc::Sender<ExportProgressItem>,
+    mut tx: irpc::channel::mpsc::Sender<ExportProgressItem>,
 ) {
     let Some(entry) = entry else {
         tx.send(api::Error::io(io::ErrorKind::NotFound, "hash not found").into())
@@ -364,7 +363,7 @@ async fn export_path(
 async fn export_path_impl(
     entry: CompleteStorage,
     target: PathBuf,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut irpc::channel::mpsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let data = entry.data;
     // todo: for partial entries make sure to only write the part that is actually present

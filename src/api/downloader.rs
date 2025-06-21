@@ -11,7 +11,6 @@ use std::{
 use anyhow::bail;
 use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
-use irpc::channel::spsc;
 use irpc_derive::rpc_requests;
 use n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
 use rand::seq::SliceRandom;
@@ -43,7 +42,7 @@ impl irpc::Service for DownloaderService {}
 #[rpc_requests(DownloaderService, message = SwarmMsg, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
 enum SwarmProtocol {
-    #[rpc(tx = spsc::Sender<DownloadProgessItem>)]
+    #[rpc(tx = irpc::channel::mpsc::Sender<DownloadProgessItem>)]
     Download(DownloadRequest),
 }
 
@@ -115,7 +114,7 @@ async fn handle_download_impl(
     store: Store,
     pool: ConnectionPool,
     request: DownloadRequest,
-    tx: &mut spsc::Sender<DownloadProgessItem>,
+    tx: &mut irpc::channel::mpsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     match request.strategy {
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
@@ -136,7 +135,7 @@ async fn handle_download_split_impl(
     store: Store,
     pool: ConnectionPool,
     request: DownloadRequest,
-    tx: &mut spsc::Sender<DownloadProgessItem>,
+    tx: &mut irpc::channel::mpsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     let providers = request.providers;
     let requests = split_request(&request.request, &providers, &pool, &store, Drain).await?;
@@ -309,11 +308,13 @@ impl<'de> Deserialize<'de> for DownloadRequest {
 pub type DownloadOptions = DownloadRequest;
 
 pub struct DownloadProgress {
-    fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>,
+    fut: future::Boxed<irpc::Result<irpc::channel::mpsc::Receiver<DownloadProgessItem>>>,
 }
 
 impl DownloadProgress {
-    fn new(fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>) -> Self {
+    fn new(
+        fut: future::Boxed<irpc::Result<irpc::channel::mpsc::Receiver<DownloadProgessItem>>>,
+    ) -> Self {
         Self { fut }
     }
 

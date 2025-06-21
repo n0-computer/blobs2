@@ -109,9 +109,9 @@ impl From<ClosedStream> for GetError {
     }
 }
 
-impl From<endpoint::WriteError> for GetError {
-    fn from(value: endpoint::WriteError) -> Self {
-        use endpoint::WriteError;
+impl From<quinn::WriteError> for GetError {
+    fn from(value: quinn::WriteError) -> Self {
+        use quinn::WriteError;
         match value {
             e @ WriteError::Stopped(_) => GetError::RemoteReset(e.into()),
             WriteError::ConnectionLost(conn_error) => conn_error.into(),
@@ -127,17 +127,17 @@ impl From<crate::get::fsm::ConnectedNextError> for GetError {
     fn from(value: crate::get::fsm::ConnectedNextError) -> Self {
         use crate::get::fsm::ConnectedNextError::*;
         match value {
-            e @ PostcardSer(_) => {
+            e @ PostcardSer { .. } => {
                 // serialization errors indicate something wrong with the request itself
                 GetError::BadRequest(e.into())
             }
-            e @ RequestTooBig => {
+            e @ RequestTooBig { .. } => {
                 // request will never be sent, drop it
                 GetError::BadRequest(e.into())
             }
-            Write(e) => e.into(),
-            Closed(e) => e.into(),
-            e @ Io(_) => {
+            Write { source, .. } => source.into(),
+            Closed { source, .. } => source.into(),
+            e @ Io { .. } => {
                 // io errors are likely recoverable
                 GetError::Io(e.into())
             }

@@ -87,7 +87,6 @@ use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
 use gc::run_gc;
 use import::{ImportEntry, ImportSource};
-use irpc::channel::spsc;
 use meta::{Snapshot, list_blobs};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
@@ -598,7 +597,7 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.temp_tags.end_scope(cmd.scope);
             }
-            InternalCommand::FinishImport(mut cmd) => {
+            InternalCommand::FinishImport(cmd) => {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
@@ -746,7 +745,7 @@ async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) 
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
+async fn finish_import(cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
     let res = match finish_import_impl(cmd.inner, ctx).await {
         Ok(()) => {
             // for a remote call, we can't have the on_drop callback, so we have to leak the temp tag
@@ -892,7 +891,7 @@ fn chunk_range(leaf: &Leaf) -> ChunkRanges {
 
 async fn import_bao_impl(
     size: NonZeroU64,
-    mut rx: spsc::Receiver<BaoContentItem>,
+    mut rx: irpc::channel::mpsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> api::Result<()> {
@@ -955,7 +954,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
 
 async fn export_ranges_impl(
     cmd: ExportRangesRequest,
-    tx: &mut spsc::Sender<ExportRangesItem>,
+    tx: &mut irpc::channel::mpsc::Sender<ExportRangesItem>,
     handle: BaoFileHandle,
 ) -> io::Result<()> {
     let ExportRangesRequest { ranges, hash } = cmd;
@@ -1020,7 +1019,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
 
 async fn export_bao_impl(
     cmd: ExportBaoRequest,
-    tx: &mut spsc::Sender<EncodedItem>,
+    tx: &mut irpc::channel::mpsc::Sender<EncodedItem>,
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
     let ExportBaoRequest { ranges, hash } = cmd;
@@ -1048,7 +1047,7 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
 
 async fn export_path_impl(
     cmd: ExportPathRequest,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut irpc::channel::mpsc::Sender<ExportProgressItem>,
     ctx: HashContext,
 ) -> api::Result<()> {
     let ExportPathRequest { mode, target, .. } = cmd;
@@ -1145,7 +1144,7 @@ async fn copy_with_progress(
     file: impl ReadAt,
     size: u64,
     target: &mut impl Write,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut irpc::channel::mpsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let mut offset = 0;
     let mut buf = vec![0u8; 1024 * 1024];

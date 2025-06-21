@@ -24,7 +24,7 @@ use bao_tree::{
 use bytes::Bytes;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
-use irpc::channel::{oneshot, spsc};
+use irpc::channel::{mpsc, oneshot};
 use n0_future::{Stream, StreamExt, future, stream};
 use quinn::SendStream;
 use range_collections::{RangeSet2, range_set::RangeSetRange};
@@ -225,7 +225,7 @@ impl Blobs {
         };
         let client = self.client.clone();
         let stream = Gen::new(|co| async move {
-            let (mut sender, mut receiver) = match client.bidi_streaming(inner, 32, 32).await {
+            let (sender, mut receiver) = match client.bidi_streaming(inner, 32, 32).await {
                 Ok(x) => x,
                 Err(cause) => {
                     co.yield_(AddProgressItem::Error(cause.into())).await;
@@ -338,7 +338,7 @@ impl Blobs {
         trace!("{:?}", options);
         if options.hash == Hash::EMPTY {
             return ObserveProgress::new(async move {
-                let (mut tx, rx) = spsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
                 tx.send(Bitfield::complete(0)).await.ok();
                 Ok(rx)
             });
@@ -405,7 +405,7 @@ impl Blobs {
         let tree = BaoTree::new(size.get(), IROH_BLOCK_SIZE);
         let mut decoder = ResponseDecoder::new(hash.into(), ranges, tree, reader);
         let options = ImportBaoOptions { hash, size };
-        let mut handle = self.import_bao_with_opts(options, 32).await?;
+        let handle = self.import_bao_with_opts(options, 32).await?;
         let driver = async move {
             let reader = loop {
                 match decoder.next().await {
@@ -509,7 +509,7 @@ impl<'a> BatchAddProgress<'a> {
 pub struct Batch<'a> {
     scope: Scope,
     blobs: &'a Blobs,
-    _tx: spsc::Sender<BatchResponse>,
+    _tx: mpsc::Sender<BatchResponse>,
 }
 
 impl<'a> Batch<'a> {
@@ -647,7 +647,7 @@ impl<'a> AddProgress<'a> {
 /// Calling [`ObserveProgress::aggregated`] will return a stream of states,
 /// where each state is the current state at the time of the update.
 pub struct ObserveProgress {
-    inner: future::Boxed<irpc::Result<spsc::Receiver<Bitfield>>>,
+    inner: future::Boxed<irpc::Result<mpsc::Receiver<Bitfield>>>,
 }
 
 impl IntoFuture for ObserveProgress {
@@ -668,7 +668,7 @@ impl IntoFuture for ObserveProgress {
 
 impl ObserveProgress {
     fn new(
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<Bitfield>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<mpsc::Receiver<Bitfield>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -710,7 +710,7 @@ impl ObserveProgress {
 /// It also implements [`IntoFuture`], so you can await it to get the size of the
 /// exported blob.
 pub struct ExportProgress {
-    inner: future::Boxed<irpc::Result<spsc::Receiver<ExportProgressItem>>>,
+    inner: future::Boxed<irpc::Result<mpsc::Receiver<ExportProgressItem>>>,
 }
 
 impl IntoFuture for ExportProgress {
@@ -725,7 +725,7 @@ impl IntoFuture for ExportProgress {
 
 impl ExportProgress {
     fn new(
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<ExportProgressItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<mpsc::Receiver<ExportProgressItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -768,7 +768,7 @@ impl ExportProgress {
 
 /// A handle for an ongoing bao import operation.
 pub struct ImportBaoHandle {
-    pub tx: spsc::Sender<BaoContentItem>,
+    pub tx: mpsc::Sender<BaoContentItem>,
     pub rx: oneshot::Receiver<super::Result<()>>,
 }
 
@@ -776,7 +776,7 @@ impl ImportBaoHandle {
     pub(crate) async fn new(
         fut: impl Future<
             Output = irpc::Result<(
-                spsc::Sender<BaoContentItem>,
+                mpsc::Sender<BaoContentItem>,
                 oneshot::Receiver<super::Result<()>>,
             )>,
         > + Send
@@ -789,12 +789,12 @@ impl ImportBaoHandle {
 
 /// A progress handle for a blobs list operation.
 pub struct BlobsListProgress {
-    inner: future::Boxed<irpc::Result<spsc::Receiver<super::Result<Hash>>>>,
+    inner: future::Boxed<irpc::Result<mpsc::Receiver<super::Result<Hash>>>>,
 }
 
 impl BlobsListProgress {
     fn new(
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<super::Result<Hash>>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<mpsc::Receiver<super::Result<Hash>>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),
@@ -802,7 +802,7 @@ impl BlobsListProgress {
     }
 
     pub async fn hashes(self) -> RequestResult<Vec<Hash>> {
-        let mut rx: spsc::Receiver<Result<Hash, super::Error>> = self.inner.await?;
+        let mut rx: mpsc::Receiver<Result<Hash, super::Error>> = self.inner.await?;
         let mut hashes = Vec::new();
         while let Some(item) = rx.recv().await? {
             hashes.push(item?);
@@ -829,13 +829,13 @@ impl BlobsListProgress {
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportRangesProgress {
     ranges: RangeSet2<u64>,
-    inner: future::Boxed<irpc::Result<spsc::Receiver<ExportRangesItem>>>,
+    inner: future::Boxed<irpc::Result<mpsc::Receiver<ExportRangesItem>>>,
 }
 
 impl ExportRangesProgress {
     fn new(
         ranges: RangeSet2<u64>,
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<ExportRangesItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<mpsc::Receiver<ExportRangesItem>>> + Send + 'static,
     ) -> Self {
         Self {
             ranges,
@@ -909,12 +909,12 @@ impl ExportRangesProgress {
 ///
 /// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
 pub struct ExportBaoProgress {
-    inner: future::Boxed<irpc::Result<spsc::Receiver<EncodedItem>>>,
+    inner: future::Boxed<irpc::Result<mpsc::Receiver<EncodedItem>>>,
 }
 
 impl ExportBaoProgress {
     fn new(
-        fut: impl Future<Output = irpc::Result<spsc::Receiver<EncodedItem>>> + Send + 'static,
+        fut: impl Future<Output = irpc::Result<mpsc::Receiver<EncodedItem>>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(fut),

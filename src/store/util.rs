@@ -14,7 +14,7 @@ use derive_more::{From, Into};
 
 mod mem_or_file;
 mod sparse_mem_file;
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 pub use mem_or_file::{FixedSize, MemOrFile};
 use range_collections::{RangeSetRef, range_set::RangeSetEntry};
 use ref_cast::RefCast;
@@ -372,10 +372,10 @@ pub(crate) fn next_prefix(bytes: &mut [u8]) -> bool {
 
 #[derive(ref_cast::RefCast)]
 #[repr(transparent)]
-pub struct BaoTreeSender(spsc::Sender<EncodedItem>);
+pub struct BaoTreeSender(mpsc::Sender<EncodedItem>);
 
 impl BaoTreeSender {
-    pub fn new(sender: &mut spsc::Sender<EncodedItem>) -> &mut Self {
+    pub fn new(sender: &mut mpsc::Sender<EncodedItem>) -> &mut Self {
         BaoTreeSender::ref_cast_mut(sender)
     }
 }

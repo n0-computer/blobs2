@@ -27,7 +27,10 @@ use bao_tree::{ChunkNum, io::fsm::BaoContentItem};
 use fsm::RequestCounters;
 use iroh::endpoint::{self, RecvStream, SendStream};
 use iroh_io::TokioStreamReader;
+use n0_snafu::SpanTrace;
+use nested_enum_utils::common_fields;
 use serde::{Deserialize, Serialize};
+use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::{debug, error};
 
 use crate::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
@@ -244,57 +247,29 @@ pub mod fsm {
 
     /// Error that you can get from [`AtConnected::next`]
     #[common_fields({
-    backtrace: Option<Backtrace>,
-    #[snafu(implicit)]
-    span_trace: n0_snafu::SpanTrace,
-})]
+        backtrace: Option<Backtrace>,
+        #[snafu(implicit)]
+        span_trace: SpanTrace,
+    })]
     #[allow(missing_docs)]
     #[derive(Debug, Snafu)]
     #[non_exhaustive]
-    #[derive(Debug, snafu::Error)]
     pub enum ConnectedNextError {
         /// Error when serializing the request
         #[snafu(display("postcard ser: {source}"))]
         PostcardSer { source: postcard::Error },
         /// The serialized request is too long to be sent
         #[snafu(display("request too big"))]
-        RequestTooBig,
+        RequestTooBig {},
         /// Error when writing the request to the [`SendStream`].
         #[snafu(display("write: {source}"))]
-        Write { source: iroh::endpoint::WriteError },
+        Write { source: quinn::WriteError },
         /// Quic connection is closed.
         #[snafu(display("closed"))]
-        Closed {
-            source: iroh::endpoint::ClosedStream,
-        },
+        Closed { source: quinn::ClosedStream },
         /// A generic io error
         #[snafu(transparent)]
         Io { source: io::Error },
-    }
-
-    impl ConnectedNextError {
-        fn from_io(cause: io::Error) -> Self {
-            if let Some(inner) = cause.get_ref() {
-                if let Some(e) = inner.downcast_ref::<endpoint::WriteError>() {
-                    Self::Write(e.clone())
-                } else {
-                    Self::Io(cause)
-                }
-            } else {
-                Self::Io(cause)
-            }
-        }
-    }
-
-    impl From<ConnectedNextError> for io::Error {
-        fn from(cause: ConnectedNextError) -> Self {
-            match cause {
-                ConnectedNextError::Write(cause) => cause.into(),
-                ConnectedNextError::Io(cause) => cause,
-                ConnectedNextError::PostcardSer(cause) => io::Error::other(cause),
-                _ => io::Error::other(cause),
-            }
-        }
     }
 
     impl AtConnected {
@@ -316,27 +291,23 @@ pub mod fsm {
             counters.other_bytes_written += {
                 debug!("sending request");
                 let wrapped = Request::Get(request);
-                let request_bytes =
-                    postcard::to_stdvec(&wrapped).map_err(ConnectedNextError::PostcardSer)?;
+                let request_bytes = postcard::to_stdvec(&wrapped).context(PostcardSerSnafu)?;
                 let Request::Get(x) = wrapped else {
                     unreachable!();
                 };
                 request = x;
 
                 if request_bytes.len() > MAX_MESSAGE_SIZE {
-                    return Err(ConnectedNextError::RequestTooBig);
+                    return Err(RequestTooBigSnafu.build());
                 }
 
                 // write the request itself
-                writer
-                    .write_all(&request_bytes)
-                    .await
-                    .map_err(|x| ConnectedNextError::from_io(x.into()))?;
+                writer.write_all(&request_bytes).await.context(WriteSnafu)?;
                 request_bytes.len() as u64
             };
 
             // 2. Finish writing before expecting a response
-            writer.finish()?;
+            writer.finish().context(ClosedSnafu)?;
 
             let hash = request.hash;
             let ranges_iter = RangesIter::new(request.ranges);
