@@ -1680,7 +1680,7 @@ dependencies = [
  "instant",
  "iroh-base",
  "iroh-metrics 0.34.0",
- "iroh-quinn 0.14.0",
+ "iroh-quinn",
  "iroh-quinn-proto",
  "iroh-quinn-udp",
  "iroh-relay",
@@ -1756,7 +1756,7 @@ dependencies = [
  "iroh-base",
  "iroh-io",
  "iroh-metrics 0.32.0",
- "iroh-quinn 0.13.0",
+ "iroh-quinn",
  "iroh-test",
  "irpc",
  "n0-future",
@@ -1779,6 +1779,7 @@ dependencies = [
  "tempfile",
  "test-strategy",
  "testresult",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1837,26 +1838,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "iroh-quinn"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c6245c9ed906506ab9185e8d7f64857129aee4f935e899f398a3bd3b70338d"
-dependencies = [
- "bytes",
- "cfg_aliases",
- "iroh-quinn-proto",
- "iroh-quinn-udp",
- "pin-project-lite",
- "rustc-hash",
- "rustls",
- "socket2",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "web-time",
 ]
 
 [[package]]
@@ -1931,7 +1912,7 @@ dependencies = [
  "hyper-util",
  "iroh-base",
  "iroh-metrics 0.34.0",
- "iroh-quinn 0.14.0",
+ "iroh-quinn",
  "iroh-quinn-proto",
  "lru",
  "n0-future",
@@ -1976,13 +1957,12 @@ dependencies = [
 [[package]]
 name = "irpc"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce3631786a8ad447d39cc5da18c659c1b31641dfefad4e9afc07a19ceccacc2"
+source = "git+https://github.com/n0-computer/irpc.git?branch=iroh-quinn-latest#04f7fa33f878496f8117776c675aa000f01fc50c"
 dependencies = [
  "anyhow",
  "futures-buffered",
  "futures-util",
- "iroh-quinn 0.13.0",
+ "iroh-quinn",
  "irpc-derive",
  "n0-future",
  "postcard",
@@ -1999,8 +1979,7 @@ dependencies = [
 [[package]]
 name = "irpc-derive"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efeabe1ee5615ea0416340b1a6d71a16f971495859c87fad48633b6497ee7a77"
+source = "git+https://github.com/n0-computer/irpc.git?branch=iroh-quinn-latest#04f7fa33f878496f8117776c675aa000f01fc50c"
 dependencies = [
  "proc-macro2",
  "quote",
