@@ -39,11 +39,10 @@
 use std::{fmt::Debug, sync::Arc};
 
 use iroh::{
-    Endpoint,
+    Endpoint, Watcher,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
-use n0_watcher::Watcher;
 use tokio::sync::mpsc;
 use tracing::error;
 

@@ -81,7 +81,7 @@ impl Ticket for BlobTicket {
 
     fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, ticket::ParseError> {
         let res: TicketWireFormat =
-            postcard::from_bytes(bytes).map_err(ticket::ParseError::Postcard)?;
+            postcard::from_bytes(bytes).map_err(ticket::ParseError::postcard)?;
         let TicketWireFormat::Variant0(Variant0BlobTicket { node, format, hash }) = res;
         Ok(Self {
             node: NodeAddr {

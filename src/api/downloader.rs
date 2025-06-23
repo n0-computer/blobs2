@@ -685,8 +685,8 @@ mod tests {
     use std::ops::Deref;
 
     use bao_tree::ChunkRanges;
+    use iroh::Watcher;
     use n0_future::StreamExt;
-    use n0_watcher::Watcher;
     use testresult::TestResult;
 
     use crate::{

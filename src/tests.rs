@@ -2,10 +2,9 @@ use std::{collections::HashSet, io, ops::Range, path::PathBuf};
 
 use bao_tree::ChunkRanges;
 use bytes::Bytes;
-use iroh::{Endpoint, NodeId, protocol::Router};
+use iroh::{Endpoint, NodeId, Watcher, protocol::Router};
 use irpc::RpcMessage;
 use n0_future::{StreamExt, task::AbortOnDropHandle};
-use n0_watcher::Watcher;
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::sync::{mpsc, watch};
