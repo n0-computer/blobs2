@@ -18,7 +18,7 @@ use bao_tree::{
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use tokio::sync::watch;
 use tracing::{Span, debug, error, info, trace};
 
@@ -862,7 +862,7 @@ impl BaoFileStorageSubscriber {
     /// Forward observed *values* to the given sender
     ///
     /// Returns an error if sending fails, or if the last sender is dropped
-    pub async fn forward(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    pub async fn forward(mut self, mut tx: mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         tx.send(value).await?;
         loop {
@@ -876,7 +876,7 @@ impl BaoFileStorageSubscriber {
     ///
     /// Returns an error if sending fails, or if the last sender is dropped
     #[allow(dead_code)]
-    pub async fn forward_delta(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    pub async fn forward_delta(mut self, mut tx: mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         let mut old = value.clone();
         tx.send(value).await?;
@@ -892,7 +892,7 @@ impl BaoFileStorageSubscriber {
         }
     }
 
-    async fn update_or_closed(&mut self, tx: &mut spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    async fn update_or_closed(&mut self, tx: &mut mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         tokio::select! {
             _ = tx.closed() => {
                 // the sender is closed, we are done

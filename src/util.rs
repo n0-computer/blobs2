@@ -305,7 +305,7 @@ pub mod sink {
         }
     }
 
-    pub struct IrpcSenderSink<T>(pub irpc::channel::spsc::Sender<T>);
+    pub struct IrpcSenderSink<T>(pub irpc::channel::mpsc::Sender<T>);
 
     impl<T> Sink<T> for IrpcSenderSink<T>
     where
@@ -318,7 +318,7 @@ pub mod sink {
         }
     }
 
-    pub struct IrpcSenderRefSink<'a, T>(pub &'a mut irpc::channel::spsc::Sender<T>);
+    pub struct IrpcSenderRefSink<'a, T>(pub &'a mut irpc::channel::mpsc::Sender<T>);
 
     impl<'a, T> Sink<T> for IrpcSenderRefSink<'a, T>
     where

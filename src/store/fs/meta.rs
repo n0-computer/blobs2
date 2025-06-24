@@ -10,7 +10,7 @@ use std::{
 
 use bao_tree::BaoTree;
 use bytes::Bytes;
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use redb::{Database, DatabaseError, ReadableTable};
 use tokio::pin;
 
@@ -25,7 +25,7 @@ use crate::{
         },
         tags::TagInfo,
     },
-    util::channel::{mpsc, oneshot},
+    util::channel::oneshot,
 };
 mod proto;
 pub use proto::*;
@@ -73,11 +73,11 @@ pub type ActorResult<T> = Result<T, ActorError>;
 
 #[derive(Debug, Clone)]
 pub struct Db {
-    pub sender: mpsc::Sender<Command>,
+    pub sender: tokio::sync::mpsc::Sender<Command>,
 }
 
 impl Db {
-    pub fn new(sender: mpsc::Sender<Command>) -> Self {
+    pub fn new(sender: tokio::sync::mpsc::Sender<Command>) -> Self {
         Self { sender }
     }
 
@@ -373,7 +373,7 @@ pub struct Actor {
 impl Actor {
     pub fn new(
         db_path: PathBuf,
-        cmds: mpsc::Receiver<Command>,
+        cmds: tokio::sync::mpsc::Receiver<Command>,
         mut ds: DeleteHandle,
         options: BatchOptions,
     ) -> anyhow::Result<Self> {
@@ -791,7 +791,7 @@ pub async fn list_blobs(snapshot: ReadOnlyTables, cmd: ListBlobsMsg) {
 async fn list_blobs_impl(
     snapshot: ReadOnlyTables,
     _cmd: ListRequest,
-    tx: &mut spsc::Sender<api::Result<Hash>>,
+    tx: &mut mpsc::Sender<api::Result<Hash>>,
 ) -> api::Result<()> {
     for item in snapshot.blobs.iter().map_err(api::Error::other)? {
         let (k, _) = item.map_err(api::Error::other)?;

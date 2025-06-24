@@ -26,7 +26,7 @@ use bytes::Bytes;
 use genawaiter::sync::Gen;
 use irpc::{
     Channels, WithChannels,
-    channel::{none::NoReceiver, spsc},
+    channel::{mpsc, none::NoReceiver},
 };
 use n0_future::{Stream, StreamExt, stream};
 use ref_cast::RefCast;
@@ -137,7 +137,7 @@ impl std::fmt::Debug for ImportEntry {
 }
 
 impl Channels<StoreService> for ImportEntry {
-    type Tx = spsc::Sender<AddProgressItem>;
+    type Tx = mpsc::Sender<AddProgressItem>;
     type Rx = NoReceiver;
 }
 
@@ -191,7 +191,7 @@ async fn import_bytes_tiny_outer(mut cmd: ImportBytesMsg, ctx: Arc<TaskContext>)
 
 async fn import_bytes_tiny_impl(
     cmd: ImportBytesRequest,
-    tx: &mut spsc::Sender<AddProgressItem>,
+    tx: &mut mpsc::Sender<AddProgressItem>,
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
     // send the required progress events
@@ -231,7 +231,7 @@ pub async fn import_byte_stream(cmd: ImportByteStreamMsg, ctx: Arc<TaskContext>)
 }
 
 fn into_stream(
-    mut rx: spsc::Receiver<ImportByteStreamUpdate>,
+    mut rx: mpsc::Receiver<ImportByteStreamUpdate>,
 ) -> impl Stream<Item = io::Result<Bytes>> {
     Gen::new(|co| async move {
         loop {
@@ -257,7 +257,7 @@ fn into_stream(
 
 async fn import_byte_stream_mid(
     request: ImportByteStreamRequest,
-    mut tx: spsc::Sender<AddProgressItem>,
+    mut tx: mpsc::Sender<AddProgressItem>,
     span: tracing::Span,
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
     ctx: Arc<TaskContext>,
@@ -280,7 +280,7 @@ async fn import_byte_stream_mid(
 
 async fn import_byte_stream_impl(
     cmd: ImportByteStreamRequest,
-    tx: &mut spsc::Sender<AddProgressItem>,
+    tx: &mut mpsc::Sender<AddProgressItem>,
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
@@ -297,7 +297,7 @@ async fn import_byte_stream_impl(
 
 async fn get_import_source(
     stream: impl Stream<Item = io::Result<Bytes>> + Unpin,
-    tx: &mut spsc::Sender<AddProgressItem>,
+    tx: &mut mpsc::Sender<AddProgressItem>,
     options: &Options,
 ) -> io::Result<ImportSource> {
     let mut stream = stream.fuse();
@@ -365,7 +365,7 @@ async fn get_import_source(
 
 #[derive(ref_cast::RefCast)]
 #[repr(transparent)]
-struct OutboardProgress(spsc::Sender<AddProgressItem>);
+struct OutboardProgress(mpsc::Sender<AddProgressItem>);
 
 impl Sink<ChunkNum> for OutboardProgress {
     type Error = irpc::channel::SendError;
@@ -386,7 +386,7 @@ async fn compute_outboard(
     format: BlobFormat,
     scope: Scope,
     options: Arc<Options>,
-    tx: &mut spsc::Sender<AddProgressItem>,
+    tx: &mut mpsc::Sender<AddProgressItem>,
 ) -> io::Result<ImportEntry> {
     let size = source.size();
     let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
@@ -450,7 +450,7 @@ pub async fn import_path(mut cmd: ImportPathMsg, context: Arc<TaskContext>) {
 
 async fn import_path_impl(
     cmd: ImportPathRequest,
-    tx: &mut spsc::Sender<AddProgressItem>,
+    tx: &mut mpsc::Sender<AddProgressItem>,
     options: Arc<Options>,
 ) -> io::Result<ImportEntry> {
     let ImportPathRequest {
@@ -521,7 +521,7 @@ mod tests {
         store::fs::options::{InlineOptions, PathOptions},
     };
 
-    async fn drain<T: RpcMessage>(mut recv: spsc::Receiver<T>) -> TestResult<Vec<T>> {
+    async fn drain<T: RpcMessage>(mut recv: mpsc::Receiver<T>) -> TestResult<Vec<T>> {
         let mut res = Vec::new();
         while let Some(item) = recv.recv().await? {
             res.push(item);
@@ -554,7 +554,7 @@ mod tests {
             Box::pin(stream::iter(chunk_bytes(data.clone(), 999).map(Ok)));
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (mut tx, rx) = spsc::channel(1024 * 1024);
+        let (mut tx, rx) = mpsc::channel(1024 * 1024);
         let data = stream.collect::<Vec<_>>().await;
         let data = data.into_iter().collect::<io::Result<Vec<_>>>()?;
         let cmd = ImportByteStreamRequest {
@@ -583,7 +583,7 @@ mod tests {
         std::fs::write(&path, &data)?;
         let expected_outboard = PreOrderMemOutboard::create(data.as_ref(), IROH_BLOCK_SIZE);
         // make the channel absurdly large, so we don't have to drain it
-        let (mut tx, rx) = spsc::channel(1024 * 1024);
+        let (mut tx, rx) = mpsc::channel(1024 * 1024);
         let cmd = ImportPathRequest {
             path,
             mode: ImportMode::Copy,

@@ -26,12 +26,12 @@ use bao_tree::{
     },
 };
 use bytes::Bytes;
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use n0_future::future::yield_now;
 use range_collections::range_set::RangeSetRange;
 use tokio::{
     io::AsyncReadExt,
-    sync::{mpsc, watch},
+    sync::watch,
     task::{JoinError, JoinSet},
 };
 use tracing::{Instrument, error, info, instrument, trace};
@@ -106,7 +106,7 @@ impl MemStore {
     }
 
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel(32);
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(
             Actor {
                 commands: receiver,
@@ -126,7 +126,7 @@ impl MemStore {
 }
 
 struct Actor {
-    commands: mpsc::Receiver<Command>,
+    commands: tokio::sync::mpsc::Receiver<Command>,
     tasks: JoinSet<TaskResult>,
     state: State,
     #[allow(dead_code)]
@@ -309,7 +309,7 @@ impl Actor {
                 cmd.tx.send(tts).await.ok();
             }
             Command::ListBlobs(cmd) => {
-                let ListBlobsMsg { mut tx, .. } = cmd;
+                let ListBlobsMsg { tx, .. } = cmd;
                 let blobs = self.state.data.keys().cloned().collect::<Vec<Hash>>();
                 self.spawn(async move {
                     for blob in blobs {
@@ -399,7 +399,7 @@ impl Actor {
     }
 
     async fn finish_import(&mut self, res: anyhow::Result<ImportEntry>) {
-        let mut import_data = match res {
+        let import_data = match res {
             Ok(entry) => entry,
             Err(e) => {
                 error!("import failed: {e}");
@@ -509,7 +509,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, entry: BaoFileHandle) {
 
 async fn export_ranges_impl(
     cmd: ExportRangesRequest,
-    tx: &mut spsc::Sender<ExportRangesItem>,
+    tx: &mut mpsc::Sender<ExportRangesItem>,
     entry: BaoFileHandle,
 ) -> io::Result<()> {
     let ExportRangesRequest { ranges, hash } = cmd;
@@ -563,7 +563,7 @@ fn chunk_range(leaf: &Leaf) -> ChunkRanges {
 async fn import_bao(
     entry: BaoFileHandle,
     size: NonZeroU64,
-    mut stream: spsc::Receiver<BaoContentItem>,
+    mut stream: mpsc::Receiver<BaoContentItem>,
     tx: irpc::channel::oneshot::Sender<api::Result<()>>,
 ) {
     let size = size.get();
@@ -625,7 +625,7 @@ async fn import_bao(
 async fn export_bao(
     entry: BaoFileHandle,
     ranges: ChunkRanges,
-    mut sender: spsc::Sender<EncodedItem>,
+    mut sender: mpsc::Sender<EncodedItem>,
 ) {
     let data = entry.data_reader();
     let outboard = entry.outboard_reader();
@@ -636,7 +636,7 @@ async fn export_bao(
 }
 
 #[instrument(skip_all, fields(hash = %entry.hash.fmt_short()))]
-async fn observe(entry: BaoFileHandle, tx: spsc::Sender<api::blobs::Bitfield>) {
+async fn observe(entry: BaoFileHandle, tx: mpsc::Sender<api::blobs::Bitfield>) {
     entry.subscribe().forward(tx).await.ok();
 }
 
@@ -644,7 +644,7 @@ async fn import_bytes(
     data: Bytes,
     scope: Scope,
     format: BlobFormat,
-    mut tx: spsc::Sender<AddProgressItem>,
+    tx: mpsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     tx.send(AddProgressItem::Size(data.len() as u64)).await?;
     tx.send(AddProgressItem::CopyDone).await?;
@@ -661,8 +661,8 @@ async fn import_bytes(
 async fn import_byte_stream(
     scope: Scope,
     format: BlobFormat,
-    mut rx: spsc::Receiver<ImportByteStreamUpdate>,
-    mut tx: spsc::Sender<AddProgressItem>,
+    mut rx: mpsc::Receiver<ImportByteStreamUpdate>,
+    mut tx: mpsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     loop {
@@ -739,7 +739,7 @@ async fn export_path(entry: Option<BaoFileHandle>, cmd: ExportPathMsg) {
 async fn export_path_impl(
     entry: BaoFileHandle,
     cmd: ExportPathRequest,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut mpsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let ExportPathRequest { target, .. } = cmd;
     // todo: for partial entries make sure to only write the part that is actually present
@@ -765,7 +765,7 @@ struct ImportEntry {
     format: BlobFormat,
     data: Bytes,
     outboard: PreOrderMemOutboard,
-    tx: spsc::Sender<AddProgressItem>,
+    tx: mpsc::Sender<AddProgressItem>,
 }
 
 pub struct DataReader(BaoFileHandle);
@@ -960,7 +960,7 @@ impl BaoFileStorageSubscriber {
     /// Forward observed *values* to the given sender
     ///
     /// Returns an error if sending fails, or if the last sender is dropped
-    pub async fn forward(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    pub async fn forward(mut self, mut tx: mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         tx.send(value).await?;
         loop {
@@ -974,7 +974,7 @@ impl BaoFileStorageSubscriber {
     ///
     /// Returns an error if sending fails, or if the last sender is dropped
     #[allow(dead_code)]
-    pub async fn forward_delta(mut self, mut tx: spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    pub async fn forward_delta(mut self, mut tx: mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         let value = self.receiver.borrow().bitfield();
         let mut old = value.clone();
         tx.send(value).await?;
@@ -990,7 +990,7 @@ impl BaoFileStorageSubscriber {
         }
     }
 
-    async fn update_or_closed(&mut self, tx: &mut spsc::Sender<Bitfield>) -> anyhow::Result<()> {
+    async fn update_or_closed(&mut self, tx: &mut mpsc::Sender<Bitfield>) -> anyhow::Result<()> {
         tokio::select! {
             _ = tx.closed() => {
                 // the sender is closed, we are done

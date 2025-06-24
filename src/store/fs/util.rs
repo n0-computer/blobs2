@@ -1,8 +1,6 @@
 use std::future::Future;
 
-use tokio::select;
-
-use crate::util::channel::mpsc;
+use tokio::{select, sync::mpsc};
 
 /// A wrapper for a tokio mpsc receiver that allows peeking at the next message.
 #[derive(Debug)]

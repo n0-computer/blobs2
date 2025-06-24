@@ -87,7 +87,7 @@ use delete_set::{BaoFilePart, ProtectHandle};
 use entry_state::{DataLocation, OutboardLocation};
 use gc::run_gc;
 use import::{ImportEntry, ImportSource};
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use meta::{Snapshot, list_blobs};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
@@ -111,7 +111,7 @@ use crate::{
     },
     util::{
         ChunkRangesExt,
-        channel::{mpsc, oneshot},
+        channel::oneshot,
         temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
     },
 };
@@ -183,7 +183,7 @@ struct TaskContext {
     // Metadata database, basically a mpsc sender with some extra functionality.
     pub db: meta::Db,
     // Handle to send internal commands
-    pub internal_cmd_tx: mpsc::Sender<InternalCommand>,
+    pub internal_cmd_tx: tokio::sync::mpsc::Sender<InternalCommand>,
     /// The file handle for the empty hash.
     pub empty: BaoFileHandle,
     /// Handle to protect files from deletion.
@@ -204,9 +204,9 @@ struct Actor {
     // Context that can be cheaply shared with tasks.
     context: Arc<TaskContext>,
     // Receiver for incoming user commands.
-    cmd_rx: mpsc::Receiver<Command>,
+    cmd_rx: tokio::sync::mpsc::Receiver<Command>,
     // Receiver for incoming file store specific commands.
-    fs_cmd_rx: mpsc::Receiver<InternalCommand>,
+    fs_cmd_rx: tokio::sync::mpsc::Receiver<InternalCommand>,
     // Tasks for import and export operations.
     tasks: JoinSet<()>,
     // Running tasks
@@ -598,7 +598,7 @@ impl Actor {
                 trace!("{cmd:?}");
                 self.temp_tags.end_scope(cmd.scope);
             }
-            InternalCommand::FinishImport(mut cmd) => {
+            InternalCommand::FinishImport(cmd) => {
                 trace!("{cmd:?}");
                 if cmd.hash == Hash::EMPTY {
                     cmd.tx
@@ -642,9 +642,9 @@ impl Actor {
     async fn new(
         db_path: PathBuf,
         rt: RtWrapper,
-        cmd_rx: mpsc::Receiver<Command>,
-        fs_commands_rx: mpsc::Receiver<InternalCommand>,
-        fs_commands_tx: mpsc::Sender<InternalCommand>,
+        cmd_rx: tokio::sync::mpsc::Receiver<Command>,
+        fs_commands_rx: tokio::sync::mpsc::Receiver<InternalCommand>,
+        fs_commands_tx: tokio::sync::mpsc::Sender<InternalCommand>,
         options: Arc<Options>,
     ) -> anyhow::Result<Self> {
         trace!(
@@ -662,7 +662,7 @@ impl Actor {
             db_path.parent().unwrap().display()
         );
         fs::create_dir_all(db_path.parent().unwrap())?;
-        let (db_send, db_recv) = mpsc::channel(100);
+        let (db_send, db_recv) = tokio::sync::mpsc::channel(100);
         let (protect, ds) = delete_set::pair(Arc::new(options.path.clone()));
         let db_actor = meta::Actor::new(db_path, db_recv, ds, options.batch.clone())?;
         let slot_context = Arc::new(TaskContext {
@@ -746,7 +746,7 @@ async fn handle_batch_impl(cmd: BatchMsg, id: Scope, scope: &Arc<TempTagScope>) 
 }
 
 #[instrument(skip_all, fields(hash = %cmd.hash_short()))]
-async fn finish_import(mut cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
+async fn finish_import(cmd: ImportEntryMsg, mut tt: TempTag, ctx: HashContext) {
     let res = match finish_import_impl(cmd.inner, ctx).await {
         Ok(()) => {
             // for a remote call, we can't have the on_drop callback, so we have to leak the temp tag
@@ -892,7 +892,7 @@ fn chunk_range(leaf: &Leaf) -> ChunkRanges {
 
 async fn import_bao_impl(
     size: NonZeroU64,
-    mut rx: spsc::Receiver<BaoContentItem>,
+    mut rx: mpsc::Receiver<BaoContentItem>,
     handle: BaoFileHandle,
     ctx: HashContext,
 ) -> api::Result<()> {
@@ -955,7 +955,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, ctx: HashContext) {
 
 async fn export_ranges_impl(
     cmd: ExportRangesRequest,
-    tx: &mut spsc::Sender<ExportRangesItem>,
+    tx: &mut mpsc::Sender<ExportRangesItem>,
     handle: BaoFileHandle,
 ) -> io::Result<()> {
     let ExportRangesRequest { ranges, hash } = cmd;
@@ -1020,7 +1020,7 @@ async fn export_bao(mut cmd: ExportBaoMsg, ctx: HashContext) {
 
 async fn export_bao_impl(
     cmd: ExportBaoRequest,
-    tx: &mut spsc::Sender<EncodedItem>,
+    tx: &mut mpsc::Sender<EncodedItem>,
     handle: BaoFileHandle,
 ) -> anyhow::Result<()> {
     let ExportBaoRequest { ranges, hash } = cmd;
@@ -1048,7 +1048,7 @@ async fn export_path(cmd: ExportPathMsg, ctx: HashContext) {
 
 async fn export_path_impl(
     cmd: ExportPathRequest,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut mpsc::Sender<ExportProgressItem>,
     ctx: HashContext,
 ) -> api::Result<()> {
     let ExportPathRequest { mode, target, .. } = cmd;
@@ -1145,7 +1145,7 @@ async fn copy_with_progress(
     file: impl ReadAt,
     size: u64,
     target: &mut impl Write,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut mpsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let mut offset = 0;
     let mut buf = vec![0u8; 1024 * 1024];
@@ -1179,8 +1179,8 @@ impl FsStore {
             .enable_time()
             .build()?;
         let handle = rt.handle().clone();
-        let (commands_tx, commands_rx) = mpsc::channel(100);
-        let (fs_commands_tx, fs_commands_rx) = mpsc::channel(100);
+        let (commands_tx, commands_rx) = tokio::sync::mpsc::channel(100);
+        let (fs_commands_tx, fs_commands_rx) = tokio::sync::mpsc::channel(100);
         let gc_config = options.gc.clone();
         let actor = handle
             .spawn(Actor::new(
@@ -1213,7 +1213,7 @@ impl FsStore {
 #[derive(Debug, Clone)]
 pub struct FsStore {
     sender: ApiClient,
-    db: mpsc::Sender<InternalCommand>,
+    db: tokio::sync::mpsc::Sender<InternalCommand>,
 }
 
 impl Deref for FsStore {
@@ -1233,7 +1233,7 @@ impl AsRef<Store> for FsStore {
 impl FsStore {
     fn new(
         sender: irpc::LocalSender<proto::Command, proto::StoreService>,
-        db: mpsc::Sender<InternalCommand>,
+        db: tokio::sync::mpsc::Sender<InternalCommand>,
     ) -> Self {
         Self {
             sender: sender.into(),

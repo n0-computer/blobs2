@@ -11,15 +11,12 @@ use std::{
 use anyhow::bail;
 use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use irpc_derive::rpc_requests;
 use n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize, de::Error};
-use tokio::{
-    sync::{Mutex, mpsc},
-    task::JoinSet,
-};
+use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::time::FutureExt;
 use tracing::{info, instrument::Instrument, warn};
 
@@ -43,7 +40,7 @@ impl irpc::Service for DownloaderService {}
 #[rpc_requests(DownloaderService, message = SwarmMsg, alias = "Msg")]
 #[derive(Debug, Serialize, Deserialize)]
 enum SwarmProtocol {
-    #[rpc(tx = spsc::Sender<DownloadProgessItem>)]
+    #[rpc(tx = mpsc::Sender<DownloadProgessItem>)]
     Download(DownloadRequest),
 }
 
@@ -83,7 +80,7 @@ impl DownloaderActor {
         }
     }
 
-    async fn run(mut self, mut rx: mpsc::Receiver<SwarmMsg>) {
+    async fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<SwarmMsg>) {
         while let Some(msg) = rx.recv().await {
             match msg {
                 SwarmMsg::Download(request) => {
@@ -115,7 +112,7 @@ async fn handle_download_impl(
     store: Store,
     pool: ConnectionPool,
     request: DownloadRequest,
-    tx: &mut spsc::Sender<DownloadProgessItem>,
+    tx: &mut mpsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     match request.strategy {
         SplitStrategy::Split => handle_download_split_impl(store, pool, request, tx).await?,
@@ -136,11 +133,11 @@ async fn handle_download_split_impl(
     store: Store,
     pool: ConnectionPool,
     request: DownloadRequest,
-    tx: &mut spsc::Sender<DownloadProgessItem>,
+    tx: &mut mpsc::Sender<DownloadProgessItem>,
 ) -> anyhow::Result<()> {
     let providers = request.providers;
     let requests = split_request(&request.request, &providers, &pool, &store, Drain).await?;
-    let (progress_tx, progress_rx) = mpsc::channel(32);
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(32);
     let mut futs = stream::iter(requests.into_iter().enumerate())
         .map(|(id, request)| {
             let pool = pool.clone();
@@ -149,7 +146,7 @@ async fn handle_download_split_impl(
             let progress_tx = progress_tx.clone();
             async move {
                 let hash = request.hash;
-                let (tx, rx) = mpsc::channel::<(usize, DownloadProgessItem)>(16);
+                let (tx, rx) = tokio::sync::mpsc::channel::<(usize, DownloadProgessItem)>(16);
                 progress_tx.send(rx).await.ok();
                 let sink = TokioMpscSenderSink(tx)
                     .with_map_err(io::Error::other)
@@ -199,7 +196,7 @@ async fn handle_download_split_impl(
     Ok(())
 }
 
-fn into_stream<T>(mut recv: mpsc::Receiver<T>) -> impl Stream<Item = T> {
+fn into_stream<T>(mut recv: tokio::sync::mpsc::Receiver<T>) -> impl Stream<Item = T> {
     Gen::new(|co| async move {
         while let Some(item) = recv.recv().await {
             co.yield_(item).await;
@@ -309,11 +306,11 @@ impl<'de> Deserialize<'de> for DownloadRequest {
 pub type DownloadOptions = DownloadRequest;
 
 pub struct DownloadProgress {
-    fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>,
+    fut: future::Boxed<irpc::Result<mpsc::Receiver<DownloadProgessItem>>>,
 }
 
 impl DownloadProgress {
-    fn new(fut: future::Boxed<irpc::Result<spsc::Receiver<DownloadProgessItem>>>) -> Self {
+    fn new(fut: future::Boxed<irpc::Result<mpsc::Receiver<DownloadProgessItem>>>) -> Self {
         Self { fut }
     }
 
@@ -351,7 +348,7 @@ impl IntoFuture for DownloadProgress {
 
 impl Downloader {
     pub fn new(store: &Store, endpoint: &Endpoint) -> Self {
-        let (tx, rx) = mpsc::channel::<SwarmMsg>(32);
+        let (tx, rx) = tokio::sync::mpsc::channel::<SwarmMsg>(32);
         let actor = DownloaderActor::new(store.clone(), endpoint.clone());
         tokio::spawn(actor.run(rx));
         Self { client: tx.into() }

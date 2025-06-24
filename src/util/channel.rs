@@ -1,5 +1,3 @@
-pub use tokio::sync::mpsc;
-
 pub mod oneshot {
     use std::{
         future::Future,

@@ -22,7 +22,7 @@ use bao_tree::{
     },
 };
 use bytes::Bytes;
-use irpc::channel::spsc;
+use irpc::channel::mpsc;
 use n0_future::future::{self, yield_now};
 use range_collections::range_set::RangeSetRange;
 use ref_cast::RefCast;
@@ -42,7 +42,7 @@ use crate::{
         },
     },
     store::{IROH_BLOCK_SIZE, mem::CompleteStorage},
-    util::{ChunkRangesExt, channel::mpsc},
+    util::ChunkRangesExt,
 };
 
 #[derive(Debug, Clone)]
@@ -59,13 +59,16 @@ impl Deref for ReadonlyMemStore {
 }
 
 struct Actor {
-    commands: mpsc::Receiver<proto::Command>,
+    commands: tokio::sync::mpsc::Receiver<proto::Command>,
     tasks: JoinSet<()>,
     data: HashMap<Hash, CompleteStorage>,
 }
 
 impl Actor {
-    fn new(commands: mpsc::Receiver<proto::Command>, data: HashMap<Hash, CompleteStorage>) -> Self {
+    fn new(
+        commands: tokio::sync::mpsc::Receiver<proto::Command>,
+        data: HashMap<Hash, CompleteStorage>,
+    ) -> Self {
         Self {
             data,
             commands,
@@ -233,7 +236,7 @@ async fn export_bao(
     hash: Hash,
     entry: Option<CompleteStorage>,
     ranges: ChunkRanges,
-    mut sender: spsc::Sender<EncodedItem>,
+    mut sender: mpsc::Sender<EncodedItem>,
 ) {
     let entry = match entry {
         Some(entry) => entry,
@@ -286,7 +289,7 @@ async fn export_ranges(mut cmd: ExportRangesMsg, entry: Option<CompleteStorage>)
 
 async fn export_ranges_impl(
     cmd: ExportRangesRequest,
-    tx: &mut spsc::Sender<ExportRangesItem>,
+    tx: &mut mpsc::Sender<ExportRangesItem>,
     entry: CompleteStorage,
 ) -> io::Result<()> {
     let ExportRangesRequest { ranges, .. } = cmd;
@@ -334,7 +337,7 @@ impl ReadonlyMemStore {
             let (hash, entry) = CompleteStorage::create(data);
             entries.insert(hash, entry);
         }
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let actor = Actor::new(receiver, entries);
         tokio::spawn(actor.run());
         let local = irpc::LocalSender::from(sender);
@@ -347,7 +350,7 @@ impl ReadonlyMemStore {
 async fn export_path(
     entry: Option<CompleteStorage>,
     target: PathBuf,
-    mut tx: spsc::Sender<ExportProgressItem>,
+    mut tx: mpsc::Sender<ExportProgressItem>,
 ) {
     let Some(entry) = entry else {
         tx.send(api::Error::io(io::ErrorKind::NotFound, "hash not found").into())
@@ -364,7 +367,7 @@ async fn export_path(
 async fn export_path_impl(
     entry: CompleteStorage,
     target: PathBuf,
-    tx: &mut spsc::Sender<ExportProgressItem>,
+    tx: &mut mpsc::Sender<ExportProgressItem>,
 ) -> io::Result<()> {
     let data = entry.data;
     // todo: for partial entries make sure to only write the part that is actually present
