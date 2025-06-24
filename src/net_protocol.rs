@@ -38,9 +38,8 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use anyhow::Result;
-use iroh::{Endpoint, endpoint::Connection, protocol::ProtocolHandler};
-use n0_future::future::Boxed as BoxedFuture;
+use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}, Endpoint};
+use n0_watcher::Watcher;
 use tokio::sync::mpsc;
 use tracing::error;
 
@@ -89,29 +88,25 @@ impl Blobs {
     /// just a convenience method to create a ticket from content and the address of this node.
     pub async fn ticket(&self, content: impl Into<HashAndFormat>) -> anyhow::Result<BlobTicket> {
         let content = content.into();
-        let addr = self.inner.endpoint.node_addr().await?;
+        let addr = self.inner.endpoint.node_addr().initialized().await?;
         let ticket = BlobTicket::new(addr, content.hash, content.format);
         Ok(ticket)
     }
 }
 
 impl ProtocolHandler for Blobs {
-    fn accept(&self, conn: Connection) -> BoxedFuture<Result<()>> {
+    async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
         let store = self.store().clone();
         let events = self.inner.events.clone();
 
-        Box::pin(async move {
-            crate::provider::handle_connection(conn, store, events).await;
-            Ok(())
-        })
+        crate::provider::handle_connection(conn, store, events).await;
+        Ok(())
     }
 
-    fn shutdown(&self) -> BoxedFuture<()> {
+    async fn shutdown(&self) {
         let store = self.store().clone();
-        Box::pin(async move {
-            if let Err(cause) = store.shutdown().await {
-                error!("error shutting down store: {:?}", cause);
-            }
-        })
+        if let Err(cause) = store.shutdown().await {
+            error!("error shutting down store: {:?}", cause);
+        }
     }
 }

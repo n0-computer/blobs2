@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1"
 bao-tree = { version = "0.15.1", features = ["experimental-mixed", "tokio_fsm", "validate", "serde"], default-features = false }
 bytes = { version = "1", features = ["serde"] }
 derive_more = { version = "2.0.1", features = ["from", "try_from", "into", "debug", "display", "deref", "deref_mut"] }
 futures-lite = "2.6.0"
-quinn = { package = "iroh-quinn", version = "0.13.0" }
+quinn = { package = "iroh-quinn", version = "0.14.0" }
 n0-future = "0.1.2"
 range-collections = { version = "0.4.6", features = ["serde"] }
 redb = "2.4.0"
@@ -37,6 +37,9 @@ irpc = { version = "0.4.0", features = ["rpc", "quinn_endpoint_setup", "message_
 iroh-metrics = { version = "0.32.0" }
 hashlink = "0.10.0"
 futures-buffered = "0.2.11"
+n0-watcher = "0.2.0"
+n0-snafu = "0.2.1"
+snafu = "0.8.6"
 
 [dev-dependencies]
 clap = { version = "4.5.31", features = ["derive"] }
@@ -56,3 +59,11 @@ walkdir = "2.5.0"
 hide-proto-docs = []
 metrics = []
 default = ["hide-proto-docs"]
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+quinn = { package = "iroh-quinn", path = "../quinn/quinn" }
+quinn-proto = { package = "iroh-quinn-proto", path = "../quinn/quinn-proto" }
+quinn-udp = { package = "iroh-quinn-udp", path = "../quinn/quinn-udp" }
+irpc = { path = "../irpc" }

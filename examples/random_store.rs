@@ -12,6 +12,7 @@ use iroh_blobs::{
     test::{add_hash_sequences, create_random_blobs},
 };
 use n0_future::StreamExt;
+use n0_watcher::Watcher;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::{signal::ctrl_c, sync::mpsc};
 use tracing::info;
@@ -240,7 +241,7 @@ async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
     let router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
         .spawn();
-    let addr = router.endpoint().node_addr().await?;
+    let addr = router.endpoint().node_addr().initialized().await?;
     let ticket = NodeTicket::from(addr.clone());
     println!("Node address: {:?}", addr);
     println!("ticket:\n{}", ticket);

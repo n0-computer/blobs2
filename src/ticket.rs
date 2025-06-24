@@ -5,6 +5,7 @@ use anyhow::Result;
 use iroh::{NodeAddr, NodeId, RelayUrl};
 use iroh_base::ticket::{self, Ticket};
 use serde::{Deserialize, Serialize};
+use snafu::GenerateImplicitData;
 
 use crate::{BlobFormat, Hash, HashAndFormat};
 
@@ -79,8 +80,8 @@ impl Ticket for BlobTicket {
         postcard::to_stdvec(&data).expect("postcard serialization failed")
     }
 
-    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, ticket::Error> {
-        let res: TicketWireFormat = postcard::from_bytes(bytes).map_err(ticket::Error::Postcard)?;
+    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, ticket::ParseError> {
+        let res: TicketWireFormat = postcard::from_bytes(bytes).map_err(|source| ticket::ParseError::Postcard { span_trace: n0_snafu::SpanTrace::generate_with_source(&source), source, backtrace: None })?;
         let TicketWireFormat::Variant0(Variant0BlobTicket { node, format, hash }) = res;
         Ok(Self {
             node: NodeAddr {
@@ -95,7 +96,7 @@ impl Ticket for BlobTicket {
 }
 
 impl FromStr for BlobTicket {
-    type Err = ticket::Error;
+    type Err = ticket::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ticket::deserialize(s)
