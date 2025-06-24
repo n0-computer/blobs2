@@ -662,7 +662,7 @@ async fn import_byte_stream(
     scope: Scope,
     format: BlobFormat,
     mut rx: mpsc::Receiver<ImportByteStreamUpdate>,
-    mut tx: mpsc::Sender<AddProgressItem>,
+    tx: mpsc::Sender<AddProgressItem>,
 ) -> anyhow::Result<ImportEntry> {
     let mut res = Vec::new();
     loop {
@@ -700,7 +700,7 @@ async fn import_path(cmd: ImportPathMsg) -> anyhow::Result<ImportEntry> {
                 format,
                 ..
             },
-        mut tx,
+        tx,
         ..
     } = cmd;
     let mut res = Vec::new();

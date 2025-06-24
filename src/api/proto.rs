@@ -28,8 +28,10 @@ use bao_tree::{
     io::{BaoContentItem, Leaf, mixed::EncodedItem},
 };
 use bytes::Bytes;
-use irpc::channel::{mpsc, oneshot};
-use irpc_derive::rpc_requests;
+use irpc::{
+    channel::{mpsc, oneshot},
+    rpc_requests,
+};
 use n0_future::Stream;
 use range_collections::RangeSet2;
 use serde::{Deserialize, Serialize};

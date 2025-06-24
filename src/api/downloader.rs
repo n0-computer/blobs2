@@ -11,8 +11,7 @@ use std::{
 use anyhow::bail;
 use genawaiter::sync::Gen;
 use iroh::{Endpoint, NodeId, endpoint::Connection};
-use irpc::channel::mpsc;
-use irpc_derive::rpc_requests;
+use irpc::{channel::mpsc, rpc_requests};
 use n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize, de::Error};
