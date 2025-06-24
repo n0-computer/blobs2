@@ -30,7 +30,7 @@ use iroh_io::TokioStreamReader;
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tracing::{debug, error};
 
 use crate::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
@@ -436,29 +436,35 @@ pub mod fsm {
     }
 
     /// Error that you can get from [`AtBlobHeader::next`]
-    #[derive(Debug, thiserror::Error)]
+    #[common_fields({
+        backtrace: Option<Backtrace>,
+        #[snafu(implicit)]
+        span_trace: SpanTrace,
+    })]
+    #[non_exhaustive]
+    #[derive(Debug, Snafu)]
     pub enum AtBlobHeaderNextError {
         /// Eof when reading the size header
         ///
         /// This indicates that the provider does not have the requested data.
-        #[error("not found")]
-        NotFound,
+        #[snafu(display("not found"))]
+        NotFound {},
         /// Quinn read error when reading the size header
-        #[error("read: {0}")]
-        Read(endpoint::ReadError),
+        #[snafu(display("read: {source}"))]
+        EndpointRead { source: endpoint::ReadError },
         /// Generic io error
-        #[error("io: {0}")]
-        Io(io::Error),
+        #[snafu(display("io: {source}"))]
+        Io { source: io::Error },
     }
 
     impl From<AtBlobHeaderNextError> for io::Error {
         fn from(cause: AtBlobHeaderNextError) -> Self {
             match cause {
-                AtBlobHeaderNextError::NotFound => {
+                AtBlobHeaderNextError::NotFound { .. } => {
                     io::Error::new(io::ErrorKind::UnexpectedEof, cause)
                 }
-                AtBlobHeaderNextError::Read(cause) => cause.into(),
-                AtBlobHeaderNextError::Io(cause) => cause,
+                AtBlobHeaderNextError::EndpointRead { source, .. } => source.into(),
+                AtBlobHeaderNextError::Io { source, .. } => source,
             }
         }
     }
@@ -468,14 +474,14 @@ pub mod fsm {
         pub async fn next(mut self) -> Result<(AtBlobContent, u64), AtBlobHeaderNextError> {
             let size = self.reader.read::<8>().await.map_err(|cause| {
                 if cause.kind() == io::ErrorKind::UnexpectedEof {
-                    AtBlobHeaderNextError::NotFound
+                    NotFoundSnafu.build()
                 } else if let Some(e) = cause
                     .get_ref()
                     .and_then(|x| x.downcast_ref::<endpoint::ReadError>())
                 {
-                    AtBlobHeaderNextError::Read(e.clone())
+                    EndpointReadSnafu.into_error(e.clone())
                 } else {
-                    AtBlobHeaderNextError::Io(cause)
+                    IoSnafu.into_error(cause)
                 }
             })?;
             self.misc.other_bytes_read += 8;
@@ -586,37 +592,49 @@ pub mod fsm {
     /// is not actually a [`ReadError`].
     ///
     /// [`ReadError`]: endpoint::ReadError
-    #[derive(Debug, thiserror::Error)]
+    #[common_fields({
+        backtrace: Option<Backtrace>,
+        #[snafu(implicit)]
+        span_trace: SpanTrace,
+    })]
+    #[non_exhaustive]
+    #[derive(Debug, Snafu)]
     pub enum DecodeError {
         /// A chunk was not found or invalid, so the provider stopped sending data
-        #[error("not found")]
-        NotFound,
+        #[snafu(display("not found"))]
+        ChunkNotFound {},
         /// A parent was not found or invalid, so the provider stopped sending data
-        #[error("parent not found {0:?}")]
-        ParentNotFound(TreeNode),
+        #[snafu(display("parent not found {node:?}"))]
+        ParentNotFound { node: TreeNode },
         /// A parent was not found or invalid, so the provider stopped sending data
-        #[error("chunk not found {0}")]
-        LeafNotFound(ChunkNum),
+        #[snafu(display("chunk not found {num}"))]
+        LeafNotFound { num: ChunkNum },
         /// The hash of a parent did not match the expected hash
-        #[error("parent hash mismatch: {0:?}")]
-        ParentHashMismatch(TreeNode),
+        #[snafu(display("parent hash mismatch: {node:?}"))]
+        ParentHashMismatch { node: TreeNode },
         /// The hash of a leaf did not match the expected hash
-        #[error("leaf hash mismatch: {0}")]
-        LeafHashMismatch(ChunkNum),
+        #[snafu(display("leaf hash mismatch: {num}"))]
+        LeafHashMismatch { num: ChunkNum },
         /// Error when reading from the stream
-        #[error("read: {0}")]
-        Read(endpoint::ReadError),
+        #[snafu(display("read: {source}"))]
+        Read { source: endpoint::ReadError },
         /// A generic io error
-        #[error("io: {0}")]
-        Io(#[from] io::Error),
+        #[snafu(display("io: {source}"))]
+        DecodeIo { source: io::Error },
+    }
+
+    impl DecodeError {
+        pub(crate) fn leaf_hash_mismatch(num: ChunkNum) -> Self {
+            LeafHashMismatchSnafu { num }.build()
+        }
     }
 
     impl From<AtBlobHeaderNextError> for DecodeError {
         fn from(cause: AtBlobHeaderNextError) -> Self {
             match cause {
-                AtBlobHeaderNextError::NotFound => Self::NotFound,
-                AtBlobHeaderNextError::Read(cause) => Self::Read(cause),
-                AtBlobHeaderNextError::Io(cause) => Self::Io(cause),
+                AtBlobHeaderNextError::NotFound { .. } => ChunkNotFoundSnafu.build(),
+                AtBlobHeaderNextError::EndpointRead { source, .. } => ReadSnafu.into_error(source),
+                AtBlobHeaderNextError::Io { source, .. } => DecodeIoSnafu.into_error(source),
             }
         }
     }
@@ -624,35 +642,47 @@ pub mod fsm {
     impl From<DecodeError> for io::Error {
         fn from(cause: DecodeError) -> Self {
             match cause {
-                DecodeError::ParentNotFound(_) => {
+                DecodeError::ParentNotFound { .. } => {
                     io::Error::new(io::ErrorKind::UnexpectedEof, cause)
                 }
-                DecodeError::LeafNotFound(_) => io::Error::new(io::ErrorKind::UnexpectedEof, cause),
-                DecodeError::Read(cause) => cause.into(),
-                DecodeError::Io(cause) => cause,
+                DecodeError::LeafNotFound { .. } => {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, cause)
+                }
+                DecodeError::Read { source, .. } => source.into(),
+                DecodeError::DecodeIo { source, .. } => source,
                 _ => io::Error::other(cause),
             }
+        }
+    }
+
+    impl From<io::Error> for DecodeError {
+        fn from(value: io::Error) -> Self {
+            DecodeIoSnafu.into_error(value)
         }
     }
 
     impl From<bao_tree::io::DecodeError> for DecodeError {
         fn from(value: bao_tree::io::DecodeError) -> Self {
             match value {
-                bao_tree::io::DecodeError::ParentNotFound(x) => Self::ParentNotFound(x),
-                bao_tree::io::DecodeError::LeafNotFound(x) => Self::LeafNotFound(x),
-                bao_tree::io::DecodeError::ParentHashMismatch(node) => {
-                    Self::ParentHashMismatch(node)
+                bao_tree::io::DecodeError::ParentNotFound(x) => {
+                    ParentNotFoundSnafu { node: x }.build()
                 }
-                bao_tree::io::DecodeError::LeafHashMismatch(chunk) => Self::LeafHashMismatch(chunk),
+                bao_tree::io::DecodeError::LeafNotFound(x) => LeafNotFoundSnafu { num: x }.build(),
+                bao_tree::io::DecodeError::ParentHashMismatch(node) => {
+                    ParentHashMismatchSnafu { node }.build()
+                }
+                bao_tree::io::DecodeError::LeafHashMismatch(chunk) => {
+                    LeafHashMismatchSnafu { num: chunk }.build()
+                }
                 bao_tree::io::DecodeError::Io(cause) => {
                     if let Some(inner) = cause.get_ref() {
                         if let Some(e) = inner.downcast_ref::<endpoint::ReadError>() {
-                            Self::Read(e.clone())
+                            ReadSnafu.into_error(e.clone())
                         } else {
-                            Self::Io(cause)
+                            DecodeIoSnafu.into_error(cause)
                         }
                     } else {
-                        Self::Io(cause)
+                        DecodeIoSnafu.into_error(cause)
                     }
                 }
             }
@@ -918,28 +948,35 @@ pub mod fsm {
 }
 
 /// Error when processing a response
-#[derive(thiserror::Error, Debug)]
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: SpanTrace,
+})]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[derive(Debug, Snafu)]
 pub enum GetResponseError {
     /// Error when opening a stream
-    #[error("connection: {0}")]
-    Connection(#[from] endpoint::ConnectionError),
+    #[snafu(display("connection: {source}"))]
+    Connection { source: endpoint::ConnectionError },
     /// Error when writing the handshake or request to the stream
-    #[error("write: {0}")]
-    Write(#[from] endpoint::WriteError),
+    #[snafu(display("write: {source}"))]
+    Write { source: endpoint::WriteError },
     /// Error when reading from the stream
-    #[error("read: {0}")]
-    Read(#[from] endpoint::ReadError),
+    #[snafu(display("read: {source}"))]
+    Read { source: endpoint::ReadError },
     /// Error when decoding, e.g. hash mismatch
-    #[error("decode: {0}")]
-    Decode(bao_tree::io::DecodeError),
+    #[snafu(display("decode: {source}"))]
+    Decode { source: bao_tree::io::DecodeError },
     /// A generic error
-    #[error("generic: {0}")]
-    Generic(anyhow::Error),
+    #[snafu(display("generic: {source}"))]
+    Generic { source: anyhow::Error },
 }
 
 impl From<postcard::Error> for GetResponseError {
     fn from(cause: postcard::Error) -> Self {
-        Self::Generic(cause.into())
+        GenericSnafu.into_error(cause.into())
     }
 }
 
@@ -950,25 +987,25 @@ impl From<bao_tree::io::DecodeError> for GetResponseError {
                 // try to downcast to specific quinn errors
                 if let Some(source) = cause.source() {
                     if let Some(error) = source.downcast_ref::<endpoint::ConnectionError>() {
-                        return Self::Connection(error.clone());
+                        return ConnectionSnafu.into_error(error.clone());
                     }
                     if let Some(error) = source.downcast_ref::<endpoint::ReadError>() {
-                        return Self::Read(error.clone());
+                        return ReadSnafu.into_error(error.clone());
                     }
                     if let Some(error) = source.downcast_ref::<endpoint::WriteError>() {
-                        return Self::Write(error.clone());
+                        return WriteSnafu.into_error(error.clone());
                     }
                 }
-                Self::Generic(cause.into())
+                GenericSnafu.into_error(cause.into())
             }
-            _ => Self::Decode(cause),
+            _ => DecodeSnafu.into_error(cause),
         }
     }
 }
 
 impl From<anyhow::Error> for GetResponseError {
     fn from(cause: anyhow::Error) -> Self {
-        Self::Generic(cause)
+        GenericSnafu.into_error(cause)
     }
 }
 

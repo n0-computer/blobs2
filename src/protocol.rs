@@ -384,6 +384,7 @@ use serde::{Deserialize, Serialize};
 mod range_spec;
 pub use bao_tree::ChunkRanges;
 pub use range_spec::{ChunkRangesSeq, NonEmptyRequestRangeSpecIter, RangeSpec};
+use snafu::{GenerateImplicitData, Snafu};
 use tokio::io::AsyncReadExt;
 
 pub use crate::util::ChunkRangesExt;
@@ -684,9 +685,21 @@ impl From<Closed> for VarInt {
 }
 
 /// Unknown error_code, can not be converted into [`Closed`].
-#[derive(thiserror::Error, Debug)]
-#[error("Unknown error_code: {0}")]
-pub struct UnknownErrorCode(u64);
+#[derive(Debug, Snafu)]
+#[snafu(display("Unknown error_code: {code}"))]
+pub struct UnknownErrorCode {
+    code: u64,
+    backtrace: Option<snafu::Backtrace>,
+}
+
+impl UnknownErrorCode {
+    pub(crate) fn new(code: u64) -> Self {
+        Self {
+            code,
+            backtrace: GenerateImplicitData::generate(),
+        }
+    }
+}
 
 impl TryFrom<VarInt> for Closed {
     type Error = UnknownErrorCode;
@@ -696,7 +709,7 @@ impl TryFrom<VarInt> for Closed {
             0 => Ok(Self::StreamDropped),
             1 => Ok(Self::ProviderTerminating),
             2 => Ok(Self::RequestReceived),
-            val => Err(UnknownErrorCode(val)),
+            val => Err(UnknownErrorCode::new(val)),
         }
     }
 }

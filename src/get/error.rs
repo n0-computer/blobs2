@@ -149,13 +149,13 @@ impl From<crate::get::fsm::AtBlobHeaderNextError> for GetError {
     fn from(value: crate::get::fsm::AtBlobHeaderNextError) -> Self {
         use crate::get::fsm::AtBlobHeaderNextError::*;
         match value {
-            e @ NotFound => {
+            e @ NotFound { .. } => {
                 // > This indicates that the provider does not have the requested data.
                 // peer might have the data later, simply retry it
                 GetError::NotFound(e.into())
             }
-            Read(e) => e.into(),
-            e @ Io(_) => {
+            EndpointRead { source, .. } => source.into(),
+            e @ Io { .. } => {
                 // io errors are likely recoverable
                 GetError::Io(e.into())
             }
@@ -168,21 +168,21 @@ impl From<crate::get::fsm::DecodeError> for GetError {
         use crate::get::fsm::DecodeError::*;
 
         match value {
-            e @ NotFound => GetError::NotFound(e.into()),
-            e @ ParentNotFound(_) => GetError::NotFound(e.into()),
-            e @ LeafNotFound(_) => GetError::NotFound(e.into()),
-            e @ ParentHashMismatch(_) => {
+            e @ ChunkNotFound { .. } => GetError::NotFound(e.into()),
+            e @ ParentNotFound { .. } => GetError::NotFound(e.into()),
+            e @ LeafNotFound { .. } => GetError::NotFound(e.into()),
+            e @ ParentHashMismatch { .. } => {
                 // TODO(@divma): did the peer sent wrong data? is it corrupted? did we sent a wrong
                 // request?
                 GetError::NoncompliantNode(e.into())
             }
-            e @ LeafHashMismatch(_) => {
+            e @ LeafHashMismatch { .. } => {
                 // TODO(@divma): did the peer sent wrong data? is it corrupted? did we sent a wrong
                 // request?
                 GetError::NoncompliantNode(e.into())
             }
-            Read(e) => e.into(),
-            Io(e) => e.into(),
+            Read { source, .. } => source.into(),
+            DecodeIo { source, .. } => source.into(),
         }
     }
 }

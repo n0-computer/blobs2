@@ -4,8 +4,11 @@ use std::{borrow::Borrow, fmt, str::FromStr};
 
 use arrayvec::ArrayString;
 use bao_tree::blake3;
+use n0_snafu::SpanTrace;
+use nested_enum_utils::common_fields;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use snafu::{Backtrace, ResultExt, Snafu};
 
 use crate::store::util::DD;
 
@@ -134,12 +137,19 @@ impl fmt::Display for Hash {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: SpanTrace,
+})]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[derive(Debug, Snafu)]
 pub enum HexOrBase32ParseError {
-    #[error("Invalid length")]
-    DecodeInvalidLength,
-    #[error("Failed to decode {0}")]
-    Decode(#[from] data_encoding::DecodeError),
+    #[snafu(display("Invalid length"))]
+    DecodeInvalidLength {},
+    #[snafu(display("Failed to decode {source}"))]
+    Decode { source: data_encoding::DecodeError },
 }
 
 impl FromStr for Hash {
@@ -157,10 +167,10 @@ impl FromStr for Hash {
         match res {
             Ok(len) => {
                 if len != 32 {
-                    return Err(HexOrBase32ParseError::DecodeInvalidLength);
+                    return Err(DecodeInvalidLengthSnafu.build());
                 }
             }
-            Err(partial) => return Err(partial.error.into()),
+            Err(partial) => return Err(partial.error).context(DecodeSnafu),
         }
         Ok(Self(blake3::Hash::from_bytes(bytes)))
     }

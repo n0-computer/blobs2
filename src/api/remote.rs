@@ -5,7 +5,10 @@ use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::SendStream;
 use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
 use n0_future::{Stream, StreamExt, io};
+use n0_snafu::SpanTrace;
+use nested_enum_utils::common_fields;
 use ref_cast::RefCast;
+use snafu::{Backtrace, Snafu};
 
 use super::blobs::Bitfield;
 use crate::{
@@ -770,29 +773,46 @@ impl Remote {
 }
 
 /// Failures for a get operation
-#[derive(Debug, thiserror::Error)]
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: SpanTrace,
+})]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[derive(Debug, Snafu)]
 pub enum ExecuteError {
     /// Network or IO operation failed.
-    #[error("Unable to open bidi stream")]
-    Connection(#[from] iroh::endpoint::ConnectionError),
-    #[error("Unable to read from the remote")]
-    Read(#[from] iroh::endpoint::ReadError),
-    #[error("Error sending the request")]
-    Send(#[from] crate::get::fsm::ConnectedNextError),
-    #[error("Unable to read size")]
-    Size(#[from] crate::get::fsm::AtBlobHeaderNextError),
-    #[error("Error while decoding the data")]
-    Decode(#[from] crate::get::fsm::DecodeError),
-    #[error("Internal error while reading the hash sequence")]
-    ExportBao(#[from] api::ExportBaoError),
-    #[error("Hash sequence has an invalid length")]
-    InvalidHashSeq(#[source] anyhow::Error),
-    #[error("Internal error importing the data")]
-    ImportBao(#[source] crate::api::RequestError),
-    #[error("Error sending download progress - receiver closed")]
-    SendDownloadProgress(#[from] irpc::channel::SendError),
-    #[error("Internal error importing the data")]
-    MpscSend(#[from] tokio::sync::mpsc::error::SendError<BaoContentItem>),
+    #[snafu(display("Unable to open bidi stream"))]
+    Connection {
+        source: iroh::endpoint::ConnectionError,
+    },
+    #[snafu(display("Unable to read from the remote"))]
+    Read { source: iroh::endpoint::ReadError },
+    #[snafu(display("Error sending the request"))]
+    Send {
+        source: crate::get::fsm::ConnectedNextError,
+    },
+    #[snafu(display("Unable to read size"))]
+    Size {
+        source: crate::get::fsm::AtBlobHeaderNextError,
+    },
+    #[snafu(display("Error while decoding the data"))]
+    Decode {
+        source: crate::get::fsm::DecodeError,
+    },
+    #[snafu(display("Internal error while reading the hash sequence"))]
+    ExportBao { source: api::ExportBaoError },
+    #[snafu(display("Hash sequence has an invalid length"))]
+    InvalidHashSeq { source: anyhow::Error },
+    #[snafu(display("Internal error importing the data"))]
+    ImportBao { source: crate::api::RequestError },
+    #[snafu(display("Error sending download progress - receiver closed"))]
+    SendDownloadProgress { source: irpc::channel::SendError },
+    #[snafu(display("Internal error importing the data"))]
+    MpscSend {
+        source: tokio::sync::mpsc::error::SendError<BaoContentItem>,
+    },
 }
 
 use std::{collections::BTreeMap, future::Future, num::NonZeroU64, sync::Arc};
@@ -855,7 +875,7 @@ async fn get_blob_ranges_impl(
             let end = content.drain().await?;
             Ok(end)
         } else {
-            Err(DecodeError::LeafHashMismatch(ChunkNum(0)).into())
+            Err(DecodeError::leaf_hash_mismatch(ChunkNum(0)).into())
         };
     };
     let buffer_size = get_buffer_size(size);
