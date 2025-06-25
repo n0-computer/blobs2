@@ -108,24 +108,41 @@ pub enum IoCases {
 pub enum GetError {
     /// Hash not found, or a requested chunk for the hash not found.
     #[snafu(display("Data for hash not found"))]
-    NotFound { source: NotFoundCases },
+    NotFound {
+        #[snafu(source(from(NotFoundCases, Box::new)))]
+        source: Box<NotFoundCases>,
+    },
     /// Remote has reset the connection.
     #[snafu(display("Remote has reset the connection"))]
-    RemoteReset { source: RemoteResetCases },
+    RemoteReset {
+        #[snafu(source(from(RemoteResetCases, Box::new)))]
+        source: Box<RemoteResetCases>,
+    },
     /// Remote behaved in a non-compliant way.
     #[snafu(display("Remote behaved in a non-compliant way"))]
-    NoncompliantNode { source: NoncompliantNodeCases },
+    NoncompliantNode {
+        #[snafu(source(from(NoncompliantNodeCases, Box::new)))]
+        source: Box<NoncompliantNodeCases>,
+    },
 
     /// Network or IO operation failed.
     #[snafu(display("A network or IO operation failed"))]
-    Io { source: IoCases },
-
+    Io {
+        #[snafu(source(from(IoCases, Box::new)))]
+        source: Box<IoCases>,
+    },
     /// Our download request is invalid.
     #[snafu(display("Our download request is invalid"))]
-    BadRequest { source: BadRequestCases },
+    BadRequest {
+        #[snafu(source(from(BadRequestCases, Box::new)))]
+        source: Box<BadRequestCases>,
+    },
     /// Operation failed on the local node.
     #[snafu(display("Operation failed on the local node"))]
-    LocalFailure { source: LocalFailureCases },
+    LocalFailure {
+        #[snafu(source(from(LocalFailureCases, Box::new)))]
+        source: Box<LocalFailureCases>,
+    },
 }
 
 pub type GetResult<T> = std::result::Result<T, GetError>;
