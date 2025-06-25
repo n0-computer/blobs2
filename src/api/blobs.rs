@@ -430,7 +430,7 @@ impl Blobs {
         &self,
         hash: Hash,
         ranges: ChunkRanges,
-        stream: &mut quinn::RecvStream,
+        stream: &mut iroh::endpoint::RecvStream,
     ) -> RequestResult<()> {
         let reader = TokioStreamReader::new(stream);
         self.import_bao_reader(hash, ranges, reader).await?;
@@ -1024,16 +1024,13 @@ impl ExportBaoProgress {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                    target
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                    target.write_all(&data).await.map_err(io::Error::from)?;
                 }
                 EncodedItem::Leaf(leaf) => {
                     target
                         .write_chunk(leaf.data)
                         .await
-                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                        .map_err(io::Error::from)?;
                 }
                 EncodedItem::Done => break,
                 EncodedItem::Error(cause) => return Err(cause.into()),
@@ -1062,10 +1059,7 @@ impl ExportBaoProgress {
                     let mut data = vec![0u8; 64];
                     data[..32].copy_from_slice(parent.pair.0.as_bytes());
                     data[32..].copy_from_slice(parent.pair.1.as_bytes());
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                    writer.write_all(&data).await.map_err(io::Error::from)?;
                     progress.log_other_write(64);
                 }
                 EncodedItem::Leaf(leaf) => {
@@ -1073,7 +1067,7 @@ impl ExportBaoProgress {
                     writer
                         .write_chunk(leaf.data)
                         .await
-                        .map_err(|e| super::ExportBaoError::Io(e.into()))?;
+                        .map_err(io::Error::from)?;
                     progress.notify_payload_write(index, leaf.offset, len).await;
                 }
                 EncodedItem::Done => break,

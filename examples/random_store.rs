@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use iroh::SecretKey;
+use iroh::{SecretKey, Watcher};
 use iroh_base::ticket::NodeTicket;
 use iroh_blobs::{
     HashAndFormat,
@@ -240,7 +240,7 @@ async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
     let router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
         .spawn();
-    let addr = router.endpoint().node_addr().await?;
+    let addr = router.endpoint().node_addr().initialized().await?;
     let ticket = NodeTicket::from(addr.clone());
     println!("Node address: {:?}", addr);
     println!("ticket:\n{}", ticket);

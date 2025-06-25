@@ -79,8 +79,8 @@ impl Ticket for BlobTicket {
         postcard::to_stdvec(&data).expect("postcard serialization failed")
     }
 
-    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, ticket::Error> {
-        let res: TicketWireFormat = postcard::from_bytes(bytes).map_err(ticket::Error::Postcard)?;
+    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, ticket::ParseError> {
+        let res: TicketWireFormat = postcard::from_bytes(bytes)?;
         let TicketWireFormat::Variant0(Variant0BlobTicket { node, format, hash }) = res;
         Ok(Self {
             node: NodeAddr {
@@ -95,7 +95,7 @@ impl Ticket for BlobTicket {
 }
 
 impl FromStr for BlobTicket {
-    type Err = ticket::Error;
+    type Err = ticket::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ticket::deserialize(s)

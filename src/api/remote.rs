@@ -2,15 +2,18 @@
 //!
 //! The entry point is the [`Download`] struct.
 use genawaiter::sync::{Co, Gen};
+use iroh::endpoint::SendStream;
 use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
 use n0_future::{Stream, StreamExt, io};
-use quinn::SendStream;
+use n0_snafu::SpanTrace;
+use nested_enum_utils::common_fields;
 use ref_cast::RefCast;
+use snafu::{Backtrace, IntoError, Snafu};
 
 use super::blobs::Bitfield;
 use crate::{
     api::{ApiClient, blobs::WriteProgress},
-    get::{GetError, GetResult, Stats, fsm::DecodeError},
+    get::{BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats, fsm::DecodeError},
     protocol::{
         GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
         RequestType,
@@ -91,9 +94,8 @@ impl GetProgress {
 
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
-            Err(GetError::LocalFailure(anyhow::anyhow!(
-                "stream closed without result"
-            )))
+            Err(LocalFailureSnafu
+                .into_error(anyhow::anyhow!("stream closed without result").into()))
         })
     }
 }
@@ -499,12 +501,18 @@ impl Remote {
         progress: impl Sink<u64, Error = io::Error>,
     ) -> GetResult<Stats> {
         let content = content.into();
-        let local = self.local(content).await.map_err(GetError::LocalFailure)?;
+        let local = self
+            .local(content)
+            .await
+            .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
         if local.is_complete() {
             return Ok(Default::default());
         }
         let request = local.missing();
-        let conn = conn.connection().await.map_err(GetError::LocalFailure)?;
+        let conn = conn
+            .connection()
+            .await
+            .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -673,9 +681,9 @@ impl Remote {
                     store
                         .get_bytes(root)
                         .await
-                        .map_err(|e| GetError::LocalFailure(e.into()))?,
+                        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?,
                 )
-                .map_err(GetError::BadRequest)?;
+                .map_err(|source| BadRequestSnafu.into_error(source.into()))?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -770,29 +778,46 @@ impl Remote {
 }
 
 /// Failures for a get operation
-#[derive(Debug, thiserror::Error)]
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: SpanTrace,
+})]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[derive(Debug, Snafu)]
 pub enum ExecuteError {
     /// Network or IO operation failed.
-    #[error("Unable to open bidi stream")]
-    Connection(#[from] iroh::endpoint::ConnectionError),
-    #[error("Unable to read from the remote")]
-    Read(#[from] iroh::endpoint::ReadError),
-    #[error("Error sending the request")]
-    Send(#[from] crate::get::fsm::ConnectedNextError),
-    #[error("Unable to read size")]
-    Size(#[from] crate::get::fsm::AtBlobHeaderNextError),
-    #[error("Error while decoding the data")]
-    Decode(#[from] crate::get::fsm::DecodeError),
-    #[error("Internal error while reading the hash sequence")]
-    ExportBao(#[from] api::ExportBaoError),
-    #[error("Hash sequence has an invalid length")]
-    InvalidHashSeq(#[source] anyhow::Error),
-    #[error("Internal error importing the data")]
-    ImportBao(#[source] crate::api::RequestError),
-    #[error("Error sending download progress - receiver closed")]
-    SendDownloadProgress(#[from] irpc::channel::SendError),
-    #[error("Internal error importing the data")]
-    MpscSend(#[from] tokio::sync::mpsc::error::SendError<BaoContentItem>),
+    #[snafu(display("Unable to open bidi stream"))]
+    Connection {
+        source: iroh::endpoint::ConnectionError,
+    },
+    #[snafu(display("Unable to read from the remote"))]
+    Read { source: iroh::endpoint::ReadError },
+    #[snafu(display("Error sending the request"))]
+    Send {
+        source: crate::get::fsm::ConnectedNextError,
+    },
+    #[snafu(display("Unable to read size"))]
+    Size {
+        source: crate::get::fsm::AtBlobHeaderNextError,
+    },
+    #[snafu(display("Error while decoding the data"))]
+    Decode {
+        source: crate::get::fsm::DecodeError,
+    },
+    #[snafu(display("Internal error while reading the hash sequence"))]
+    ExportBao { source: api::ExportBaoError },
+    #[snafu(display("Hash sequence has an invalid length"))]
+    InvalidHashSeq { source: anyhow::Error },
+    #[snafu(display("Internal error importing the data"))]
+    ImportBao { source: crate::api::RequestError },
+    #[snafu(display("Error sending download progress - receiver closed"))]
+    SendDownloadProgress { source: irpc::channel::SendError },
+    #[snafu(display("Internal error importing the data"))]
+    MpscSend {
+        source: tokio::sync::mpsc::error::SendError<BaoContentItem>,
+    },
 }
 
 use std::{collections::BTreeMap, future::Future, num::NonZeroU64, sync::Arc};
@@ -855,7 +880,7 @@ async fn get_blob_ranges_impl(
             let end = content.drain().await?;
             Ok(end)
         } else {
-            Err(DecodeError::LeafHashMismatch(ChunkNum(0)).into())
+            Err(DecodeError::leaf_hash_mismatch(ChunkNum(0)).into())
         };
     };
     let buffer_size = get_buffer_size(size);
@@ -863,7 +888,7 @@ async fn get_blob_ranges_impl(
     let handle = store
         .import_bao(hash, size, buffer_size)
         .await
-        .map_err(|e| GetError::LocalFailure(e.into()))?;
+        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
     let write = async move {
         GetResult::Ok(loop {
             match content.next().await {
@@ -872,7 +897,7 @@ async fn get_blob_ranges_impl(
                     progress
                         .send(next.stats().payload_bytes_read)
                         .await
-                        .map_err(|e| GetError::LocalFailure(e.into()))?;
+                        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
                     handle.tx.send(item).await?;
                     content = next;
                 }
@@ -885,7 +910,8 @@ async fn get_blob_ranges_impl(
     };
     let complete = async move {
         handle.rx.await.map_err(|e| {
-            GetError::LocalFailure(anyhow::anyhow!("error reading from import stream: {e}"))
+            LocalFailureSnafu
+                .into_error(anyhow::anyhow!("error reading from import stream: {e}").into())
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;
