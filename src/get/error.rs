@@ -16,6 +16,11 @@ pub enum GetNotFoundError {
 }
 
 /// Failures for a get operation
+#[common_fields({
+    backtrace: Option<Backtrace>,
+    #[snafu(implicit)]
+    span_trace: SpanTrace,
+})]
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum GetError {
