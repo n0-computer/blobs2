@@ -94,9 +94,9 @@ impl GetProgress {
 
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
-            Err(GetError::LocalFailure(anyhow::anyhow!(
-                "stream closed without result"
-            )))
+            Err(GetError::LocalFailure {
+                source: anyhow::anyhow!("stream closed without result"),
+            })
         })
     }
 }
@@ -502,12 +502,18 @@ impl Remote {
         progress: impl Sink<u64, Error = io::Error>,
     ) -> GetResult<Stats> {
         let content = content.into();
-        let local = self.local(content).await.map_err(GetError::LocalFailure)?;
+        let local = self
+            .local(content)
+            .await
+            .map_err(|source| GetError::LocalFailure { source })?;
         if local.is_complete() {
             return Ok(Default::default());
         }
         let request = local.missing();
-        let conn = conn.connection().await.map_err(GetError::LocalFailure)?;
+        let conn = conn
+            .connection()
+            .await
+            .map_err(|source| GetError::LocalFailure { source })?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -676,9 +682,9 @@ impl Remote {
                     store
                         .get_bytes(root)
                         .await
-                        .map_err(|e| GetError::LocalFailure(e.into()))?,
+                        .map_err(|e| GetError::LocalFailure { source: e.into() })?,
                 )
-                .map_err(GetError::BadRequest)?;
+                .map_err(|source| GetError::BadRequest { source })?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -883,7 +889,7 @@ async fn get_blob_ranges_impl(
     let handle = store
         .import_bao(hash, size, buffer_size)
         .await
-        .map_err(|e| GetError::LocalFailure(e.into()))?;
+        .map_err(|e| GetError::LocalFailure { source: e.into() })?;
     let write = async move {
         GetResult::Ok(loop {
             match content.next().await {
@@ -892,7 +898,7 @@ async fn get_blob_ranges_impl(
                     progress
                         .send(next.stats().payload_bytes_read)
                         .await
-                        .map_err(|e| GetError::LocalFailure(e.into()))?;
+                        .map_err(|e| GetError::LocalFailure { source: e.into() })?;
                     handle.tx.send(item).await?;
                     content = next;
                 }
@@ -904,8 +910,8 @@ async fn get_blob_ranges_impl(
         })
     };
     let complete = async move {
-        handle.rx.await.map_err(|e| {
-            GetError::LocalFailure(anyhow::anyhow!("error reading from import stream: {e}"))
+        handle.rx.await.map_err(|e| GetError::LocalFailure {
+            source: anyhow::anyhow!("error reading from import stream: {e}"),
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;

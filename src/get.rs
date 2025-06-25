@@ -129,7 +129,9 @@ pub mod fsm {
         let (mut writer, reader) = connection.open_bi().await?;
         let request = Request::GetMany(request);
         let request_bytes =
-            postcard::to_stdvec(&request).map_err(|e| GetError::BadRequest(e.into()))?;
+            postcard::to_stdvec(&request).map_err(|source| GetError::BadRequest {
+                source: source.into(),
+            })?;
         writer.write_all(&request_bytes).await?;
         writer.finish()?;
         let Request::GetMany(request) = request else {

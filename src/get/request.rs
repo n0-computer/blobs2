@@ -56,7 +56,9 @@ impl GetBlobResult {
         let mut parts = Vec::new();
         let stats = loop {
             let Some(item) = self.next().await else {
-                return Err(GetError::LocalFailure(anyhow::anyhow!("unexpected end")));
+                return Err(GetError::LocalFailure {
+                    source: anyhow::anyhow!("unexpected end"),
+                });
             };
             match item {
                 GetBlobItem::Item(item) => {
@@ -236,10 +238,13 @@ pub async fn get_hash_seq_and_sizes(
     let (at_blob_content, size) = at_start_root.next().await?;
     // check the size to avoid parsing a maliciously large hash seq
     if size > max_size {
-        return Err(GetError::BadRequest(anyhow::anyhow!("size too large")));
+        return Err(GetError::BadRequest {
+            source: anyhow::anyhow!("size too large"),
+        });
     }
     let (mut curr, hash_seq) = at_blob_content.concatenate_into_vec().await?;
-    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq)).map_err(GetError::BadRequest)?;
+    let hash_seq = HashSeq::try_from(Bytes::from(hash_seq))
+        .map_err(|e| GetError::BadRequest { source: e.into() })?;
     let mut sizes = Vec::with_capacity(hash_seq.len());
     let closing = loop {
         match curr.next() {
