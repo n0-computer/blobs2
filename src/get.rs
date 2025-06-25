@@ -37,6 +37,7 @@ use crate::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
 
 mod error;
 pub mod request;
+pub(crate) use error::{BadRequestSnafu, LocalFailureSnafu};
 pub use error::{GetError, GetResult};
 
 type WrappedRecvStream = TokioStreamReader<RecvStream>;
@@ -98,8 +99,11 @@ pub mod fsm {
     use iroh_io::{AsyncSliceWriter, AsyncStreamReader, TokioStreamReader};
 
     use super::*;
-    use crate::protocol::{
-        GetManyRequest, GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request,
+    use crate::{
+        get::error::BadRequestSnafu,
+        protocol::{
+            GetManyRequest, GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request,
+        },
     };
 
     self_cell::self_cell! {
@@ -128,10 +132,8 @@ pub mod fsm {
         let start = Instant::now();
         let (mut writer, reader) = connection.open_bi().await?;
         let request = Request::GetMany(request);
-        let request_bytes =
-            postcard::to_stdvec(&request).map_err(|source| GetError::BadRequest {
-                source: source.into(),
-            })?;
+        let request_bytes = postcard::to_stdvec(&request)
+            .map_err(|source| BadRequestSnafu.into_error(source.into()))?;
         writer.write_all(&request_bytes).await?;
         writer.finish()?;
         let Request::GetMany(request) = request else {

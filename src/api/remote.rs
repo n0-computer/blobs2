@@ -8,12 +8,12 @@ use n0_future::{Stream, StreamExt, io};
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
 use ref_cast::RefCast;
-use snafu::{Backtrace, Snafu};
+use snafu::{Backtrace, IntoError, Snafu};
 
 use super::blobs::Bitfield;
 use crate::{
     api::{ApiClient, blobs::WriteProgress},
-    get::{GetError, GetResult, Stats, fsm::DecodeError},
+    get::{BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats, fsm::DecodeError},
     protocol::{
         GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
         RequestType,
@@ -94,9 +94,7 @@ impl GetProgress {
 
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
-            Err(GetError::LocalFailure {
-                source: anyhow::anyhow!("stream closed without result"),
-            })
+            Err(LocalFailureSnafu.into_error(anyhow::anyhow!("stream closed without result")))
         })
     }
 }
@@ -505,7 +503,7 @@ impl Remote {
         let local = self
             .local(content)
             .await
-            .map_err(|source| GetError::LocalFailure { source })?;
+            .map_err(|e| LocalFailureSnafu.into_error(e))?;
         if local.is_complete() {
             return Ok(Default::default());
         }
@@ -513,7 +511,7 @@ impl Remote {
         let conn = conn
             .connection()
             .await
-            .map_err(|source| GetError::LocalFailure { source })?;
+            .map_err(|e| LocalFailureSnafu.into_error(e))?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -682,9 +680,9 @@ impl Remote {
                     store
                         .get_bytes(root)
                         .await
-                        .map_err(|e| GetError::LocalFailure { source: e.into() })?,
+                        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?,
                 )
-                .map_err(|source| GetError::BadRequest { source })?;
+                .map_err(|source| BadRequestSnafu.into_error(source))?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -889,7 +887,7 @@ async fn get_blob_ranges_impl(
     let handle = store
         .import_bao(hash, size, buffer_size)
         .await
-        .map_err(|e| GetError::LocalFailure { source: e.into() })?;
+        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
     let write = async move {
         GetResult::Ok(loop {
             match content.next().await {
@@ -898,7 +896,7 @@ async fn get_blob_ranges_impl(
                     progress
                         .send(next.stats().payload_bytes_read)
                         .await
-                        .map_err(|e| GetError::LocalFailure { source: e.into() })?;
+                        .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
                     handle.tx.send(item).await?;
                     content = next;
                 }
@@ -910,8 +908,8 @@ async fn get_blob_ranges_impl(
         })
     };
     let complete = async move {
-        handle.rx.await.map_err(|e| GetError::LocalFailure {
-            source: anyhow::anyhow!("error reading from import stream: {e}"),
+        handle.rx.await.map_err(|e| {
+            LocalFailureSnafu.into_error(anyhow::anyhow!("error reading from import stream: {e}"))
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;
