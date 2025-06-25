@@ -1,18 +1,100 @@
 //! Error returned from get operations
+use std::io;
 
 use iroh::endpoint::{self, ClosedStream};
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
+use quinn::{ConnectionError, ReadError, WriteError};
 use snafu::{Backtrace, IntoError, Snafu};
 
-#[common_fields({
-    backtrace: Option<Backtrace>,
-    #[snafu(implicit)]
-    span_trace: SpanTrace,
-})]
+use crate::{
+    api::ExportBaoError,
+    get::fsm::{AtBlobHeaderNextError, ConnectedNextError, DecodeError},
+};
+
 #[derive(Debug, Snafu)]
-pub enum GetNotFoundError {
-    AtBlobHeader {},
+pub enum NotFoundCases {
+    #[snafu(transparent)]
+    AtBlobHeaderNext { source: AtBlobHeaderNextError },
+    #[snafu(transparent)]
+    Decode { source: DecodeError },
+}
+
+#[derive(Debug, Snafu)]
+pub enum NoncompliantNodeCases {
+    #[snafu(transparent)]
+    Connection { source: ConnectionError },
+    #[snafu(transparent)]
+    Decode { source: DecodeError },
+}
+
+#[derive(Debug, Snafu)]
+pub enum RemoteResetCases {
+    #[snafu(transparent)]
+    Read { source: ReadError },
+    #[snafu(transparent)]
+    Write { source: WriteError },
+    #[snafu(transparent)]
+    Connection { source: ConnectionError },
+}
+
+#[derive(Debug, Snafu)]
+pub enum BadRequestCases {
+    #[snafu(transparent)]
+    Anyhow { source: anyhow::Error },
+    #[snafu(transparent)]
+    Postcard { source: postcard::Error },
+    #[snafu(transparent)]
+    ConnectedNext { source: ConnectedNextError },
+}
+
+#[derive(Debug, Snafu)]
+pub enum LocalFailureCases {
+    #[snafu(transparent)]
+    Io {
+        source: io::Error,
+    },
+    #[snafu(transparent)]
+    Anyhow {
+        source: anyhow::Error,
+    },
+    #[snafu(transparent)]
+    IrpcSend {
+        source: irpc::channel::SendError,
+    },
+    #[snafu(transparent)]
+    Irpc {
+        source: irpc::Error,
+    },
+    #[snafu(transparent)]
+    ExportBao {
+        source: ExportBaoError,
+    },
+    TokioSend {},
+}
+
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for LocalFailureCases {
+    fn from(_: tokio::sync::mpsc::error::SendError<T>) -> Self {
+        LocalFailureCases::TokioSend {}
+    }
+}
+
+#[derive(Debug, Snafu)]
+pub enum IoCases {
+    #[snafu(transparent)]
+    Io { source: io::Error },
+    #[snafu(transparent)]
+    ConnectionError { source: endpoint::ConnectionError },
+    #[snafu(transparent)]
+    ReadError { source: endpoint::ReadError },
+    #[snafu(transparent)]
+    WriteError { source: endpoint::WriteError },
+    #[snafu(transparent)]
+    ClosedStream { source: endpoint::ClosedStream },
+    #[snafu(transparent)]
+    ConnectedNextError { source: ConnectedNextError },
+    #[snafu(transparent)]
+    AtBlobHeaderNextError { source: AtBlobHeaderNextError },
 }
 
 /// Failures for a get operation
@@ -26,24 +108,24 @@ pub enum GetNotFoundError {
 pub enum GetError {
     /// Hash not found, or a requested chunk for the hash not found.
     #[snafu(display("Data for hash not found"))]
-    NotFound { source: GetNotFoundError },
+    NotFound { source: NotFoundCases },
     /// Remote has reset the connection.
     #[snafu(display("Remote has reset the connection"))]
-    RemoteReset { source: anyhow::Error },
+    RemoteReset { source: RemoteResetCases },
     /// Remote behaved in a non-compliant way.
     #[snafu(display("Remote behaved in a non-compliant way"))]
-    NoncompliantNode { source: anyhow::Error },
+    NoncompliantNode { source: NoncompliantNodeCases },
 
     /// Network or IO operation failed.
     #[snafu(display("A network or IO operation failed"))]
-    Io { source: anyhow::Error },
+    Io { source: IoCases },
 
     /// Our download request is invalid.
     #[snafu(display("Our download request is invalid"))]
-    BadRequest { source: anyhow::Error },
+    BadRequest { source: BadRequestCases },
     /// Operation failed on the local node.
     #[snafu(display("Operation failed on the local node"))]
-    LocalFailure { source: anyhow::Error },
+    LocalFailure { source: LocalFailureCases },
 }
 
 pub type GetResult<T> = std::result::Result<T, GetError>;
@@ -168,16 +250,10 @@ impl From<crate::get::fsm::AtBlobHeaderNextError> for GetError {
     fn from(value: crate::get::fsm::AtBlobHeaderNextError) -> Self {
         use crate::get::fsm::AtBlobHeaderNextError::*;
         match value {
-            NotFound {
-                backtrace,
-                span_trace,
-            } => {
+            e @ NotFound { .. } => {
                 // > This indicates that the provider does not have the requested data.
                 // peer might have the data later, simply retry it
-                NotFoundSnafu.into_error(GetNotFoundError::AtBlobHeader {
-                    backtrace,
-                    span_trace,
-                })
+                NotFoundSnafu.into_error(e.into())
             }
             EndpointRead { source, .. } => source.into(),
             e @ Io { .. } => {
@@ -193,29 +269,9 @@ impl From<crate::get::fsm::DecodeError> for GetError {
         use crate::get::fsm::DecodeError::*;
 
         match value {
-            ChunkNotFound {
-                backtrace,
-                span_trace,
-            } => NotFoundSnafu.into_error(GetNotFoundError::AtBlobHeader {
-                backtrace,
-                span_trace,
-            }),
-            ParentNotFound {
-                backtrace,
-                span_trace,
-                ..
-            } => NotFoundSnafu.into_error(GetNotFoundError::AtBlobHeader {
-                backtrace,
-                span_trace,
-            }),
-            LeafNotFound {
-                backtrace,
-                span_trace,
-                ..
-            } => NotFoundSnafu.into_error(GetNotFoundError::AtBlobHeader {
-                backtrace,
-                span_trace,
-            }),
+            e @ ChunkNotFound { .. } => NotFoundSnafu.into_error(e.into()),
+            e @ ParentNotFound { .. } => NotFoundSnafu.into_error(e.into()),
+            e @ LeafNotFound { .. } => NotFoundSnafu.into_error(e.into()),
             e @ ParentHashMismatch { .. } => {
                 // TODO(@divma): did the peer sent wrong data? is it corrupted? did we sent a wrong
                 // request?

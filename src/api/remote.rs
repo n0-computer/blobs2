@@ -94,7 +94,8 @@ impl GetProgress {
 
     pub async fn complete(self) -> GetResult<Stats> {
         just_result(self.stream()).await.unwrap_or_else(|| {
-            Err(LocalFailureSnafu.into_error(anyhow::anyhow!("stream closed without result")))
+            Err(LocalFailureSnafu
+                .into_error(anyhow::anyhow!("stream closed without result").into()))
         })
     }
 }
@@ -503,7 +504,7 @@ impl Remote {
         let local = self
             .local(content)
             .await
-            .map_err(|e| LocalFailureSnafu.into_error(e))?;
+            .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
         if local.is_complete() {
             return Ok(Default::default());
         }
@@ -511,7 +512,7 @@ impl Remote {
         let conn = conn
             .connection()
             .await
-            .map_err(|e| LocalFailureSnafu.into_error(e))?;
+            .map_err(|e| LocalFailureSnafu.into_error(e.into()))?;
         let stats = self.execute_get_sink(conn, request, progress).await?;
         Ok(stats)
     }
@@ -682,7 +683,7 @@ impl Remote {
                         .await
                         .map_err(|e| LocalFailureSnafu.into_error(e.into()))?,
                 )
-                .map_err(|source| BadRequestSnafu.into_error(source))?;
+                .map_err(|source| BadRequestSnafu.into_error(source.into()))?;
                 // let mut hash_seq = LazyHashSeq::new(store.blobs().clone(), root);
                 loop {
                     let at_start_child = match next_child {
@@ -909,7 +910,8 @@ async fn get_blob_ranges_impl(
     };
     let complete = async move {
         handle.rx.await.map_err(|e| {
-            LocalFailureSnafu.into_error(anyhow::anyhow!("error reading from import stream: {e}"))
+            LocalFailureSnafu
+                .into_error(anyhow::anyhow!("error reading from import stream: {e}").into())
         })
     };
     let (_, end) = tokio::try_join!(complete, write)?;

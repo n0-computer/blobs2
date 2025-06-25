@@ -174,7 +174,7 @@ impl From<RequestError> for Error {
     fn from(e: RequestError) -> Self {
         match e {
             RequestError::Rpc { source, .. } => Self::Io(source.into()),
-            RequestError::Inner { source, .. } => source.into(),
+            RequestError::Inner { source, .. } => source,
         }
     }
 }
