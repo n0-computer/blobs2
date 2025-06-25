@@ -38,6 +38,7 @@ use crate::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
 mod error;
 pub mod request;
 pub use error::{GetError, GetResult};
+pub(crate) use error::{BadRequestSnafu, LocalFailureSnafu};
 
 type WrappedRecvStream = TokioStreamReader<RecvStream>;
 
@@ -129,9 +130,7 @@ pub mod fsm {
         let (mut writer, reader) = connection.open_bi().await?;
         let request = Request::GetMany(request);
         let request_bytes =
-            postcard::to_stdvec(&request).map_err(|source| GetError::BadRequest {
-                source: source.into(),
-            })?;
+            postcard::to_stdvec(&request).context(PostcardSerSnafu)?;
         writer.write_all(&request_bytes).await?;
         writer.finish()?;
         let Request::GetMany(request) = request else {
