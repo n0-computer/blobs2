@@ -293,7 +293,7 @@ mod tests {
         let collection = (0..3)
             .map(|i| {
                 (
-                    format!("blob{}", i),
+                    format!("blob{i}"),
                     crate::Hash::from(blake3::hash(&[i as u8])),
                 )
             })

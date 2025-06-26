@@ -962,7 +962,7 @@ impl ExportBaoProgress {
         let mut data = Vec::new();
         let mut stream = self.into_byte_stream();
         while let Some(item) = stream.next().await {
-            println!("item: {:?}", item);
+            println!("item: {item:?}");
             data.extend_from_slice(&item?);
         }
         Ok(data)

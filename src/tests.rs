@@ -575,7 +575,7 @@ async fn two_nodes_hash_seq_progress() -> TestResult<()> {
     let conn = r2.endpoint().connect(addr1, crate::ALPN).await?;
     let mut stream = store2.remote().fetch(conn, root).stream();
     while let Some(item) = stream.next().await {
-        println!("{:?}", item);
+        println!("{item:?}");
     }
     check_presence(&store2, &sizes).await?;
     Ok(())
@@ -610,8 +610,8 @@ async fn node_serve_hash_seq() -> TestResult<()> {
     let endpoint2 = Endpoint::builder().discovery_n0().bind().await?;
     let conn = endpoint2.connect(addr1, crate::protocol::ALPN).await?;
     let (hs, sizes) = get::request::get_hash_seq_and_sizes(&conn, &root, 1024, None).await?;
-    println!("hash seq: {:?}", hs);
-    println!("sizes: {:?}", sizes);
+    println!("hash seq: {hs:?}");
+    println!("sizes: {sizes:?}");
     r1.shutdown().await?;
     Ok(())
 }
@@ -645,10 +645,10 @@ async fn node_serve_blobs() -> TestResult<()> {
         let hash = Hash::new(&expected);
         let mut stream = get::request::get_blob(conn.clone(), hash);
         while let Some(item) = stream.next().await {
-            println!("{:?}", item);
+            println!("{item:?}");
         }
         let actual = get::request::get_blob(conn.clone(), hash).await?;
-        assert_eq!(actual.len(), expected.len(), "size: {}", size);
+        assert_eq!(actual.len(), expected.len(), "size: {size}");
     }
     r1.shutdown().await?;
     Ok(())
@@ -702,9 +702,9 @@ async fn test_export_chunk() -> TestResult {
         let tt = store.add_slice(&data).temp_tag().await?;
         let hash = *tt.hash();
         let c = blobs.export_chunk(hash, 0).await;
-        println!("{:?}", c);
+        println!("{c:?}");
         let c = blobs.export_chunk(hash, 1000000).await;
-        println!("{:?}", c);
+        println!("{c:?}");
     }
     Ok(())
 }

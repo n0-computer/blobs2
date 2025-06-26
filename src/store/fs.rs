@@ -1440,8 +1440,7 @@ pub mod tests {
             assert_eq!(
                 &expected.addr(),
                 &actual.addr(),
-                "address mismatch for size {}",
-                size
+                "address mismatch for size {size}"
             );
             // we must at some point see completion, otherwise the test will hang
             // keep the handle alive by observing until the end, otherwise the handle
@@ -1462,7 +1461,7 @@ pub mod tests {
         for size in INTERESTING_SIZES {
             let expected = test_data(size);
             let expected_hash = Hash::new(&expected);
-            let path = testdir.path().join(format!("in-{}", size));
+            let path = testdir.path().join(format!("in-{size}"));
             fs::write(&path, &expected)?;
             let obs = store.observe(expected_hash);
             let tt = store.add_path(&path).await?;
@@ -1489,7 +1488,7 @@ pub mod tests {
             let expected_hash = Hash::new(&expected);
             let tt = store.add_bytes(expected.clone()).await?;
             assert_eq!(expected_hash, tt.hash);
-            let out_path = testdir.path().join(format!("out-{}", size));
+            let out_path = testdir.path().join(format!("out-{size}"));
             store.export(expected_hash, &out_path).await?;
             let actual = fs::read(&out_path)?;
             assert_eq!(expected, actual);
@@ -1768,7 +1767,7 @@ pub mod tests {
                 let data = test_data(size);
                 let hash = Hash::new(&data);
                 let bitfield = store.observe(hash).await?;
-                assert_eq!(bitfield.ranges, expected_ranges, "size={}", size);
+                assert_eq!(bitfield.ranges, expected_ranges, "size={size}");
             }
             store.dump().await?;
             store.shutdown().await?;
@@ -1806,7 +1805,7 @@ pub mod tests {
                 else {
                     panic!("failed to export size={size}");
                 };
-                assert_eq!(&expected, &actual, "size={}", size);
+                assert_eq!(&expected, &actual, "size={size}");
             }
             store.shutdown().await?;
         }
@@ -1951,9 +1950,9 @@ pub mod tests {
             let size = entry.metadata()?.len(); // Size in bytes
 
             if entry.file_type().is_file() {
-                println!("{}{} ({} bytes)", indent, name, size);
+                println!("{indent}{name} ({size} bytes)");
             } else if entry.file_type().is_dir() {
-                println!("{}{}/", indent, name);
+                println!("{indent}{name}/");
             }
         }
         Ok(())
@@ -1974,29 +1973,29 @@ pub mod tests {
             let name = entry.file_name().to_string_lossy();
 
             if entry.file_type().is_dir() {
-                println!("{}{}/", indent, name);
+                println!("{indent}{name}/");
             } else if entry.file_type().is_file() {
                 let size = entry.metadata()?.len();
-                println!("{}{} ({} bytes)", indent, name, size);
+                println!("{indent}{name} ({size} bytes)");
 
                 // Dump depending on file type
                 let path = entry.path();
                 if name.ends_with(".data") {
-                    print!("{}  ", indent);
+                    print!("{indent}  ");
                     dump_file(path, 1024 * 16)?;
                 } else if name.ends_with(".obao4") {
-                    print!("{}  ", indent);
+                    print!("{indent}  ");
                     dump_file(path, 64)?;
                 } else if name.ends_with(".sizes4") {
-                    print!("{}  ", indent);
+                    print!("{indent}  ");
                     dump_file(path, 8)?;
                 } else if name.ends_with(".bitfield") {
                     match read_checksummed::<Bitfield>(path) {
                         Ok(bitfield) => {
-                            println!("{}  bitfield: {:?}", indent, bitfield);
+                            println!("{indent}  bitfield: {bitfield:?}");
                         }
                         Err(cause) => {
-                            println!("{}  bitfield: error: {cause}", indent);
+                            println!("{indent}  bitfield: error: {cause}");
                         }
                     }
                 } else {

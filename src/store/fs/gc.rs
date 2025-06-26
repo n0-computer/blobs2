@@ -103,11 +103,8 @@ async fn gc_sweep_task(
         store.blobs().delete(batch).await?;
     }
     store.sync_db().await?;
-    co.yield_(GcSweepEvent::CustomDebug(format!(
-        "deleted {} blobs",
-        count
-    )))
-    .await;
+    co.yield_(GcSweepEvent::CustomDebug(format!("deleted {count} blobs")))
+        .await;
     Ok(())
 }
 
