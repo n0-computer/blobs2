@@ -1,3 +1,5 @@
+use std::future::IntoFuture;
+
 use n0_future::{StreamExt, stream};
 use rand::{RngCore, SeedableRng};
 

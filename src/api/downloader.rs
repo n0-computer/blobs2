@@ -1,11 +1,6 @@
 //! API for downloads from multiple nodes.
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-    io,
-    ops::Deref,
-    sync::Arc,
-    time::{Duration, SystemTime},
+    collections::{HashMap, HashSet}, fmt::Debug, future::{Future, IntoFuture}, io, ops::Deref, sync::Arc, time::{Duration, SystemTime}
 };
 
 use anyhow::bail;
@@ -483,7 +478,8 @@ impl ConnectionPool {
             .entry(id)
             .or_default()
             .clone();
-        *slot.lock().await = SlotState::Evil(reason)
+        let mut t = slot.lock().await;
+        *t = SlotState::Evil(reason)
     }
 
     #[allow(dead_code)]
@@ -496,7 +492,8 @@ impl ConnectionPool {
             .entry(id)
             .or_default()
             .clone();
-        *slot.lock().await = SlotState::Initial
+        let mut t = slot.lock().await;
+        *t = SlotState::Initial
     }
 }
 

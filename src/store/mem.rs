@@ -8,12 +8,7 @@
 //! For many use cases this can be quite useful, since it does not require write access
 //! to the file system.
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    io::{self, Write},
-    num::NonZeroU64,
-    ops::Deref,
-    sync::Arc,
-    time::SystemTime,
+    collections::{BTreeMap, HashMap, HashSet}, future::Future, io::{self, Write}, num::NonZeroU64, ops::Deref, sync::Arc, time::SystemTime
 };
 
 use bao_tree::{

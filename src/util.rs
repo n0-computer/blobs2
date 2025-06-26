@@ -265,7 +265,7 @@ pub mod outboard_with_progress {
 }
 
 pub mod sink {
-    use std::io;
+    use std::{future::Future, io};
 
     use irpc::RpcMessage;
 

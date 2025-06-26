@@ -36,7 +36,7 @@
 //! # }
 //! ```
 
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, future::Future, sync::Arc};
 
 use iroh::{
     Endpoint, Watcher,

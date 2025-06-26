@@ -7,9 +7,7 @@
 //! In addition to these utilities, there are also constructors in [`crate::protocol::ChunkRangesSeq`]
 //! to construct complex requests.
 use std::{
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
+    future::{Future, IntoFuture}, pin::Pin, sync::Arc, task::{Context, Poll}
 };
 
 use bao_tree::{ChunkNum, ChunkRanges, io::BaoContentItem};
