@@ -412,7 +412,7 @@ pub enum Request {
     ///
     /// Note that providers will in many cases reject this request, e.g. if
     /// they don't have write access to the store or don't want to ingest
-    /// unknonwn data.
+    /// unknown data.
     Push(PushRequest),
     /// Get multiple blobs in a single request, from a single provider
     ///

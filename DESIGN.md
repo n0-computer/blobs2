@@ -32,7 +32,7 @@ This is a perfectly valid approach when dealing exclusively with complete, large
 
 First of all, it is very inefficient if you deal with a large number of tiny blobs, like we frequently do when working with [iroh-docs] or [iroh-willow] documents. Just the file system metadata for a tiny file will vastly exceed the storage needed for the data itself.
 
-Also, now we are very much dependant on the quirks of whatever file system our target operating system has. Many older file systems like FAT32 or EXT2 are notoriously bad in handling directories with millions of files. And we can't just limit ourselves to e.g. linux servers with modern file systems, since we also want to support mobile platforms and windows PCs.
+Also, now we are very much dependent on the quirks of whatever file system our target operating system has. Many older file systems like FAT32 or EXT2 are notoriously bad in handling directories with millions of files. And we can't just limit ourselves to e.g. linux servers with modern file systems, since we also want to support mobile platforms and windows PCs.
 
 And last but not least, creating a the metadata for a file is very expensive compared to writing a few bytes. We would be limited to a pathetically low download speed when bulk downloading millions of blobs, like for example an iroh collection containing the linux source code. For very small files embedded databases are [frequently faster](https://www.sqlite.org/fasterthanfs.html) than the file system.
 
@@ -105,7 +105,7 @@ If we sync data from a remote node, we do know the hash but don't have the data.
 
 ### Blob deletion
 
-On creation, blobs are tagged with a temporary tag that prevents them from being deleted for as long as the process lives. They can then be tagged with a persisten tag that prevents them from being deleted even after a restart. And last but not least, large groups of blobs can be protected from deletion in bulk by putting a sequence of hashes into a blob and tagging that blob as a hash sequence.
+On creation, blobs are tagged with a temporary tag that prevents them from being deleted for as long as the process lives. They can then be tagged with a persistent tag that prevents them from being deleted even after a restart. And last but not least, large groups of blobs can be protected from deletion in bulk by putting a sequence of hashes into a blob and tagging that blob as a hash sequence.
 
 We also provide a way to explicitly delete blobs by hash, but that is meant to be used only in case of an emergency. You have some data that you want **gone** no matter how dire the consequences are.
 

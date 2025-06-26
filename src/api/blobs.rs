@@ -696,7 +696,7 @@ impl ObserveProgress {
     }
 }
 
-/// A progess handle for an export operation.
+/// A progress handle for an export operation.
 ///
 /// Internally this is a stream of [`ExportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience

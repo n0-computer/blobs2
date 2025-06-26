@@ -1021,8 +1021,8 @@ async fn write_push_request(
     Ok(request)
 }
 
-async fn write_observe_request(requst: ObserveRequest, stream: &mut SendStream) -> io::Result<()> {
-    let request = Request::Observe(requst);
+async fn write_observe_request(request: ObserveRequest, stream: &mut SendStream) -> io::Result<()> {
+    let request = Request::Observe(request);
     let request_bytes = postcard::to_allocvec(&request)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     stream.write_all(&request_bytes).await?;
