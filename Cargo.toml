@@ -2,6 +2,11 @@
 name = "iroh-blobs"
 version = "0.90.0-alpha1"
 edition = "2021"
+description = "content-addressed blobs for iroh"
+license = "MIT OR Apache-2.0"
+authors = ["dignifiedquire <me@dignifiedquire.com>", "n0 team"]
+repository = "https://github.com/n0-computer/blobs2"
+keywords = ["hashing", "quic", "blake3", "streaming"]
 
 # Sadly this also needs to be updated in .github/workflows/ci.yml
 rust-version = "1.85"
