@@ -391,10 +391,12 @@
 <a href="#390" id="390">390</a>
 <a href="#391" id="391">391</a>
 <a href="#392" id="392">392</a>
-<a href="#393" id="393">393</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::ops::{Bound, RangeBounds};
+<a href="#393" id="393">393</a>
+<a href="#394" id="394">394</a>
+<a href="#395" id="395">395</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::ops::{Bound, RangeBounds};
 
-<span class="kw">use </span>bao_tree::{ChunkNum, ChunkRanges, io::round_up_to_chunks};
-<span class="kw">use </span>range_collections::{RangeSet2, range_set::RangeSetEntry};
+<span class="kw">use </span>bao_tree::{io::round_up_to_chunks, ChunkNum, ChunkRanges};
+<span class="kw">use </span>range_collections::{range_set::RangeSetEntry, RangeSet2};
 
 <span class="kw">pub mod </span>channel;
 <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">mod </span>temp_tag;
@@ -404,8 +406,8 @@
         <span class="kw">use </span>std::{fmt, io};
 
         <span class="kw">use </span>serde::{
-            Deserializer, Serializer,
             de::{<span class="self">self</span>, Visitor},
+            Deserializer, Serializer,
         };
 
         <span class="kw">pub fn </span>serialize&lt;S&gt;(error: <span class="kw-2">&amp;</span>io::Error, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt;
@@ -515,12 +517,13 @@
     <span class="kw">use </span>std::io::{<span class="self">self</span>, BufReader, Read};
 
     <span class="kw">use </span>bao_tree::{
-        BaoTree, ChunkNum, blake3,
+        blake3,
         io::{
             outboard::PreOrderOutboard,
             sync::{OutboardMut, WriteAt},
         },
         iter::BaoChunk,
+        BaoTree, ChunkNum,
     };
     <span class="kw">use </span>smallvec::SmallVec;
 
@@ -545,7 +548,7 @@
         right_child: <span class="kw-2">&amp;</span>blake3::Hash,
         is_root: bool,
     ) -&gt; blake3::Hash {
-        <span class="kw">use </span>blake3::hazmat::{ChainingValue, Mode, merge_subtrees_non_root, merge_subtrees_root};
+        <span class="kw">use </span>blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, ChainingValue, Mode};
         <span class="kw">let </span>left_child: ChainingValue = <span class="kw-2">*</span>left_child.as_bytes();
         <span class="kw">let </span>right_child: ChainingValue = <span class="kw-2">*</span>right_child.as_bytes();
         <span class="kw">if </span>is_root {
@@ -627,13 +630,14 @@
     <span class="attr">#[cfg(test)]
     </span><span class="kw">mod </span>tests {
         <span class="kw">use </span>bao_tree::{
-            BaoTree, blake3,
+            blake3,
             io::{outboard::PreOrderOutboard, sync::CreateOutboard},
+            BaoTree,
         };
         <span class="kw">use </span>testresult::TestResult;
 
         <span class="kw">use crate</span>::{
-            store::{IROH_BLOCK_SIZE, fs::tests::test_data},
+            store::{fs::tests::test_data, IROH_BLOCK_SIZE},
             util::{outboard_with_progress::init_outboard, sink::Drain},
         };
 

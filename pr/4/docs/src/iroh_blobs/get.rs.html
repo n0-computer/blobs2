@@ -1043,7 +1043,7 @@
 };
 
 <span class="kw">use </span>anyhow::Result;
-<span class="kw">use </span>bao_tree::{ChunkNum, io::fsm::BaoContentItem};
+<span class="kw">use </span>bao_tree::{io::fsm::BaoContentItem, ChunkNum};
 <span class="kw">use </span>fsm::RequestCounters;
 <span class="kw">use </span>iroh::endpoint::{<span class="self">self</span>, RecvStream, SendStream};
 <span class="kw">use </span>iroh_io::TokioStreamReader;
@@ -1053,7 +1053,7 @@
 <span class="kw">use </span>snafu::{Backtrace, IntoError, ResultExt, Snafu};
 <span class="kw">use </span>tracing::{debug, error};
 
-<span class="kw">use crate</span>::{Hash, protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE};
+<span class="kw">use crate</span>::{protocol::ChunkRangesSeq, store::IROH_BLOCK_SIZE, Hash};
 
 <span class="kw">mod </span>error;
 <span class="kw">pub mod </span>request;
@@ -1111,8 +1111,8 @@
     <span class="kw">use </span>std::{io, result};
 
     <span class="kw">use </span>bao_tree::{
-        BaoTree, ChunkRanges, TreeNode,
         io::fsm::{OutboardMut, ResponseDecoder, ResponseDecoderNext},
+        BaoTree, ChunkRanges, TreeNode,
     };
     <span class="kw">use </span>derive_more::From;
     <span class="kw">use </span>iroh::endpoint::Connection;
@@ -1122,7 +1122,7 @@
     <span class="kw">use crate</span>::{
         get::error::BadRequestSnafu,
         protocol::{
-            GetManyRequest, GetRequest, MAX_MESSAGE_SIZE, NonEmptyRequestRangeSpecIter, Request,
+            GetManyRequest, GetRequest, NonEmptyRequestRangeSpecIter, Request, MAX_MESSAGE_SIZE,
         },
     };
 

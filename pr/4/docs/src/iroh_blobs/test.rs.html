@@ -63,13 +63,13 @@
 <a href="#62" id="62">62</a>
 <a href="#63" id="63">63</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::future::IntoFuture;
 
-<span class="kw">use </span>n0_future::{StreamExt, stream};
+<span class="kw">use </span>n0_future::{stream, StreamExt};
 <span class="kw">use </span>rand::{RngCore, SeedableRng};
 
 <span class="kw">use crate</span>::{
-    BlobFormat,
-    api::{RequestResult, Store, blobs::AddBytesOptions, tags::TagInfo},
+    api::{blobs::AddBytesOptions, tags::TagInfo, RequestResult, Store},
     hashseq::HashSeq,
+    BlobFormat,
 };
 
 <span class="kw">pub async fn </span>create_random_blobs&lt;R: rand::Rng&gt;(

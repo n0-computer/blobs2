@@ -128,7 +128,7 @@
 //!
 //! ```rust
 //! # async fn example() -&gt; anyhow::Result&lt;()&gt; {
-//! use iroh::{Endpoint, protocol::Router};
+//! use iroh::{protocol::Router, Endpoint};
 //! use iroh_blobs::{net_protocol::Blobs, store};
 //!
 //! // create a store
@@ -161,18 +161,18 @@
 </span><span class="kw">use </span>std::{fmt::Debug, future::Future, sync::Arc};
 
 <span class="kw">use </span>iroh::{
-    Endpoint, Watcher,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
+    Endpoint, Watcher,
 };
 <span class="kw">use </span>tokio::sync::mpsc;
 <span class="kw">use </span>tracing::error;
 
 <span class="kw">use crate</span>::{
-    HashAndFormat,
     api::Store,
     provider::{Event, EventSender},
     ticket::BlobTicket,
+    HashAndFormat,
 };
 
 <span class="attr">#[derive(Debug)]

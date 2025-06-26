@@ -626,7 +626,7 @@
 <span class="kw">use </span>n0_snafu::SpanTrace;
 <span class="kw">use </span>nested_enum_utils::common_fields;
 <span class="kw">use </span>postcard::experimental::max_size::MaxSize;
-<span class="kw">use </span>serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+<span class="kw">use </span>serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 <span class="kw">use </span>snafu::{Backtrace, ResultExt, Snafu};
 
 <span class="kw">use </span><span class="kw">crate</span>::store::util::DD;
@@ -1069,7 +1069,7 @@
 </span><span class="kw">mod </span>tests {
 
     <span class="kw">use </span>iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
-    <span class="kw">use </span>serde_test::{Configure, Token, assert_tokens};
+    <span class="kw">use </span>serde_test::{assert_tokens, Configure, Token};
 
     <span class="kw">use super</span>::<span class="kw-2">*</span>;
 

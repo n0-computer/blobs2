@@ -876,13 +876,13 @@
 <span class="kw">use </span>tracing::{debug, error, info_span, trace};
 
 <span class="kw">use super</span>::{
-    BaoFilePart,
     delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     options::BatchOptions,
     util::PeekableReceiver,
+    BaoFilePart,
 };
-<span class="kw">use </span><span class="kw">crate</span>::store::{Hash, IROH_BLOCK_SIZE, util::Tag};
+<span class="kw">use </span><span class="kw">crate</span>::store::{util::Tag, Hash, IROH_BLOCK_SIZE};
 
 <span class="doccomment">/// Error type for message handler functions of the redb actor.
 ///

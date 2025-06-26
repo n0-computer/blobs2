@@ -404,9 +404,9 @@
 <span class="kw">mod </span>sparse_mem_file;
 <span class="kw">use </span>irpc::channel::mpsc;
 <span class="kw">pub use </span>mem_or_file::{FixedSize, MemOrFile};
-<span class="kw">use </span>range_collections::{RangeSetRef, range_set::RangeSetEntry};
+<span class="kw">use </span>range_collections::{range_set::RangeSetEntry, RangeSetRef};
 <span class="kw">use </span>ref_cast::RefCast;
-<span class="kw">use </span>serde::{Deserialize, Serialize, de::DeserializeOwned};
+<span class="kw">use </span>serde::{de::DeserializeOwned, Deserialize, Serialize};
 <span class="kw">pub use </span>sparse_mem_file::SparseMemFile;
 <span class="kw">pub mod </span>observer;
 <span class="kw">mod </span>size_info;

@@ -902,7 +902,8 @@
 <a href="#901" id="901">901</a>
 <a href="#902" id="902">902</a>
 <a href="#903" id="903">903</a>
-<a href="#904" id="904">904</a></pre></div><pre class="rust"><code><span class="kw">use </span>core::fmt;
+<a href="#904" id="904">904</a>
+<a href="#905" id="905">905</a></pre></div><pre class="rust"><code><span class="kw">use </span>core::fmt;
 <span class="kw">use </span>std::{
     fs::{File, OpenOptions},
     io,
@@ -912,38 +913,39 @@
 };
 
 <span class="kw">use </span>bao_tree::{
-    BaoTree, ChunkRanges, blake3,
+    blake3,
     io::{
         fsm::BaoContentItem,
         mixed::ReadBytesAt,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
     },
+    BaoTree, ChunkRanges,
 };
 <span class="kw">use </span>bytes::{Bytes, BytesMut};
 <span class="kw">use </span>derive_more::Debug;
 <span class="kw">use </span>irpc::channel::mpsc;
 <span class="kw">use </span>tokio::sync::watch;
-<span class="kw">use </span>tracing::{Span, debug, error, info, trace};
+<span class="kw">use </span>tracing::{debug, error, info, trace, Span};
 
 <span class="kw">use super</span>::{
-    BaoFilePart,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     meta::Update,
     options::{Options, PathOptions},
+    BaoFilePart,
 };
 <span class="kw">use crate</span>::{
     api::blobs::Bitfield,
     store::{
-        Hash, IROH_BLOCK_SIZE,
         fs::{
+            meta::{raw_outboard_size, Set},
             TaskContext,
-            meta::{Set, raw_outboard_size},
         },
         util::{
-            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
-            read_checksummed_and_truncate, write_checksummed,
+            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile,
+            PartialMemStorage, SizeInfo, SparseMemFile, DD,
         },
+        Hash, IROH_BLOCK_SIZE,
     },
 };
 

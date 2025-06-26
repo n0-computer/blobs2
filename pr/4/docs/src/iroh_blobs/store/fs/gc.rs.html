@@ -337,7 +337,7 @@
 <span class="kw">use </span>n0_future::{Stream, StreamExt};
 <span class="kw">use </span>tracing::{debug, error, warn};
 
-<span class="kw">use crate</span>::{Hash, HashAndFormat, api::Store};
+<span class="kw">use crate</span>::{api::Store, Hash, HashAndFormat};
 
 <span class="doccomment">/// An event related to GC
 </span><span class="attr">#[derive(Debug)]
@@ -531,10 +531,10 @@
 
     <span class="kw">use super</span>::<span class="kw-2">*</span>;
     <span class="kw">use crate</span>::{
-        BlobFormat,
-        api::{Store, blobs::AddBytesOptions},
+        api::{blobs::AddBytesOptions, Store},
         hashseq::HashSeq,
         store::fs::{options::PathOptions, tests::create_n0_bao},
+        BlobFormat,
     };
 
     <span class="kw">async fn </span>gc_smoke(store: <span class="kw-2">&amp;</span>Store) -&gt; TestResult&lt;()&gt; {

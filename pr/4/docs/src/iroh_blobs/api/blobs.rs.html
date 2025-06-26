@@ -1150,19 +1150,19 @@
 
 <span class="kw">pub use </span>bao_tree::io::mixed::EncodedItem;
 <span class="kw">use </span>bao_tree::{
-    BaoTree, ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
         fsm::{ResponseDecoder, ResponseDecoderNext},
+        BaoContentItem, Leaf,
     },
+    BaoTree, ChunkNum, ChunkRanges,
 };
 <span class="kw">use </span>bytes::Bytes;
 <span class="kw">use </span>genawaiter::sync::Gen;
 <span class="kw">use </span>iroh_io::{AsyncStreamReader, TokioStreamReader};
 <span class="kw">use </span>irpc::channel::{mpsc, oneshot};
-<span class="kw">use </span>n0_future::{Stream, StreamExt, future, stream};
+<span class="kw">use </span>n0_future::{future, stream, Stream, StreamExt};
 <span class="kw">use </span>quinn::SendStream;
-<span class="kw">use </span>range_collections::{RangeSet2, range_set::RangeSetRange};
+<span class="kw">use </span>range_collections::{range_set::RangeSetRange, RangeSet2};
 <span class="kw">use </span>ref_cast::RefCast;
 <span class="kw">use </span>tokio::io::AsyncWriteExt;
 <span class="kw">use </span>tracing::trace;
@@ -1178,7 +1178,6 @@
     ImportBaoRequest <span class="kw">as </span>ImportBaoOptions, ImportMode, ObserveRequest <span class="kw">as </span>ObserveOptions,
 };
 <span class="kw">use super</span>::{
-    ApiClient, RequestResult, Tags,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
         ExportBaoRequest, ExportRangesItem, ImportBaoRequest, ImportByteStreamRequest,
@@ -1186,13 +1185,14 @@
     },
     remote::HashSeqChunk,
     tags::TagInfo,
+    ApiClient, RequestResult, Tags,
 };
 <span class="kw">use crate</span>::{
-    BlobFormat, Hash, HashAndFormat,
     api::proto::{BatchRequest, ImportByteStreamUpdate},
     provider::StreamContext,
     store::IROH_BLOCK_SIZE,
     util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat,
 };
 
 <span class="doccomment">/// Options for adding bytes.
@@ -1907,12 +1907,12 @@
 <span class="kw">impl </span>ImportBaoHandle {
     <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>new(
         fut: <span class="kw">impl </span>Future&lt;
-            Output = irpc::Result&lt;(
-                mpsc::Sender&lt;BaoContentItem&gt;,
-                oneshot::Receiver&lt;<span class="kw">super</span>::Result&lt;()&gt;&gt;,
-            )&gt;,
-        &gt; + Send
-        + <span class="lifetime">'static</span>,
+                Output = irpc::Result&lt;(
+                    mpsc::Sender&lt;BaoContentItem&gt;,
+                    oneshot::Receiver&lt;<span class="kw">super</span>::Result&lt;()&gt;&gt;,
+                )&gt;,
+            &gt; + Send
+            + <span class="lifetime">'static</span>,
     ) -&gt; irpc::Result&lt;<span class="self">Self</span>&gt; {
         <span class="kw">let </span>(tx, rx) = fut.<span class="kw">await</span><span class="question-mark">?</span>;
         <span class="prelude-val">Ok</span>(<span class="self">Self </span>{ tx, rx })

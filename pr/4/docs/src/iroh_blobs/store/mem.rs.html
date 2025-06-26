@@ -1036,7 +1036,15 @@
 <a href="#1035" id="1035">1035</a>
 <a href="#1036" id="1036">1036</a>
 <a href="#1037" id="1037">1037</a>
-<a href="#1038" id="1038">1038</a></pre></div><pre class="rust"><code><span class="doccomment">//! Mutable in-memory blob store.
+<a href="#1038" id="1038">1038</a>
+<a href="#1039" id="1039">1039</a>
+<a href="#1040" id="1040">1040</a>
+<a href="#1041" id="1041">1041</a>
+<a href="#1042" id="1042">1042</a>
+<a href="#1043" id="1043">1043</a>
+<a href="#1044" id="1044">1044</a>
+<a href="#1045" id="1045">1045</a>
+<a href="#1046" id="1046">1046</a></pre></div><pre class="rust"><code><span class="doccomment">//! Mutable in-memory blob store.
 //!
 //! Being a memory store, this store has to import all data into memory before it can
 //! serve it. So the amount of data you can serve is limited by your available memory.
@@ -1046,17 +1054,24 @@
 //! For many use cases this can be quite useful, since it does not require write access
 //! to the file system.
 </span><span class="kw">use </span>std::{
-    collections::{BTreeMap, HashMap, HashSet}, future::Future, io::{<span class="self">self</span>, Write}, num::NonZeroU64, ops::Deref, sync::Arc, time::SystemTime
+    collections::{BTreeMap, HashMap, HashSet},
+    future::Future,
+    io::{<span class="self">self</span>, Write},
+    num::NonZeroU64,
+    ops::Deref,
+    sync::Arc,
+    time::SystemTime,
 };
 
 <span class="kw">use </span>bao_tree::{
-    BaoTree, ChunkNum, ChunkRanges, TreeNode, blake3,
+    blake3,
     io::{
-        BaoContentItem, Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
+        BaoContentItem, Leaf,
     },
+    BaoTree, ChunkNum, ChunkRanges, TreeNode,
 };
 <span class="kw">use </span>bytes::Bytes;
 <span class="kw">use </span>irpc::channel::mpsc;
@@ -1067,13 +1082,12 @@
     sync::watch,
     task::{JoinError, JoinSet},
 };
-<span class="kw">use </span>tracing::{Instrument, error, info, instrument, trace};
+<span class="kw">use </span>tracing::{error, info, instrument, trace, Instrument};
 
 <span class="kw">use </span><span class="kw">super</span>::util::{BaoTreeSender, PartialMemStorage};
 <span class="kw">use crate</span>::{
-    BlobFormat, Hash,
     api::{
-        <span class="self">self</span>, ApiClient,
+        <span class="self">self</span>,
         blobs::{AddProgressItem, Bitfield, BlobStatus, ExportProgressItem},
         proto::{
             BatchMsg, BatchResponse, BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest, Command,
@@ -1086,15 +1100,17 @@
             SetTagRequest, ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
+        ApiClient,
     },
     store::{
-        HashAndFormat, IROH_BLOCK_SIZE,
         util::{SizeInfo, SparseMemFile, Tag},
+        HashAndFormat, IROH_BLOCK_SIZE,
     },
     util::{
-        ChunkRangesExt,
         temp_tag::{TagDrop, TempTagScope, TempTags},
+        ChunkRangesExt,
     },
+    BlobFormat, Hash,
 };
 
 <span class="attr">#[derive(Debug, Default)]
@@ -1805,7 +1821,7 @@
 
 <span class="kw">impl </span>ReadBytesAt <span class="kw">for </span>DataReader {
     <span class="kw">fn </span>read_bytes_at(<span class="kw-2">&amp;</span><span class="self">self</span>, offset: u64, size: usize) -&gt; std::io::Result&lt;Bytes&gt; {
-        <span class="kw">let </span>entry = <span class="self">self</span>.<span class="number">0.0</span>.state.borrow();
+        <span class="kw">let </span>entry = <span class="self">self</span>.<span class="number">0 </span>.<span class="number">0</span>.state.borrow();
         entry.data().read_bytes_at(offset, size)
     }
 }

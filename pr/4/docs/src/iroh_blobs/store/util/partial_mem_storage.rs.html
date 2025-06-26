@@ -55,11 +55,11 @@
 <a href="#54" id="54">54</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::io;
 
 <span class="kw">use </span>bao_tree::{
+    io::{sync::WriteAt, BaoContentItem},
     BaoTree,
-    io::{BaoContentItem, sync::WriteAt},
 };
 
-<span class="kw">use super</span>::{SparseMemFile, size_info::SizeInfo};
+<span class="kw">use super</span>::{size_info::SizeInfo, SparseMemFile};
 <span class="kw">use crate</span>::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
 
 <span class="doccomment">/// An incomplete entry, with all the logic to keep track of the state of the entry

@@ -2089,7 +2089,8 @@
 <a href="#2088" id="2088">2088</a>
 <a href="#2089" id="2089">2089</a>
 <a href="#2090" id="2090">2090</a>
-<a href="#2091" id="2091">2091</a></pre></div><pre class="rust"><code><span class="doccomment">//! # File based blob store.
+<a href="#2091" id="2091">2091</a>
+<a href="#2092" id="2092">2092</a></pre></div><pre class="rust"><code><span class="doccomment">//! # File based blob store.
 //!
 //! A file based blob store needs a writeable directory to work with.
 //!
@@ -2166,12 +2167,12 @@
 };
 
 <span class="kw">use </span>bao_tree::{
-    ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         sync::ReadAt,
+        BaoContentItem, Leaf,
     },
+    ChunkNum, ChunkRanges,
 };
 <span class="kw">use </span>bytes::Bytes;
 <span class="kw">use </span>delete_set::{BaoFilePart, ProtectHandle};
@@ -2179,7 +2180,7 @@
 <span class="kw">use </span>gc::run_gc;
 <span class="kw">use </span>import::{ImportEntry, ImportSource};
 <span class="kw">use </span>irpc::channel::mpsc;
-<span class="kw">use </span>meta::{Snapshot, list_blobs};
+<span class="kw">use </span>meta::{list_blobs, Snapshot};
 <span class="kw">use </span>n0_future::{future::yield_now, io};
 <span class="kw">use </span>nested_enum_utils::enum_conversions;
 <span class="kw">use </span>range_collections::range_set::RangeSetRange;
@@ -2188,22 +2189,22 @@
 
 <span class="kw">use crate</span>::{
     api::{
-        ApiClient,
         proto::{
-            <span class="self">self</span>, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg, ExportBaoMsg,
-            ExportBaoRequest, ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
-            ExportRangesRequest, HashSpecific, ImportBaoMsg, ImportBaoRequest, ObserveMsg, Scope,
-            bitfield::is_validated,
+            <span class="self">self</span>, bitfield::is_validated, BatchMsg, BatchResponse, Bitfield, Command,
+            CreateTempTagMsg, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
+            ExportRangesItem, ExportRangesMsg, ExportRangesRequest, HashSpecific, ImportBaoMsg,
+            ImportBaoRequest, ObserveMsg, Scope,
         },
+        ApiClient,
     },
     store::{
-        Hash,
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
+        Hash,
     },
     util::{
-        ChunkRangesExt,
         channel::oneshot,
         temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
+        ChunkRangesExt,
     },
 };
 <span class="kw">mod </span>bao_file;
@@ -2215,15 +2216,16 @@
 <span class="kw">pub mod </span>options;
 <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">mod </span>util;
 <span class="kw">use </span>entry_state::EntryState;
-<span class="kw">use </span>import::{ImportEntryMsg, import_byte_stream, import_bytes, import_path};
+<span class="kw">use </span>import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 <span class="kw">use </span>options::Options;
 <span class="kw">use </span>tracing::Instrument;
 <span class="kw">mod </span>gc;
 
 <span class="kw">use </span><span class="kw">super</span>::HashAndFormat;
 <span class="kw">use </span><span class="kw">crate</span>::api::{
-    <span class="self">self</span>, Store,
+    <span class="self">self</span>,
     blobs::{AddProgressItem, ExportMode, ExportProgressItem},
+    Store,
 };
 
 <span class="doccomment">/// Create a 16 byte unique ID.
@@ -3354,10 +3356,10 @@
     <span class="kw">use </span>std::collections::{HashMap, HashSet};
 
     <span class="kw">use </span>bao_tree::{
-        ChunkRanges,
         io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
+        ChunkRanges,
     };
-    <span class="kw">use </span>n0_future::{Stream, StreamExt, stream};
+    <span class="kw">use </span>n0_future::{stream, Stream, StreamExt};
     <span class="kw">use </span>testresult::TestResult;
     <span class="kw">use </span>walkdir::WalkDir;
 
@@ -3365,8 +3367,8 @@
     <span class="kw">use crate</span>::{
         api::blobs::Bitfield,
         store::{
+            util::{read_checksummed, SliceInfoExt, Tag},
             HashAndFormat, IROH_BLOCK_SIZE,
-            util::{SliceInfoExt, Tag, read_checksummed},
         },
     };
 

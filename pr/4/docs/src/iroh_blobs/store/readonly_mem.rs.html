@@ -387,7 +387,8 @@
 <a href="#386" id="386">386</a>
 <a href="#387" id="387">387</a>
 <a href="#388" id="388">388</a>
-<a href="#389" id="389">389</a></pre></div><pre class="rust"><code><span class="doccomment">//! Readonly in-memory store.
+<a href="#389" id="389">389</a>
+<a href="#390" id="390">390</a></pre></div><pre class="rust"><code><span class="doccomment">//! Readonly in-memory store.
 //!
 //! This can only serve data that is provided at creation time. It is much simpler
 //! than the mutable in-memory store and the file system store, and can serve as a
@@ -402,13 +403,13 @@
 };
 
 <span class="kw">use </span>bao_tree::{
-    BaoTree, ChunkRanges,
     io::{
-        Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         outboard::PreOrderMemOutboard,
         sync::ReadAt,
+        Leaf,
     },
+    BaoTree, ChunkRanges,
 };
 <span class="kw">use </span>bytes::Bytes;
 <span class="kw">use </span>irpc::channel::mpsc;
@@ -419,9 +420,8 @@
 
 <span class="kw">use </span><span class="kw">super</span>::util::BaoTreeSender;
 <span class="kw">use crate</span>::{
-    Hash,
     api::{
-        <span class="self">self</span>, ApiClient, TempTag,
+        <span class="self">self</span>,
         blobs::{Bitfield, ExportProgressItem},
         proto::{
             <span class="self">self</span>, BlobStatus, Command, ExportBaoMsg, ExportBaoRequest, ExportPathMsg,
@@ -429,9 +429,11 @@
             ImportBaoMsg, ImportByteStreamMsg, ImportBytesMsg, ImportPathMsg, ObserveMsg,
             ObserveRequest,
         },
+        ApiClient, TempTag,
     },
-    store::{IROH_BLOCK_SIZE, mem::CompleteStorage},
+    store::{mem::CompleteStorage, IROH_BLOCK_SIZE},
     util::ChunkRangesExt,
+    Hash,
 };
 
 <span class="attr">#[derive(Debug, Clone)]

@@ -834,27 +834,39 @@
 <a href="#833" id="833">833</a>
 <a href="#834" id="834">834</a>
 <a href="#835" id="835">835</a>
-<a href="#836" id="836">836</a></pre></div><pre class="rust"><code><span class="doccomment">//! API for downloads from multiple nodes.
+<a href="#836" id="836">836</a>
+<a href="#837" id="837">837</a>
+<a href="#838" id="838">838</a>
+<a href="#839" id="839">839</a>
+<a href="#840" id="840">840</a>
+<a href="#841" id="841">841</a>
+<a href="#842" id="842">842</a></pre></div><pre class="rust"><code><span class="doccomment">//! API for downloads from multiple nodes.
 </span><span class="kw">use </span>std::{
-    collections::{HashMap, HashSet}, fmt::Debug, future::{Future, IntoFuture}, io, ops::Deref, sync::Arc, time::{Duration, SystemTime}
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    future::{Future, IntoFuture},
+    io,
+    ops::Deref,
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 <span class="kw">use </span>anyhow::bail;
 <span class="kw">use </span>genawaiter::sync::Gen;
-<span class="kw">use </span>iroh::{Endpoint, NodeId, endpoint::Connection};
+<span class="kw">use </span>iroh::{endpoint::Connection, Endpoint, NodeId};
 <span class="kw">use </span>irpc::{channel::mpsc, rpc_requests};
-<span class="kw">use </span>n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
+<span class="kw">use </span>n0_future::{future, stream, BufferedStreamExt, Stream, StreamExt};
 <span class="kw">use </span>rand::seq::SliceRandom;
-<span class="kw">use </span>serde::{Deserialize, Serialize, de::Error};
+<span class="kw">use </span>serde::{de::Error, Deserialize, Serialize};
 <span class="kw">use </span>tokio::{sync::Mutex, task::JoinSet};
 <span class="kw">use </span>tokio_util::time::FutureExt;
 <span class="kw">use </span>tracing::{info, instrument::Instrument, warn};
 
-<span class="kw">use super</span>::{Store, remote::GetConnection};
+<span class="kw">use super</span>::{remote::GetConnection, Store};
 <span class="kw">use crate</span>::{
-    BlobFormat, Hash, HashAndFormat,
     protocol::{GetManyRequest, GetRequest},
     util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
+    BlobFormat, Hash, HashAndFormat,
 };
 
 <span class="attr">#[derive(Debug, Clone)]

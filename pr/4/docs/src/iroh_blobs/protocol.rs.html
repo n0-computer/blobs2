@@ -1385,7 +1385,7 @@
 <span class="kw">use </span>tokio::io::AsyncReadExt;
 
 <span class="kw">pub use </span><span class="kw">crate</span>::util::ChunkRangesExt;
-<span class="kw">use crate</span>::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, provider::CountingReader};
+<span class="kw">use crate</span>::{api::blobs::Bitfield, provider::CountingReader, BlobFormat, Hash, HashAndFormat};
 
 <span class="doccomment">/// Maximum message size is limited to 100MiB for now.
 </span><span class="kw">pub const </span>MAX_MESSAGE_SIZE: usize = <span class="number">1024 </span>* <span class="number">1024</span>;
@@ -1718,8 +1718,8 @@
 
     <span class="kw">use </span><span class="kw">super</span>::ChunkRangesSeq;
     <span class="kw">use crate</span>::{
-        Hash,
         protocol::{GetManyRequest, GetRequest},
+        Hash,
     };
 
     <span class="attr">#[derive(Debug, Clone, Default)]

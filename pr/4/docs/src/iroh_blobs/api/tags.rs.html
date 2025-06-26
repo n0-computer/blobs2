@@ -205,10 +205,10 @@
     TagInfo,
 };
 <span class="kw">use super</span>::{
-    ApiClient, Tag, TempTag,
     proto::{CreateTempTagRequest, Scope},
+    ApiClient, Tag, TempTag,
 };
-<span class="kw">use crate</span>::{HashAndFormat, api::proto::ListTempTagsRequest};
+<span class="kw">use crate</span>::{api::proto::ListTempTagsRequest, HashAndFormat};
 
 <span class="doccomment">/// The API for interacting with tags and temp tags.
 </span><span class="attr">#[derive(Debug, Clone, ref_cast::RefCast)]

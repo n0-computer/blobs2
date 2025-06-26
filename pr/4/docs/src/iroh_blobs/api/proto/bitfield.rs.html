@@ -331,8 +331,8 @@
 <span class="kw">use </span>smallvec::SmallVec;
 
 <span class="kw">use </span><span class="kw">crate</span>::store::util::{
-    RangeSetExt,
     observer::{Combine, CombineInPlace},
+    RangeSetExt,
 };
 
 <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>is_validated(size: NonZeroU64, ranges: <span class="kw-2">&amp;</span>ChunkRanges) -&gt; bool {
@@ -600,7 +600,7 @@
 <span class="attr">#[cfg(test)]
 </span><span class="kw">mod </span>tests {
     <span class="kw">use </span>bao_tree::{ChunkNum, ChunkRanges};
-    <span class="kw">use </span>proptest::prelude::{Strategy, prop};
+    <span class="kw">use </span>proptest::prelude::{prop, Strategy};
     <span class="kw">use </span>smallvec::SmallVec;
     <span class="kw">use </span>test_strategy::proptest;
 

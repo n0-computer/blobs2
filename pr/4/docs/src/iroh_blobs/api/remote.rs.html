@@ -1263,13 +1263,18 @@
 <a href="#1262" id="1262">1262</a>
 <a href="#1263" id="1263">1263</a>
 <a href="#1264" id="1264">1264</a>
-<a href="#1265" id="1265">1265</a></pre></div><pre class="rust"><code><span class="doccomment">//! API for downloading blobs from a single remote node.
+<a href="#1265" id="1265">1265</a>
+<a href="#1266" id="1266">1266</a>
+<a href="#1267" id="1267">1267</a>
+<a href="#1268" id="1268">1268</a>
+<a href="#1269" id="1269">1269</a>
+<a href="#1270" id="1270">1270</a></pre></div><pre class="rust"><code><span class="doccomment">//! API for downloading blobs from a single remote node.
 //!
 //! The entry point is the [`Remote`] struct.
 </span><span class="kw">use </span>genawaiter::sync::{Co, Gen};
 <span class="kw">use </span>iroh::endpoint::SendStream;
 <span class="kw">use </span>irpc::util::{AsyncReadVarintExt, WriteVarintExt};
-<span class="kw">use </span>n0_future::{Stream, StreamExt, io};
+<span class="kw">use </span>n0_future::{io, Stream, StreamExt};
 <span class="kw">use </span>n0_snafu::SpanTrace;
 <span class="kw">use </span>nested_enum_utils::common_fields;
 <span class="kw">use </span>ref_cast::RefCast;
@@ -1277,11 +1282,11 @@
 
 <span class="kw">use </span><span class="kw">super</span>::blobs::Bitfield;
 <span class="kw">use crate</span>::{
-    api::{ApiClient, blobs::WriteProgress},
-    get::{BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats, fsm::DecodeError},
+    api::{blobs::WriteProgress, ApiClient},
+    get::{fsm::DecodeError, BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats},
     protocol::{
-        GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
-        RequestType,
+        GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request, RequestType,
+        MAX_MESSAGE_SIZE,
     },
     util::sink::{Sink, TokioMpscSenderSink},
 };
@@ -2085,28 +2090,33 @@
     },
 }
 
-<span class="kw">use </span>std::{collections::BTreeMap, future::{Future, IntoFuture}, num::NonZeroU64, sync::Arc};
+<span class="kw">use </span>std::{
+    collections::BTreeMap,
+    future::{Future, IntoFuture},
+    num::NonZeroU64,
+    sync::Arc,
+};
 
 <span class="kw">use </span>bao_tree::{
-    ChunkNum, ChunkRanges,
     io::{BaoContentItem, Leaf},
+    ChunkNum, ChunkRanges,
 };
 <span class="kw">use </span>iroh::endpoint::Connection;
 <span class="kw">use </span>tracing::{debug, trace};
 
 <span class="kw">use crate</span>::{
-    Hash, HashAndFormat,
-    api::{<span class="self">self</span>, Store, blobs::Blobs},
+    api::{<span class="self">self</span>, blobs::Blobs, Store},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},
     protocol::{ChunkRangesSeq, GetRequest},
     store::IROH_BLOCK_SIZE,
+    Hash, HashAndFormat,
 };
 
 <span class="doccomment">/// Trait to lazily get a connection
 </span><span class="kw">pub trait </span>GetConnection {
     <span class="kw">fn </span>connection(<span class="kw-2">&amp;mut </span><span class="self">self</span>)
-    -&gt; <span class="kw">impl </span>Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Connection, anyhow::Error&gt;&gt; + Send + <span class="lifetime">'_</span>;
+        -&gt; <span class="kw">impl </span>Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Connection, anyhow::Error&gt;&gt; + Send + <span class="lifetime">'_</span>;
 }
 
 <span class="doccomment">/// If we already have a connection, the impl is trivial
@@ -2320,7 +2330,7 @@
 
     <span class="kw">use crate</span>::{
         protocol::{ChunkRangesSeq, GetRequest},
-        store::fs::{FsStore, tests::INTERESTING_SIZES},
+        store::fs::{tests::INTERESTING_SIZES, FsStore},
         tests::{add_test_hash_seq, add_test_hash_seq_incomplete},
         util::ChunkRangesExt,
     };

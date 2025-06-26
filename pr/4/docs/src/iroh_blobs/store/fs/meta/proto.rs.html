@@ -235,13 +235,13 @@
 
 <span class="kw">use super</span>::{ActorResult, ReadOnlyTables};
 <span class="kw">use crate</span>::{
-    Hash,
     api::proto::{
         BlobStatusMsg, ClearProtectedMsg, DeleteBlobsMsg, ProcessExitRequest, ShutdownMsg,
         SyncDbMsg,
     },
     store::{fs::entry_state::EntryState, util::DD},
     util::channel::oneshot,
+    Hash,
 };
 
 <span class="doccomment">/// Get the entry state for a hash.
