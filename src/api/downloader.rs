@@ -1,24 +1,30 @@
 //! API for downloads from multiple nodes.
 use std::{
-    collections::{HashMap, HashSet}, fmt::Debug, future::{Future, IntoFuture}, io, ops::Deref, sync::Arc, time::{Duration, SystemTime}
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    future::{Future, IntoFuture},
+    io,
+    ops::Deref,
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::bail;
 use genawaiter::sync::Gen;
-use iroh::{Endpoint, NodeId, endpoint::Connection};
+use iroh::{endpoint::Connection, Endpoint, NodeId};
 use irpc::{channel::mpsc, rpc_requests};
-use n0_future::{BufferedStreamExt, Stream, StreamExt, future, stream};
+use n0_future::{future, stream, BufferedStreamExt, Stream, StreamExt};
 use rand::seq::SliceRandom;
-use serde::{Deserialize, Serialize, de::Error};
+use serde::{de::Error, Deserialize, Serialize};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::time::FutureExt;
 use tracing::{info, instrument::Instrument, warn};
 
-use super::{Store, remote::GetConnection};
+use super::{remote::GetConnection, Store};
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
     protocol::{GetManyRequest, GetRequest},
     util::sink::{Drain, IrpcSenderRefSink, Sink, TokioMpscSenderSink},
+    BlobFormat, Hash, HashAndFormat,
 };
 
 #[derive(Debug, Clone)]

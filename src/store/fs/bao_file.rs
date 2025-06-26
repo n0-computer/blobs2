@@ -8,38 +8,39 @@ use std::{
 };
 
 use bao_tree::{
-    BaoTree, ChunkRanges, blake3,
+    blake3,
     io::{
         fsm::BaoContentItem,
         mixed::ReadBytesAt,
         outboard::PreOrderOutboard,
         sync::{ReadAt, WriteAt},
     },
+    BaoTree, ChunkRanges,
 };
 use bytes::{Bytes, BytesMut};
 use derive_more::Debug;
 use irpc::channel::mpsc;
 use tokio::sync::watch;
-use tracing::{Span, debug, error, info, trace};
+use tracing::{debug, error, info, trace, Span};
 
 use super::{
-    BaoFilePart,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     meta::Update,
     options::{Options, PathOptions},
+    BaoFilePart,
 };
 use crate::{
     api::blobs::Bitfield,
     store::{
-        Hash, IROH_BLOCK_SIZE,
         fs::{
+            meta::{raw_outboard_size, Set},
             TaskContext,
-            meta::{Set, raw_outboard_size},
         },
         util::{
-            DD, FixedSize, MemOrFile, PartialMemStorage, SizeInfo, SparseMemFile,
-            read_checksummed_and_truncate, write_checksummed,
+            read_checksummed_and_truncate, write_checksummed, FixedSize, MemOrFile,
+            PartialMemStorage, SizeInfo, SparseMemFile, DD,
         },
+        Hash, IROH_BLOCK_SIZE,
     },
 };
 

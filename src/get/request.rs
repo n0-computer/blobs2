@@ -7,10 +7,13 @@
 //! In addition to these utilities, there are also constructors in [`crate::protocol::ChunkRangesSeq`]
 //! to construct complex requests.
 use std::{
-    future::{Future, IntoFuture}, pin::Pin, sync::Arc, task::{Context, Poll}
+    future::{Future, IntoFuture},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
 
-use bao_tree::{ChunkNum, ChunkRanges, io::BaoContentItem};
+use bao_tree::{io::BaoContentItem, ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::Connection;
@@ -20,13 +23,13 @@ use rand::Rng;
 use snafu::IntoError;
 use tokio::sync::mpsc;
 
-use super::{GetError, GetResult, Stats, fsm};
+use super::{fsm, GetError, GetResult, Stats};
 use crate::{
-    Hash, HashAndFormat,
     get::error::{BadRequestSnafu, LocalFailureSnafu},
     hashseq::HashSeq,
     protocol::{ChunkRangesSeq, GetRequest},
     util::ChunkRangesExt,
+    Hash, HashAndFormat,
 };
 
 /// Result of a [`get_blob`] request.

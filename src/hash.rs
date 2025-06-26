@@ -7,7 +7,7 @@ use bao_tree::blake3;
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
 use postcard::experimental::max_size::MaxSize;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{Backtrace, ResultExt, Snafu};
 
 use crate::store::util::DD;
@@ -450,7 +450,7 @@ impl<'de> Deserialize<'de> for HashAndFormat {
 mod tests {
 
     use iroh_test::{assert_eq_hex, hexdump::parse_hexdump};
-    use serde_test::{Configure, Token, assert_tokens};
+    use serde_test::{assert_tokens, Configure, Token};
 
     use super::*;
 

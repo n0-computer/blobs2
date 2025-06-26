@@ -8,17 +8,24 @@
 //! For many use cases this can be quite useful, since it does not require write access
 //! to the file system.
 use std::{
-    collections::{BTreeMap, HashMap, HashSet}, future::Future, io::{self, Write}, num::NonZeroU64, ops::Deref, sync::Arc, time::SystemTime
+    collections::{BTreeMap, HashMap, HashSet},
+    future::Future,
+    io::{self, Write},
+    num::NonZeroU64,
+    ops::Deref,
+    sync::Arc,
+    time::SystemTime,
 };
 
 use bao_tree::{
-    BaoTree, ChunkNum, ChunkRanges, TreeNode, blake3,
+    blake3,
     io::{
-        BaoContentItem, Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         outboard::PreOrderMemOutboard,
         sync::{Outboard, ReadAt, WriteAt},
+        BaoContentItem, Leaf,
     },
+    BaoTree, ChunkNum, ChunkRanges, TreeNode,
 };
 use bytes::Bytes;
 use irpc::channel::mpsc;
@@ -29,13 +36,12 @@ use tokio::{
     sync::watch,
     task::{JoinError, JoinSet},
 };
-use tracing::{Instrument, error, info, instrument, trace};
+use tracing::{error, info, instrument, trace, Instrument};
 
 use super::util::{BaoTreeSender, PartialMemStorage};
 use crate::{
-    BlobFormat, Hash,
     api::{
-        self, ApiClient,
+        self,
         blobs::{AddProgressItem, Bitfield, BlobStatus, ExportProgressItem},
         proto::{
             BatchMsg, BatchResponse, BlobDeleteRequest, BlobStatusMsg, BlobStatusRequest, Command,
@@ -48,15 +54,17 @@ use crate::{
             SetTagRequest, ShutdownMsg, SyncDbMsg,
         },
         tags::TagInfo,
+        ApiClient,
     },
     store::{
-        HashAndFormat, IROH_BLOCK_SIZE,
         util::{SizeInfo, SparseMemFile, Tag},
+        HashAndFormat, IROH_BLOCK_SIZE,
     },
     util::{
-        ChunkRangesExt,
         temp_tag::{TagDrop, TempTagScope, TempTags},
+        ChunkRangesExt,
     },
+    BlobFormat, Hash,
 };
 
 #[derive(Debug, Default)]
@@ -767,7 +775,7 @@ pub struct DataReader(BaoFileHandle);
 
 impl ReadBytesAt for DataReader {
     fn read_bytes_at(&self, offset: u64, size: usize) -> std::io::Result<Bytes> {
-        let entry = self.0.0.state.borrow();
+        let entry = self.0 .0.state.borrow();
         entry.data().read_bytes_at(offset, size)
     }
 }

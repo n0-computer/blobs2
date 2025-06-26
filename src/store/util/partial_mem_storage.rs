@@ -1,11 +1,11 @@
 use std::io;
 
 use bao_tree::{
+    io::{sync::WriteAt, BaoContentItem},
     BaoTree,
-    io::{BaoContentItem, sync::WriteAt},
 };
 
-use super::{SparseMemFile, size_info::SizeInfo};
+use super::{size_info::SizeInfo, SparseMemFile};
 use crate::{api::blobs::Bitfield, store::IROH_BLOCK_SIZE};
 
 /// An incomplete entry, with all the logic to keep track of the state of the entry

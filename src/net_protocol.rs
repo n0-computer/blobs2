@@ -6,7 +6,7 @@
 //!
 //! ```rust
 //! # async fn example() -> anyhow::Result<()> {
-//! use iroh::{Endpoint, protocol::Router};
+//! use iroh::{protocol::Router, Endpoint};
 //! use iroh_blobs::{net_protocol::Blobs, store};
 //!
 //! // create a store
@@ -39,18 +39,18 @@
 use std::{fmt::Debug, future::Future, sync::Arc};
 
 use iroh::{
-    Endpoint, Watcher,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
+    Endpoint, Watcher,
 };
 use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::{
-    HashAndFormat,
     api::Store,
     provider::{Event, EventSender},
     ticket::BlobTicket,
+    HashAndFormat,
 };
 
 #[derive(Debug)]

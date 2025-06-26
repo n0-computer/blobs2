@@ -5,7 +5,7 @@ use genawaiter::sync::{Co, Gen};
 use n0_future::{Stream, StreamExt};
 use tracing::{debug, error, warn};
 
-use crate::{Hash, HashAndFormat, api::Store};
+use crate::{api::Store, Hash, HashAndFormat};
 
 /// An event related to GC
 #[derive(Debug)]
@@ -199,10 +199,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        BlobFormat,
-        api::{Store, blobs::AddBytesOptions},
+        api::{blobs::AddBytesOptions, Store},
         hashseq::HashSeq,
         store::fs::{options::PathOptions, tests::create_n0_bao},
+        BlobFormat,
     };
 
     async fn gc_smoke(store: &Store) -> TestResult<()> {

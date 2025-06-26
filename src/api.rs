@@ -5,7 +5,7 @@
 use std::{io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use iroh::Endpoint;
-use irpc::rpc::{Handler, listen};
+use irpc::rpc::{listen, Handler};
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
 use proto::{Request, ShutdownRequest, SyncDbRequest};

@@ -75,12 +75,12 @@ use std::{
 };
 
 use bao_tree::{
-    ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
-        mixed::{EncodedItem, ReadBytesAt, traverse_ranges_validated},
+        mixed::{traverse_ranges_validated, EncodedItem, ReadBytesAt},
         sync::ReadAt,
+        BaoContentItem, Leaf,
     },
+    ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use delete_set::{BaoFilePart, ProtectHandle};
@@ -88,7 +88,7 @@ use entry_state::{DataLocation, OutboardLocation};
 use gc::run_gc;
 use import::{ImportEntry, ImportSource};
 use irpc::channel::mpsc;
-use meta::{Snapshot, list_blobs};
+use meta::{list_blobs, Snapshot};
 use n0_future::{future::yield_now, io};
 use nested_enum_utils::enum_conversions;
 use range_collections::range_set::RangeSetRange;
@@ -97,22 +97,22 @@ use tracing::{error, instrument, trace};
 
 use crate::{
     api::{
-        ApiClient,
         proto::{
-            self, BatchMsg, BatchResponse, Bitfield, Command, CreateTempTagMsg, ExportBaoMsg,
-            ExportBaoRequest, ExportPathMsg, ExportPathRequest, ExportRangesItem, ExportRangesMsg,
-            ExportRangesRequest, HashSpecific, ImportBaoMsg, ImportBaoRequest, ObserveMsg, Scope,
-            bitfield::is_validated,
+            self, bitfield::is_validated, BatchMsg, BatchResponse, Bitfield, Command,
+            CreateTempTagMsg, ExportBaoMsg, ExportBaoRequest, ExportPathMsg, ExportPathRequest,
+            ExportRangesItem, ExportRangesMsg, ExportRangesRequest, HashSpecific, ImportBaoMsg,
+            ImportBaoRequest, ObserveMsg, Scope,
         },
+        ApiClient,
     },
     store::{
-        Hash,
         util::{BaoTreeSender, FixedSize, MemOrFile, ValueOrPoisioned},
+        Hash,
     },
     util::{
-        ChunkRangesExt,
         channel::oneshot,
         temp_tag::{TagDrop, TempTag, TempTagScope, TempTags},
+        ChunkRangesExt,
     },
 };
 mod bao_file;
@@ -124,15 +124,16 @@ mod meta;
 pub mod options;
 pub(crate) mod util;
 use entry_state::EntryState;
-use import::{ImportEntryMsg, import_byte_stream, import_bytes, import_path};
+use import::{import_byte_stream, import_bytes, import_path, ImportEntryMsg};
 use options::Options;
 use tracing::Instrument;
 mod gc;
 
 use super::HashAndFormat;
 use crate::api::{
-    self, Store,
+    self,
     blobs::{AddProgressItem, ExportMode, ExportProgressItem},
+    Store,
 };
 
 /// Create a 16 byte unique ID.
@@ -1263,10 +1264,10 @@ pub mod tests {
     use std::collections::{HashMap, HashSet};
 
     use bao_tree::{
-        ChunkRanges,
         io::{outboard::PreOrderMemOutboard, round_up_to_chunks_groups},
+        ChunkRanges,
     };
-    use n0_future::{Stream, StreamExt, stream};
+    use n0_future::{stream, Stream, StreamExt};
     use testresult::TestResult;
     use walkdir::WalkDir;
 
@@ -1274,8 +1275,8 @@ pub mod tests {
     use crate::{
         api::blobs::Bitfield,
         store::{
+            util::{read_checksummed, SliceInfoExt, Tag},
             HashAndFormat, IROH_BLOCK_SIZE,
-            util::{SliceInfoExt, Tag, read_checksummed},
         },
     };
 

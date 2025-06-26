@@ -1,12 +1,12 @@
 use std::future::IntoFuture;
 
-use n0_future::{StreamExt, stream};
+use n0_future::{stream, StreamExt};
 use rand::{RngCore, SeedableRng};
 
 use crate::{
-    BlobFormat,
-    api::{RequestResult, Store, blobs::AddBytesOptions, tags::TagInfo},
+    api::{blobs::AddBytesOptions, tags::TagInfo, RequestResult, Store},
     hashseq::HashSeq,
+    BlobFormat,
 };
 
 pub async fn create_random_blobs<R: rand::Rng>(

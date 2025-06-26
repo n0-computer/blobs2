@@ -388,7 +388,7 @@ use snafu::{GenerateImplicitData, Snafu};
 use tokio::io::AsyncReadExt;
 
 pub use crate::util::ChunkRangesExt;
-use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, provider::CountingReader};
+use crate::{api::blobs::Bitfield, provider::CountingReader, BlobFormat, Hash, HashAndFormat};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
@@ -721,8 +721,8 @@ pub mod builder {
 
     use super::ChunkRangesSeq;
     use crate::{
-        Hash,
         protocol::{GetManyRequest, GetRequest},
+        Hash,
     };
 
     #[derive(Debug, Clone, Default)]

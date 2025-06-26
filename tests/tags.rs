@@ -4,12 +4,13 @@ use std::{
 };
 
 use iroh_blobs::{
-    BlobFormat, Hash, HashAndFormat,
     api::{
-        self, Store,
+        self,
         tags::{TagInfo, Tags},
+        Store,
     },
     store::{fs::FsStore, mem::MemStore},
+    BlobFormat, Hash, HashAndFormat,
 };
 use n0_future::{Stream, StreamExt};
 use testresult::TestResult;
