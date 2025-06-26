@@ -2286,8 +2286,8 @@
     <span class="prelude-val">Ok</span>(request)
 }
 
-<span class="kw">async fn </span>write_observe_request(requst: ObserveRequest, stream: <span class="kw-2">&amp;mut </span>SendStream) -&gt; io::Result&lt;()&gt; {
-    <span class="kw">let </span>request = Request::Observe(requst);
+<span class="kw">async fn </span>write_observe_request(request: ObserveRequest, stream: <span class="kw-2">&amp;mut </span>SendStream) -&gt; io::Result&lt;()&gt; {
+    <span class="kw">let </span>request = Request::Observe(request);
     <span class="kw">let </span>request_bytes = postcard::to_allocvec(<span class="kw-2">&amp;</span>request)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))<span class="question-mark">?</span>;
     stream.write_all(<span class="kw-2">&amp;</span>request_bytes).<span class="kw">await</span><span class="question-mark">?</span>;
