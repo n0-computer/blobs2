@@ -577,7 +577,7 @@ pub struct AddPathOptions {
 /// It also implements [`IntoFuture`], so you can await it to get the [`TempTag`] that
 /// contains the hash of the added content and also protects the content.
 ///
-/// If you want access to the stream, you can use the [`AddResult::stream`] method.
+/// If you want access to the stream, you can use the [`AddProgress::stream`] method.
 pub struct AddProgress<'a> {
     blobs: &'a Blobs,
     inner: stream::Boxed<AddProgressItem>,
@@ -643,9 +643,6 @@ impl<'a> AddProgress<'a> {
 ///
 /// Calling [`ObserveProgress::stream`] will return a stream of updates, where
 /// the first item is the current state and subsequent items are updates.
-///
-/// Calling [`ObserveProgress::aggregated`] will return a stream of states,
-/// where each state is the current state at the time of the update.
 pub struct ObserveProgress {
     inner: future::Boxed<irpc::Result<mpsc::Receiver<Bitfield>>>,
 }
@@ -826,7 +823,7 @@ impl BlobsListProgress {
 /// is often inconvenient, so there are a number of higher level methods to
 /// process the stream.
 ///
-/// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
+/// You can get access to the underlying stream using the [`ExportBaoProgress::stream`] method.
 pub struct ExportRangesProgress {
     ranges: RangeSet2<u64>,
     inner: future::Boxed<irpc::Result<mpsc::Receiver<ExportRangesItem>>>,
@@ -907,7 +904,7 @@ impl ExportRangesProgress {
 /// is often inconvenient, so there are a number of higher level methods to
 /// process the stream.
 ///
-/// You can get access to the underlying stream using the [`ExportBaoResult::stream`] method.
+/// You can get access to the underlying stream using the [`ExportBaoProgress::stream`] method.
 pub struct ExportBaoProgress {
     inner: future::Boxed<irpc::Result<mpsc::Receiver<EncodedItem>>>,
 }

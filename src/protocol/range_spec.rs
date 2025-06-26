@@ -1,9 +1,9 @@
 //! Specifications for ranges selection in blobs and sequences of blobs.
 //!
-//! The [`RangeSpec`] allows specifying which BAO chunks inside a single blob should be
+//! The [`ChunkRanges`] allows specifying which BAO chunks inside a single blob should be
 //! selected.
 //!
-//! The [`RangeSpecSeq`] builds on top of this to select blob chunks in an entire
+//! The [`ChunkRangesSeq`] builds on top of this to select blob chunks in an entire
 //! collection.
 use std::{fmt, sync::OnceLock};
 
@@ -62,16 +62,16 @@ impl ChunkRangesSeq {
         Self(inner)
     }
 
-    /// A [`RangeSpecSeq`] containing all chunks from all blobs.
+    /// A [`ChunkRangesSeq`] containing all chunks from all blobs.
     ///
-    /// [`RangeSpecSeq::iter`], will return a full range forever.
+    /// [`ChunkRangesSeq::iter`], will return a full range forever.
     pub fn all() -> Self {
         let mut inner = SmallVec::new();
         inner.push((0, ChunkRanges::all()));
         Self(inner)
     }
 
-    /// A [`RangeSpecSeq`] getting the verified size for the first blob.
+    /// A [`ChunkRangesSeq`] getting the verified size for the first blob.
     pub fn verified_size() -> Self {
         let mut inner = SmallVec::new();
         inner.push((0, ChunkRanges::last_chunk()));
@@ -79,7 +79,7 @@ impl ChunkRangesSeq {
         Self(inner)
     }
 
-    /// A [`RangeSpecSeq`] getting the entire first blob and verified sizes for all others.
+    /// A [`ChunkRangesSeq`] getting the entire first blob and verified sizes for all others.
     pub fn verified_child_sizes() -> Self {
         let mut inner = SmallVec::new();
         inner.push((0, ChunkRanges::all()));
@@ -87,12 +87,12 @@ impl ChunkRangesSeq {
         Self(inner)
     }
 
-    /// Checks if this [`RangeSpec`] does not select any chunks in the blob.
+    /// Checks if this [`ChunkRangesSeq`] does not select any chunks in the blob.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Checks if this [`RangeSpec`] selects all chunks in the blob.
+    /// Checks if this [`ChunkRangesSeq`] selects all chunks in the blob.
     pub fn is_all(&self) -> bool {
         if self.0.len() != 1 {
             return false;
@@ -155,7 +155,7 @@ impl ChunkRangesSeq {
     /// This iterator will only yield items for blobs which have at least one chunk
     /// selected.
     ///
-    /// This iterator is infinite if the [`RangeSpecSeq`] ends on a non-empty [`RangeSpec`],
+    /// This iterator is infinite if the [`ChunkRangesSeq`] ends on a non-empty [`ChunkRanges`],
     /// that is all further blobs have selected chunks spans.
     pub fn iter_non_empty_infinite(&self) -> NonEmptyRequestRangeSpecIter<'_> {
         NonEmptyRequestRangeSpecIter::new(self.iter_infinite())
@@ -338,6 +338,9 @@ impl<'a> Iterator for NonEmptyRequestRangeSpecIter<'a> {
 }
 
 /// A chunk range specification as a sequence of chunk offsets.
+///
+/// This is just the wire encoding of a [`ChunkRanges`]. You should rarely have to
+/// interact with this directly.
 ///
 /// Offsets encode alternating spans starting on 0, where the first span is always
 /// deselected.

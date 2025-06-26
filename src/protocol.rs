@@ -109,7 +109,7 @@
 //! want the entire blob, no matter how many chunks it has.
 //!
 //! Since this is a very common case, there is a convenience method
-//! [`GetRequest::single`] that only requires the hash of the blob.
+//! [`GetRequest::blob`] that only requires the hash of the blob.
 //!
 //! ```rust
 //! # use iroh_blobs::protocol::GetRequest;
@@ -285,7 +285,7 @@
 //! let request = GetRequest::blob(child_hash);
 //! ```
 //!
-//! ### Why RangeSpec and RangeSpecSeq?
+//! ### Why ChunkRanges and ChunkRangesSeq?
 //!
 //! You might wonder why we have [`ChunkRangesSeq`], when a simple
 //! sequence of [`ChunkRanges`] might also do.
@@ -416,7 +416,7 @@ pub enum Request {
     Push(PushRequest),
     /// Get multiple blobs in a single request, from a single provider
     ///
-    /// This is identical to a [`GetRequest`] for a [`HashSeq`], but the provider
+    /// This is identical to a [`GetRequest`] for a [`crate::hashseq::HashSeq`], but the provider
     /// does not need to have the hash seq.
     GetMany(GetManyRequest),
 }
@@ -971,7 +971,7 @@ mod tests {
                 r"
                     00 # enum variant for GetRequest
                     dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada # the hash
-                    020001000100 # the RangeSpecSeq
+                    020001000100 # the ChunkRangesSeq
             ",
             ),
             (
@@ -979,7 +979,7 @@ mod tests {
                 r"
                     00 # enum variant for GetRequest
                     dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada # the hash
-                    01000100 # the RangeSpecSeq
+                    01000100 # the ChunkRangesSeq
             ",
             ),
         ];

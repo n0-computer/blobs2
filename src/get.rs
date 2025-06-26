@@ -1,8 +1,8 @@
 //! The low level client side API
 //!
 //! Note that while using this API directly is fine, a simpler way to get data
-//! to a store is to use the [`crate::api::download`] API, in particular the
-//! [`crate::api::download::Download::fetch`] function to download data to your
+//! to a store is to use the [`crate::api::remote`] API, in particular the
+//! [`crate::api::remote::Remote::fetch`] function to download data to your
 //! local store.
 //!
 //! To get data, create a connection using an [`iroh::Endpoint`].
@@ -592,8 +592,8 @@ pub mod fsm {
     /// provider should never do this, so this is an indication that the provider is
     /// not behaving correctly.
     ///
-    /// The [`DecodeError::Io`] variant is just a fallback for any other io error that
-    /// is not actually a [`ReadError`].
+    /// The [`DecodeError::DecodeIo`] variant is just a fallback for any other io error that
+    /// is not actually a [`DecodeError::Read`].
     ///
     /// [`ReadError`]: endpoint::ReadError
     #[common_fields({

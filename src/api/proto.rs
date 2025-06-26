@@ -574,7 +574,7 @@ impl From<Leaf> for ExportRangesItem {
 /// Progress events for exporting to a local file.
 ///
 /// Exporting does not involve outboard computation, so the events are simpler
-/// than [`ImportProgress`].
+/// than [`AddProgressItem`].
 ///
 /// Size -> CopyProgress(*n) -> Done
 ///

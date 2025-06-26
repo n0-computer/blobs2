@@ -1,10 +1,10 @@
 //! Utilities to generate or execute complex get requests without persisting to a store.
 //!
 //! Any complex request can be executed with downloading to a store, using the
-//! [`crate::api::download::Download::execute`] method. But for some requests it
+//! [`crate::api::remote::Remote::execute_get`] method. But for some requests it
 //! is useful to just get the data without persisting it to a store.
 //!
-//! In addition to these utilities, there are also constructors in [`crate::protocol::RangeSpecSeq`]
+//! In addition to these utilities, there are also constructors in [`crate::protocol::ChunkRangesSeq`]
 //! to construct complex requests.
 use std::{
     pin::Pin,

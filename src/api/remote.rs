@@ -1,6 +1,6 @@
 //! API for downloading blobs from a single remote node.
 //!
-//! The entry point is the [`Download`] struct.
+//! The entry point is the [`Remote`] struct.
 use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::SendStream;
 use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
@@ -24,18 +24,18 @@ use crate::{
 /// API to compute request and to download from remote nodes.
 ///
 /// Usually you want to first find out what, if any, data you have locally.
-/// This can be done using [`Download::local`], which inspects the local store
+/// This can be done using [`Remote::local`], which inspects the local store
 /// and returns a [`LocalInfo`].
 ///
 /// From this you can compute various values such as the number of locally present
 /// bytes. You can also compute a request to get the missing data using [`LocalInfo::missing`].
 ///
-/// Once you have a request, you can execute it using [`Download::execute`].
+/// Once you have a request, you can execute it using [`Remote::execute_get`].
 /// Executing a request will store to the local store, but otherwise does not take
 /// the available data into account.
 ///
 /// If you are not interested in the details and just want your data, you can use
-/// [`Download::fetch`]. This will internally do the dance described above.
+/// [`Remote::fetch`]. This will internally do the dance described above.
 #[derive(Debug, Clone, RefCast)]
 #[repr(transparent)]
 pub struct Remote {

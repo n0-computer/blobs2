@@ -195,7 +195,7 @@ async fn import_bytes_tiny_impl(
 ) -> io::Result<ImportEntry> {
     let size = cmd.data.len() as u64;
     // send the required progress events
-    // ImportProgress::Done will be sent when finishing the import!
+    // AddProgressItem::Done will be sent when finishing the import!
     tx.send(AddProgressItem::Size(size))
         .await
         .map_err(|_e| io::Error::other("error"))?;
