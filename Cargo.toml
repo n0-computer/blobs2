@@ -1,7 +1,10 @@
 [package]
 name = "iroh-blobs"
-version = "0.1.0"
+version = "0.90.0-alpha1"
 edition = "2021"
+
+# Sadly this also needs to be updated in .github/workflows/ci.yml
+rust-version = "1.85"
 
 [dependencies]
 anyhow = "1.0.95"
