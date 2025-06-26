@@ -723,7 +723,7 @@ mod tests {
             .stream()
             .await?;
         while let Some(item) = progress.next().await {
-            println!("Got item: {:?}", item);
+            println!("Got item: {item:?}");
         }
         assert_eq!(store3.get_bytes(tt1.hash).await?.deref(), b"hello world");
         assert_eq!(store3.get_bytes(tt2.hash).await?.deref(), b"hello world 2");
@@ -768,7 +768,7 @@ mod tests {
                 .stream()
                 .await?;
             while let Some(item) = progress.next().await {
-                println!("Got item: {:?}", item);
+                println!("Got item: {item:?}");
             }
         }
         if false {
@@ -832,7 +832,7 @@ mod tests {
             .stream()
             .await?;
         while let Some(item) = progress.next().await {
-            println!("Got item: {:?}", item);
+            println!("Got item: {item:?}");
         }
         Ok(())
     }

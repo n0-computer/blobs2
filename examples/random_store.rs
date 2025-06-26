@@ -188,7 +188,7 @@ async fn main() -> Result<()> {
 }
 
 async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
-    println!("{:?}", args);
+    println!("{args:?}");
     let tempdir = if args.common.path.is_none() {
         Some(tempfile::tempdir_in(".").context("Failed to create temporary directory")?)
     } else {
@@ -242,8 +242,8 @@ async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
         .spawn();
     let addr = router.endpoint().node_addr().initialized().await?;
     let ticket = NodeTicket::from(addr.clone());
-    println!("Node address: {:?}", addr);
-    println!("ticket:\n{}", ticket);
+    println!("Node address: {addr:?}");
+    println!("ticket:\n{ticket}");
     ctrl_c().await?;
     router.shutdown().await?;
     dump_task.abort();
@@ -251,7 +251,7 @@ async fn provide(args: ProvideArgs) -> anyhow::Result<()> {
 }
 
 async fn request(args: RequestArgs) -> anyhow::Result<()> {
-    println!("{:?}", args);
+    println!("{args:?}");
     let tempdir = if args.common.path.is_none() {
         Some(tempfile::tempdir_in(".").context("Failed to create temporary directory")?)
     } else {
@@ -284,7 +284,7 @@ async fn request(args: RequestArgs) -> anyhow::Result<()> {
     }
     let hashes = store.list().hashes().await?;
     for hash in hashes {
-        println!("Got {}", hash);
+        println!("Got {hash}");
     }
     store.dump().await?;
     Ok(())

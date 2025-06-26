@@ -167,7 +167,7 @@ fn handle_dump(cmd: Dump, tables: &impl ReadableTables) -> ActorResult<()> {
         let (k, v) = e.context(StorageSnafu)?;
         let k = k.value();
         let v = v.value();
-        println!("tags: {} -> {:?}", k, v);
+        println!("tags: {k} -> {v:?}");
     }
     for e in tables.inline_data().iter().context(StorageSnafu)? {
         let (k, v) = e.context(StorageSnafu)?;
@@ -385,9 +385,9 @@ enum TxnNum {
 impl std::fmt::Debug for TxnNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TxnNum::Read(n) => write!(f, "r{}", n),
-            TxnNum::Write(n) => write!(f, "w{}", n),
-            TxnNum::TopLevel(n) => write!(f, "t{}", n),
+            TxnNum::Read(n) => write!(f, "r{n}"),
+            TxnNum::Write(n) => write!(f, "w{n}"),
+            TxnNum::TopLevel(n) => write!(f, "t{n}"),
         }
     }
 }

@@ -64,7 +64,7 @@ impl fmt::Display for Tag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.as_ref();
         match std::str::from_utf8(bytes) {
-            Ok(s) => write!(f, "\"{}\"", s),
+            Ok(s) => write!(f, "\"{s}\""),
             Err(_) => write!(f, "{}", hex::encode(bytes)),
         }
     }
@@ -78,7 +78,7 @@ impl Tag {
         loop {
             let mut text = format!("auto-{}", now.format("%Y-%m-%dT%H:%M:%S%.3fZ"));
             if i != 0 {
-                text.push_str(&format!("-{}", i));
+                text.push_str(&format!("-{i}"));
             }
             if !exists(text.as_bytes()) {
                 return Self::from(text);

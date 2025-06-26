@@ -47,8 +47,7 @@ impl<X> DataLocation<X, u64> {
             ) => {
                 if a_size != b_size {
                     return Err(ActorError::inconsistent(format!(
-                        "complete size mismatch {} {}",
-                        a_size, b_size
+                        "complete size mismatch {a_size} {b_size}"
                     )));
                 }
                 paths.extend(b_paths);
@@ -210,7 +209,7 @@ impl<I: AsRef<[u8]>> EntryState<I> {
                 data_location.fmt_short(),
                 outboard_location.fmt_short()
             ),
-            Self::Partial { size } => format!("Partial {{ size: {:?} }}", size),
+            Self::Partial { size } => format!("Partial {{ size: {size:?} }}"),
         }
     }
 }
@@ -253,8 +252,7 @@ impl EntryState {
                         // in bao-tree.
                         if a_size != b_size {
                             return Err(ActorError::inconsistent(format!(
-                                "validated size mismatch {} {}",
-                                a_size, b_size
+                                "validated size mismatch {a_size} {b_size}"
                             )));
                         }
                         Some(a_size)

@@ -234,7 +234,7 @@ impl Actor {
                     None => {
                         tx.send(Err(api::Error::io(
                             io::ErrorKind::NotFound,
-                            format!("tag not found: {:?}", from),
+                            format!("tag not found: {from:?}"),
                         )))
                         .await
                         .ok();
@@ -944,7 +944,7 @@ fn print_outboard(hashes: &[u8]) {
         let right: [u8; 32] = chunk[32..].try_into().unwrap();
         let left = blake3::Hash::from(left);
         let right = blake3::Hash::from(right);
-        println!("l: {:?}, r: {:?}", left, right);
+        println!("l: {left:?}, r: {right:?}");
     }
 }
 
@@ -1013,10 +1013,10 @@ mod tests {
         let store = MemStore::new();
         let tt = store.add_bytes(vec![0u8; 1024 * 64]).temp_tag().await?;
         let hash = *tt.hash();
-        println!("hash: {:?}", hash);
+        println!("hash: {hash:?}");
         let mut stream = store.export_bao(hash, ChunkRanges::all()).stream();
         while let Some(item) = stream.next().await {
-            println!("item: {:?}", item);
+            println!("item: {item:?}");
         }
         let stream = store.export_bao(hash, ChunkRanges::all());
         let exported = stream.bao_to_vec().await?;
@@ -1025,7 +1025,7 @@ mod tests {
         let mut or = store2.observe(hash).stream().await?;
         tokio::spawn(async move {
             while let Some(event) = or.next().await {
-                println!("event: {:?}", event);
+                println!("event: {event:?}");
             }
         });
         store2
