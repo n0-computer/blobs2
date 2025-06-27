@@ -2,17 +2,16 @@ use std::{collections::HashSet, io, ops::Range, path::PathBuf};
 
 use bao_tree::ChunkRanges;
 use bytes::Bytes;
-use iroh::{Endpoint, NodeId, Watcher, protocol::Router};
+use iroh::{protocol::Router, Endpoint, NodeId, Watcher};
 use irpc::RpcMessage;
-use n0_future::{StreamExt, task::AbortOnDropHandle};
+use n0_future::{task::AbortOnDropHandle, StreamExt};
 use tempfile::TempDir;
 use testresult::TestResult;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
-    api::{Store, blobs::Bitfield},
+    api::{blobs::Bitfield, Store},
     get,
     hashseq::HashSeq,
     net_protocol::Blobs,
@@ -20,13 +19,14 @@ use crate::{
     provider::Event,
     store::{
         fs::{
+            tests::{create_n0_bao, test_data, INTERESTING_SIZES},
             FsStore,
-            tests::{INTERESTING_SIZES, create_n0_bao, test_data},
         },
         mem::MemStore,
         util::observer::Combine,
     },
     util::sink::Drain,
+    BlobFormat, Hash, HashAndFormat,
 };
 
 // #[tokio::test]

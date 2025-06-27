@@ -5,12 +5,12 @@ use std::{
 };
 
 use iroh_blobs::{
-    Hash,
     api::{
-        Store,
         blobs::{AddProgressItem, Blobs},
+        Store,
     },
     store::{fs::FsStore, mem::MemStore},
+    Hash,
 };
 use n0_future::StreamExt;
 use testresult::TestResult;

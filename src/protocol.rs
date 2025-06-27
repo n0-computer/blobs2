@@ -388,7 +388,7 @@ use snafu::{GenerateImplicitData, Snafu};
 use tokio::io::AsyncReadExt;
 
 pub use crate::util::ChunkRangesExt;
-use crate::{BlobFormat, Hash, HashAndFormat, api::blobs::Bitfield, provider::CountingReader};
+use crate::{api::blobs::Bitfield, provider::CountingReader, BlobFormat, Hash, HashAndFormat};
 
 /// Maximum message size is limited to 100MiB for now.
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
@@ -412,7 +412,7 @@ pub enum Request {
     ///
     /// Note that providers will in many cases reject this request, e.g. if
     /// they don't have write access to the store or don't want to ingest
-    /// unknonwn data.
+    /// unknown data.
     Push(PushRequest),
     /// Get multiple blobs in a single request, from a single provider
     ///
@@ -721,8 +721,8 @@ pub mod builder {
 
     use super::ChunkRangesSeq;
     use crate::{
-        Hash,
         protocol::{GetManyRequest, GetRequest},
+        Hash,
     };
 
     #[derive(Debug, Clone, Default)]

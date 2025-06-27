@@ -37,13 +37,13 @@ use tables::{ReadOnlyTables, ReadableTables, Tables};
 use tracing::{debug, error, info_span, trace};
 
 use super::{
-    BaoFilePart,
     delete_set::DeleteHandle,
     entry_state::{DataLocation, EntryState, OutboardLocation},
     options::BatchOptions,
     util::PeekableReceiver,
+    BaoFilePart,
 };
-use crate::store::{Hash, IROH_BLOCK_SIZE, util::Tag};
+use crate::store::{util::Tag, Hash, IROH_BLOCK_SIZE};
 
 /// Error type for message handler functions of the redb actor.
 ///

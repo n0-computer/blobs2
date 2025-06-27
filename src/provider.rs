@@ -15,23 +15,23 @@ use std::{
 use anyhow::{Context, Result};
 use bao_tree::ChunkRanges;
 use iroh::{
-    NodeId,
     endpoint::{self, RecvStream, SendStream},
+    NodeId,
 };
 use irpc::channel::oneshot;
 use n0_future::StreamExt;
 use serde::de::DeserializeOwned;
 use tokio::{io::AsyncRead, select, sync::mpsc};
-use tracing::{Instrument, debug, debug_span, error, warn};
+use tracing::{debug, debug_span, error, warn, Instrument};
 
 use crate::{
-    Hash,
-    api::{self, Store, blobs::Bitfield},
+    api::{self, blobs::Bitfield, Store},
     hashseq::HashSeq,
     protocol::{
         ChunkRangesSeq, GetManyRequest, GetRequest, ObserveItem, ObserveRequest, PushRequest,
         Request,
     },
+    Hash,
 };
 
 /// Provider progress events, to keep track of what the provider is doing.

@@ -19,23 +19,22 @@ use std::{
 };
 
 use bao_tree::{
-    BaoTree, ChunkNum,
     io::outboard::{PreOrderMemOutboard, PreOrderOutboard},
+    BaoTree, ChunkNum,
 };
 use bytes::Bytes;
 use genawaiter::sync::Gen;
 use irpc::{
-    Channels, WithChannels,
     channel::{mpsc, none::NoReceiver},
+    Channels, WithChannels,
 };
-use n0_future::{Stream, StreamExt, stream};
+use n0_future::{stream, Stream, StreamExt};
 use ref_cast::RefCast;
 use smallvec::SmallVec;
 use tracing::{instrument, trace};
 
-use super::{TaskContext, meta::raw_outboard_size, options::Options};
+use super::{meta::raw_outboard_size, options::Options, TaskContext};
 use crate::{
-    BlobFormat, Hash,
     api::{
         blobs::{AddProgressItem, ImportMode},
         proto::{
@@ -45,10 +44,11 @@ use crate::{
         },
     },
     store::{
+        util::{MemOrFile, DD},
         IROH_BLOCK_SIZE,
-        util::{DD, MemOrFile},
     },
     util::{outboard_with_progress::init_outboard, sink::Sink},
+    BlobFormat, Hash,
 };
 
 /// An import source.
@@ -530,16 +530,12 @@ mod tests {
     }
 
     fn assert_expected_progress(progress: &[AddProgressItem]) {
-        assert!(
-            progress
-                .iter()
-                .any(|x| matches!(&x, AddProgressItem::Size { .. }))
-        );
-        assert!(
-            progress
-                .iter()
-                .any(|x| matches!(&x, AddProgressItem::CopyDone))
-        );
+        assert!(progress
+            .iter()
+            .any(|x| matches!(&x, AddProgressItem::Size { .. })));
+        assert!(progress
+            .iter()
+            .any(|x| matches!(&x, AddProgressItem::CopyDone)));
     }
 
     fn chunk_bytes(data: Bytes, chunk_size: usize) -> impl Iterator<Item = Bytes> {

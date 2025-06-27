@@ -1,7 +1,15 @@
 [package]
 name = "iroh-blobs"
-version = "0.1.0"
-edition = "2024"
+version = "0.90.0-alpha1"
+edition = "2021"
+description = "content-addressed blobs for iroh"
+license = "MIT OR Apache-2.0"
+authors = ["dignifiedquire <me@dignifiedquire.com>", "n0 team"]
+repository = "https://github.com/n0-computer/blobs2"
+keywords = ["hashing", "quic", "blake3", "streaming"]
+
+# Sadly this also needs to be updated in .github/workflows/ci.yml
+rust-version = "1.85"
 
 [dependencies]
 anyhow = "1.0.95"
@@ -13,7 +21,7 @@ quinn = { package = "iroh-quinn", version = "0.14.0" }
 n0-future = "0.1.2"
 n0-snafu = "0.2.0"
 range-collections = { version = "0.4.6", features = ["serde"] }
-redb = "2.4.0"
+redb = { version = "=2.4" }
 smallvec = { version = "1", features = ["serde", "const_new"] }
 snafu = "0.8.5"
 tokio = { version = "1.43.0", features = ["full"] }

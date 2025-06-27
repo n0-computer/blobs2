@@ -4,7 +4,7 @@
 use genawaiter::sync::{Co, Gen};
 use iroh::endpoint::SendStream;
 use irpc::util::{AsyncReadVarintExt, WriteVarintExt};
-use n0_future::{Stream, StreamExt, io};
+use n0_future::{io, Stream, StreamExt};
 use n0_snafu::SpanTrace;
 use nested_enum_utils::common_fields;
 use ref_cast::RefCast;
@@ -12,11 +12,11 @@ use snafu::{Backtrace, IntoError, Snafu};
 
 use super::blobs::Bitfield;
 use crate::{
-    api::{ApiClient, blobs::WriteProgress},
-    get::{BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats, fsm::DecodeError},
+    api::{blobs::WriteProgress, ApiClient},
+    get::{fsm::DecodeError, BadRequestSnafu, GetError, GetResult, LocalFailureSnafu, Stats},
     protocol::{
-        GetManyRequest, MAX_MESSAGE_SIZE, ObserveItem, ObserveRequest, PushRequest, Request,
-        RequestType,
+        GetManyRequest, ObserveItem, ObserveRequest, PushRequest, Request, RequestType,
+        MAX_MESSAGE_SIZE,
     },
     util::sink::{Sink, TokioMpscSenderSink},
 };
@@ -820,28 +820,33 @@ pub enum ExecuteError {
     },
 }
 
-use std::{collections::BTreeMap, future::Future, num::NonZeroU64, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    future::{Future, IntoFuture},
+    num::NonZeroU64,
+    sync::Arc,
+};
 
 use bao_tree::{
-    ChunkNum, ChunkRanges,
     io::{BaoContentItem, Leaf},
+    ChunkNum, ChunkRanges,
 };
 use iroh::endpoint::Connection;
 use tracing::{debug, trace};
 
 use crate::{
-    Hash, HashAndFormat,
-    api::{self, Store, blobs::Blobs},
+    api::{self, blobs::Blobs, Store},
     get::fsm::{AtBlobHeader, AtEndBlob, BlobContentNext, ConnectedNext, EndBlobNext},
     hashseq::{HashSeq, HashSeqIter},
     protocol::{ChunkRangesSeq, GetRequest},
     store::IROH_BLOCK_SIZE,
+    Hash, HashAndFormat,
 };
 
 /// Trait to lazily get a connection
 pub trait GetConnection {
     fn connection(&mut self)
-    -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
+        -> impl Future<Output = Result<Connection, anyhow::Error>> + Send + '_;
 }
 
 /// If we already have a connection, the impl is trivial
@@ -1021,8 +1026,8 @@ async fn write_push_request(
     Ok(request)
 }
 
-async fn write_observe_request(requst: ObserveRequest, stream: &mut SendStream) -> io::Result<()> {
-    let request = Request::Observe(requst);
+async fn write_observe_request(request: ObserveRequest, stream: &mut SendStream) -> io::Result<()> {
+    let request = Request::Observe(request);
     let request_bytes = postcard::to_allocvec(&request)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     stream.write_all(&request_bytes).await?;
@@ -1055,7 +1060,7 @@ mod tests {
 
     use crate::{
         protocol::{ChunkRangesSeq, GetRequest},
-        store::fs::{FsStore, tests::INTERESTING_SIZES},
+        store::fs::{tests::INTERESTING_SIZES, FsStore},
         tests::{add_test_hash_seq, add_test_hash_seq_incomplete},
         util::ChunkRangesExt,
     };

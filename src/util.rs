@@ -1,7 +1,7 @@
 use std::ops::{Bound, RangeBounds};
 
-use bao_tree::{ChunkNum, ChunkRanges, io::round_up_to_chunks};
-use range_collections::{RangeSet2, range_set::RangeSetEntry};
+use bao_tree::{io::round_up_to_chunks, ChunkNum, ChunkRanges};
+use range_collections::{range_set::RangeSetEntry, RangeSet2};
 
 pub mod channel;
 pub(crate) mod temp_tag;
@@ -11,8 +11,8 @@ pub mod serde {
         use std::{fmt, io};
 
         use serde::{
-            Deserializer, Serializer,
             de::{self, Visitor},
+            Deserializer, Serializer,
         };
 
         pub fn serialize<S>(error: &io::Error, serializer: S) -> Result<S::Ok, S::Error>
@@ -122,12 +122,13 @@ pub mod outboard_with_progress {
     use std::io::{self, BufReader, Read};
 
     use bao_tree::{
-        BaoTree, ChunkNum, blake3,
+        blake3,
         io::{
             outboard::PreOrderOutboard,
             sync::{OutboardMut, WriteAt},
         },
         iter::BaoChunk,
+        BaoTree, ChunkNum,
     };
     use smallvec::SmallVec;
 
@@ -152,7 +153,7 @@ pub mod outboard_with_progress {
         right_child: &blake3::Hash,
         is_root: bool,
     ) -> blake3::Hash {
-        use blake3::hazmat::{ChainingValue, Mode, merge_subtrees_non_root, merge_subtrees_root};
+        use blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, ChainingValue, Mode};
         let left_child: ChainingValue = *left_child.as_bytes();
         let right_child: ChainingValue = *right_child.as_bytes();
         if is_root {
@@ -234,13 +235,14 @@ pub mod outboard_with_progress {
     #[cfg(test)]
     mod tests {
         use bao_tree::{
-            BaoTree, blake3,
+            blake3,
             io::{outboard::PreOrderOutboard, sync::CreateOutboard},
+            BaoTree,
         };
         use testresult::TestResult;
 
         use crate::{
-            store::{IROH_BLOCK_SIZE, fs::tests::test_data},
+            store::{fs::tests::test_data, IROH_BLOCK_SIZE},
             util::{outboard_with_progress::init_outboard, sink::Drain},
         };
 
@@ -265,7 +267,7 @@ pub mod outboard_with_progress {
 }
 
 pub mod sink {
-    use std::io;
+    use std::{future::Future, io};
 
     use irpc::RpcMessage;
 

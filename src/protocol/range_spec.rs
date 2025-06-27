@@ -9,7 +9,7 @@ use std::{fmt, sync::OnceLock};
 
 use bao_tree::{ChunkNum, ChunkRanges, ChunkRangesRef};
 use serde::{Deserialize, Serialize};
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 static CHUNK_RANGES_EMPTY: OnceLock<ChunkRanges> = OnceLock::new();
 

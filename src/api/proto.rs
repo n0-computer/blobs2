@@ -24,8 +24,8 @@ use std::{
 
 use arrayvec::ArrayString;
 use bao_tree::{
+    io::{mixed::EncodedItem, BaoContentItem, Leaf},
     ChunkRanges,
-    io::{BaoContentItem, Leaf, mixed::EncodedItem},
 };
 use bytes::Bytes;
 use irpc::{
@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) mod bitfield;
 pub use bitfield::Bitfield;
 
-use crate::{BlobFormat, Hash, HashAndFormat, store::util::Tag, util::temp_tag::TempTag};
+use crate::{store::util::Tag, util::temp_tag::TempTag, BlobFormat, Hash, HashAndFormat};
 
 pub(crate) trait HashSpecific {
     fn hash(&self) -> Hash;

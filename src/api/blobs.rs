@@ -15,19 +15,19 @@ use std::{
 
 pub use bao_tree::io::mixed::EncodedItem;
 use bao_tree::{
-    BaoTree, ChunkNum, ChunkRanges,
     io::{
-        BaoContentItem, Leaf,
         fsm::{ResponseDecoder, ResponseDecoderNext},
+        BaoContentItem, Leaf,
     },
+    BaoTree, ChunkNum, ChunkRanges,
 };
 use bytes::Bytes;
 use genawaiter::sync::Gen;
 use iroh_io::{AsyncStreamReader, TokioStreamReader};
 use irpc::channel::{mpsc, oneshot};
-use n0_future::{Stream, StreamExt, future, stream};
+use n0_future::{future, stream, Stream, StreamExt};
 use quinn::SendStream;
-use range_collections::{RangeSet2, range_set::RangeSetRange};
+use range_collections::{range_set::RangeSetRange, RangeSet2};
 use ref_cast::RefCast;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
@@ -43,7 +43,6 @@ pub use super::proto::{
     ImportBaoRequest as ImportBaoOptions, ImportMode, ObserveRequest as ObserveOptions,
 };
 use super::{
-    ApiClient, RequestResult, Tags,
     proto::{
         BatchResponse, BlobStatusRequest, ClearProtectedRequest, CreateTempTagRequest,
         ExportBaoRequest, ExportRangesItem, ImportBaoRequest, ImportByteStreamRequest,
@@ -51,13 +50,14 @@ use super::{
     },
     remote::HashSeqChunk,
     tags::TagInfo,
+    ApiClient, RequestResult, Tags,
 };
 use crate::{
-    BlobFormat, Hash, HashAndFormat,
     api::proto::{BatchRequest, ImportByteStreamUpdate},
     provider::StreamContext,
     store::IROH_BLOCK_SIZE,
     util::temp_tag::TempTag,
+    BlobFormat, Hash, HashAndFormat,
 };
 
 /// Options for adding bytes.
@@ -696,7 +696,7 @@ impl ObserveProgress {
     }
 }
 
-/// A progess handle for an export operation.
+/// A progress handle for an export operation.
 ///
 /// Internally this is a stream of [`ExportProgress`] items. Working with this
 /// stream directly can be inconvenient, so this struct provides some convenience
@@ -772,12 +772,12 @@ pub struct ImportBaoHandle {
 impl ImportBaoHandle {
     pub(crate) async fn new(
         fut: impl Future<
-            Output = irpc::Result<(
-                mpsc::Sender<BaoContentItem>,
-                oneshot::Receiver<super::Result<()>>,
-            )>,
-        > + Send
-        + 'static,
+                Output = irpc::Result<(
+                    mpsc::Sender<BaoContentItem>,
+                    oneshot::Receiver<super::Result<()>>,
+                )>,
+            > + Send
+            + 'static,
     ) -> irpc::Result<Self> {
         let (tx, rx) = fut.await?;
         Ok(Self { tx, rx })

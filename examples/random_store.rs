@@ -5,14 +5,14 @@ use clap::{Parser, Subcommand};
 use iroh::{SecretKey, Watcher};
 use iroh_base::ticket::NodeTicket;
 use iroh_blobs::{
-    HashAndFormat,
     api::downloader::Shuffled,
     provider::Event,
     store::fs::FsStore,
     test::{add_hash_sequences, create_random_blobs},
+    HashAndFormat,
 };
 use n0_future::StreamExt;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::{signal::ctrl_c, sync::mpsc};
 use tracing::info;
 
